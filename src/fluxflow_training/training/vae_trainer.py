@@ -20,6 +20,9 @@ logger = get_logger(__name__)
 
 def check_for_nan(tensor, name, logger_inst):
     """Check for NaN/Inf values and log warning."""
+    # Handle non-tensor inputs (e.g., MagicMock in tests)
+    if not isinstance(tensor, torch.Tensor):
+        return False
     if torch.isnan(tensor).any() or torch.isinf(tensor).any():
         logger_inst.warning(f"NaN/Inf detected in {name}")
         return True

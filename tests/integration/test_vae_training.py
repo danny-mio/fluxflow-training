@@ -144,16 +144,18 @@ class TestVAETrainingIntegration:
         images = torch.randn(2, 3, 64, 64)
 
         with torch.no_grad():
+            # VAE uses reparameterization sampling even in eval mode
+            # Set same seed before each forward for deterministic output
+            torch.manual_seed(100)
             packed1 = compressor(images)
             reconstructed1 = expander(packed1)
 
+            torch.manual_seed(100)  # Same seed for deterministic output
             packed2 = compressor(images)
             reconstructed2 = expander(packed2)
 
-        # Check outputs are very close (allowing for floating point precision)
-        # Models in eval mode should produce consistent outputs
-        # Relaxed tolerance to account for numerical precision in sequential operations
-        assert torch.allclose(reconstructed1, reconstructed2, rtol=1e-2, atol=1e-2)
+        # Check outputs are identical when using same seed
+        assert torch.allclose(reconstructed1, reconstructed2, rtol=1e-6, atol=1e-6)
 
     def test_vae_gradient_accumulation(self, small_vae):
         """VAE should support gradient accumulation."""
@@ -215,15 +217,17 @@ class TestVAETrainingIntegration:
         images = torch.randn(2, 3, 64, 64)
 
         with torch.no_grad():
+            # VAE uses stochastic sampling - set same seed for both forwards
+            torch.manual_seed(300)
             packed1 = compressor(images)
             recon1 = expander(packed1)
 
+            torch.manual_seed(300)  # Same seed for deterministic comparison
             packed2 = new_compressor(images)
             recon2 = new_expander(packed2)
 
-        # Check outputs are very close (models should have identical weights)
-        # Relaxed tolerance to account for numerical precision in sequential operations
-        assert torch.allclose(recon1, recon2, rtol=1e-2, atol=1e-2)
+        # Check outputs are identical when using same seed (models have identical weights)
+        assert torch.allclose(recon1, recon2, rtol=1e-6, atol=1e-6)
 
     def test_vae_mixed_precision_compatible(self, small_vae):
         """VAE should be compatible with mixed precision training."""

@@ -74,3 +74,4 @@ temp/
 # Cache directories
 _cache/
 .cache/
+.mypy_cache/

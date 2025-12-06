@@ -330,9 +330,9 @@ class TestFlowConditioningIntegration:
 
         text_embeddings = torch.randn(batch_size, 256)
 
-        # Different timesteps
-        timesteps1 = torch.tensor([100, 100])
-        timesteps2 = torch.tensor([900, 900])
+        # Different timesteps (normalized to [0, 1] range as expected by model)
+        timesteps1 = torch.tensor([100.0 / 1000.0, 100.0 / 1000.0])  # Early timestep
+        timesteps2 = torch.tensor([900.0 / 1000.0, 900.0 / 1000.0])  # Late timestep
 
         with torch.no_grad():
             out1 = flow(packed, text_embeddings, timesteps1)

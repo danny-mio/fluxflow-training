@@ -103,7 +103,9 @@ class TestGANTrainingIntegration:
         g_loss.backward()
         g_optimizer.step()
 
-        assert g_loss.item() >= 0
+        # G hinge loss = -mean(fake_logits), which can be any value
+        # Just verify it's a valid finite number
+        assert torch.isfinite(g_loss)
 
     def test_gan_alternating_training(self, small_discriminator, small_generator):
         """GAN should support alternating D and G updates."""
