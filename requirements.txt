@@ -1,0 +1,23 @@
+# FluxFlow Training - Runtime Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core package dependency
+fluxflow @ git+https://github.com/danny-mio/fluxflow-core.git
+# Or use: fluxflow>=0.1.0 (when published to PyPI)
+
+# Training-specific dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+accelerate>=0.20.0
+safetensors>=0.3.0
+transformers>=4.30.0
+diffusers>=0.20.0
+einops>=0.6.0
+webdataset>=0.2.0
+pillow>=9.0.0
+numpy>=1.24.0
+lion-pytorch>=0.1.0
+matplotlib>=3.5.0
+orjson>=3.8.0
+pydantic>=2.0.0
+pyyaml>=6.0.0

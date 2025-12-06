@@ -1,0 +1,112 @@
+# FluxFlow Configuration Example
+# Copy this file to config.yaml and customize for your needs
+
+model:
+  vae_dim: 128  # VAE latent dimension (32 for limited GPU, 128/256 for better quality)
+  feature_maps_dim: 128  # Flow processor feature dimension
+  feature_maps_dim_disc: 8  # Discriminator feature dimension
+  text_embedding_dim: 1024
+  pretrained_bert_model: null  # Path to pretrained BERT checkpoint (optional)
+
+data:
+  # Local dataset (choose this OR webdataset)
+  data_path: "/path/to/your/images"
+  captions_file: "/path/to/your/captions.txt"  # Format: image_name<tab>caption
+  
+  # Optional fixed text to prepend to all prompts during training
+  # Example: "style anime" will convert "a girl running" to "style anime. a girl running"
+  # Use this to ensure specific styles/types are always included in fine-tuning
+  fixed_prompt_prefix: null  # e.g., "style anime", "photo realistic", "digital art"
+
+  # OR use WebDataset streaming (HuggingFace datasets)
+  use_webdataset: false
+  webdataset_token: null  # Your HuggingFace token
+  webdataset_url: "hf://datasets/jackyhate/text-to-image-2M/data_512_2M/*.tar"  # Example: TTI-2M
+  webdataset_image_key: "png"   # Key for image data in tar samples (e.g., "jpg", "png")
+  webdataset_label_key: "json"  # Key for label/metadata in tar samples
+  webdataset_caption_key: "prompt"  # Key for caption text within the JSON (e.g., "prompt", "caption")
+  webdataset_size: 2000000      # Total samples (TTI-2M has ~2M). If null, estimates from shard count.
+  webdataset_samples_per_shard: 10000  # Samples per shard for estimation
+  
+  # Legacy aliases (deprecated, use webdataset_* instead)
+  # use_tt2m: false  # Use use_webdataset instead
+  # tt2m_token: null  # Use webdataset_token instead
+  
+  # WebDataset error recovery settings
+  dataloader_max_retries: 5      # Max retries per batch on errors
+  dataloader_retry_delay: 5.0    # Base delay between retries (seconds)
+
+  # Common settings
+  img_size: 1024
+  channels: 3
+  tokenizer_name: "distilbert-base-uncased"
+  
+  # Multi-scale training: train on reduced versions of images
+  # For each size smaller than image's min dimension, creates a downscaled version
+  # Example: [128, 256, 512] - a 1024px image trains at 128, 256, 512, and 1024
+  reduced_min_sizes: null  # e.g., [128, 256, 512]
+
+training:
+  # Basic training settings
+  n_epochs: 100
+  batch_size: 1
+  workers: 8
+  lr: 0.00001  # 1e-5
+  lr_min: 0.01  # Minimum LR multiplier
+  training_steps: 1
+  use_fp16: false
+  initial_clipping_norm: 1.0
+  preserve_lr: true
+
+  # Training modes (enable at least one)
+  train_vae: true
+  gan_training: true
+  use_lpips: true  # Enable LPIPS perceptual loss (improves visual quality, reduces blur)
+  train_spade: true
+  train_diff: false
+  train_diff_full: false
+
+  # KL divergence settings
+  kl_beta: 0.0001
+  kl_warmup_steps: 5000
+  kl_free_bits: 0.0
+
+  # GAN settings
+  lambda_adv: 0.5
+  
+  # LPIPS perceptual loss settings
+  # Lower weight = sharper outputs (prioritizes pixel accuracy)
+  # Higher weight = smoother outputs (prioritizes perceptual similarity)
+  lambda_lpips: 0.1  # Recommended: 0.05-0.2 range
+
+optimization:
+  # Path to JSON file with detailed optimizer/scheduler configs (optional)
+  optim_sched_config: null
+
+output:
+  output_path: "outputs/flux"
+  log_interval: 10
+  checkpoint_save_interval: 50
+  samples_per_checkpoint: 1
+  no_samples: false
+  test_image_address:
+    - "template.png"
+  sample_captions:
+    - "illustration of a boy playing guitar in the forest in autumn"
+    - "photo of a girl elf with blue Santa costume by a cottage in the snow"
+    - "on a yellow background, a blue triangle on the bottom"
+    - "an orange banana"
+  # Sample image sizes: integers for square, or [width, height] for rectangular
+  # Default: [256, 384, 512, 1024]
+  sample_sizes:
+    - 256
+    - 384
+    - 512
+    - [768, 512]  # landscape
+    - [512, 768]  # portrait
+    - 1024
+  log_level: "INFO"
+  log_file: null  # Optional: "outputs/training.log"
+
+# Model checkpoint to resume from (optional)
+model_checkpoint: null  # "outputs/flux/flxflow_final.safetensors"
