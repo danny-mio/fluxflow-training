@@ -364,15 +364,17 @@ def create_robust_dataloader_iterator(
     Returns:
         RobustDataLoaderIterator instance
     """
-    factory = None
 
-    if dataloader_kwargs is not None:
-
+    def _create_factory():
         def factory():
             new_loader = DataLoader(**dataloader_kwargs)
             if accelerator is not None:
                 new_loader = accelerator.prepare(new_loader)
             return new_loader
+
+        return factory
+
+    factory = _create_factory() if dataloader_kwargs is not None else None
 
     return RobustDataLoaderIterator(
         dataloader=dataloader,
