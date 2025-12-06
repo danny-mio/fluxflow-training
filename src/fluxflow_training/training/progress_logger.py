@@ -60,7 +60,8 @@ class TrainingProgressLogger:
             try:
                 with open(self.session_file, "r") as f:
                     session_data = json.load(f)
-                    return session_data.get("session_id", self._create_new_session_id())
+                    session_id = session_data.get("session_id", self._create_new_session_id())
+                    return str(session_id)
             except (json.JSONDecodeError, IOError):
                 # If session file is corrupted, create new session
                 return self._create_new_session_id()
@@ -79,7 +80,8 @@ class TrainingProgressLogger:
             try:
                 with open(self.session_file, "r") as f:
                     session_data = json.load(f)
-                    return session_data.get("resumed_count", 0) > 0
+                    resumed_count = session_data.get("resumed_count", 0)
+                    return bool(resumed_count > 0)
             except (json.JSONDecodeError, IOError):
                 return False
         return False
@@ -172,7 +174,8 @@ class TrainingProgressLogger:
         if self.session_file.exists():
             try:
                 with open(self.session_file, "r") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    return dict(data) if isinstance(data, dict) else {}
             except (json.JSONDecodeError, IOError):
                 return {}
         return {}

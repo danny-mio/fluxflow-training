@@ -7,11 +7,11 @@ import random
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional, Any
 
 import torch
 import webdataset as wds
-from fluxflow.types import DimensionCacheData, SamplerState
+from fluxflow.types import DimensionCacheData, SamplerState  # type: ignore[attr-defined]
 from huggingface_hub import HfFileSystem, hf_hub_url
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset, Sampler
@@ -200,8 +200,8 @@ class StreamingWebDataset(IterableDataset):
         # Construct WebDataset URLs from HuggingFace
         fs = HfFileSystem()
         path_strs = list(fs.glob(url_pattern))
-        files = [fs.resolve_path(p) for p in path_strs]  # type: ignore
-        self.urls = [hf_hub_url(f.repo_id, f.path_in_repo, repo_type="dataset") for f in files]
+        files = [fs.resolve_path(p) for p in path_strs]  # type: ignore[arg-type]
+        self.urls = [hf_hub_url(f.repo_id, f.path_in_repo, repo_type="dataset") for f in files]  # type: ignore[attr-defined]
 
         if not self.urls:
             raise ValueError(f"No files found matching pattern: {url_pattern}")
@@ -608,8 +608,10 @@ class ResumableDimensionSampler(Sampler):
         self.dimension_cache = dimension_cache
 
         # Extract size groups
-        self.size_groups = {
-            eval(size): info["indices"]  # Convert string tuple back to tuple
+        self.size_groups: dict[Any, list[int]] = {
+            eval(size): info[
+                "indices"
+            ]  # Convert string tuple back to tuple  # type: ignore[arg-type]
             for size, info in dimension_cache["size_groups"].items()
         }
 

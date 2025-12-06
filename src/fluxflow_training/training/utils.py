@@ -17,7 +17,7 @@ class FloatBuffer:
             max_items: Maximum buffer size (oldest items dropped)
         """
         self.max_items = max_items
-        self._items = []
+        self._items: list[float] = []
 
     def add_item(self, value: float) -> None:
         """Add a new value to the buffer (FIFO)."""
@@ -87,7 +87,7 @@ class EMA:
         """
         model.load_state_dict(self.shadow)
 
-    def state_dict(self) -> Dict[str, torch.Tensor]:
+    def state_dict(self) -> Dict[str, Any]:
         """
         Return EMA state for checkpointing.
 
@@ -99,7 +99,7 @@ class EMA:
             "shadow": self.shadow.copy(),
         }
 
-    def load_state_dict(self, state_dict: Dict[str, torch.Tensor]) -> None:
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """
         Load EMA state from checkpoint.
 
@@ -107,7 +107,11 @@ class EMA:
             state_dict: Dictionary containing decay and shadow parameters
         """
         self.decay = float(state_dict["decay"])
-        self.shadow = state_dict["shadow"].copy()
+        shadow_state = state_dict["shadow"]
+        if isinstance(shadow_state, dict):
+            self.shadow = shadow_state.copy()
+        else:
+            self.shadow = shadow_state
         # Ensure all shadow parameters are on the correct device
         self.shadow = {k: v.to(self.device) for k, v in self.shadow.items()}
 
@@ -295,7 +299,7 @@ class RobustDataLoaderIterator:
 
             except Exception as e:
                 # Unexpected error - log and retry
-                last_error = e
+                last_error = e  # type: ignore[assignment]
                 self._consecutive_errors += 1
                 self._total_errors += 1
                 retry_count += 1
@@ -346,7 +350,7 @@ class RobustDataLoaderIterator:
 
 def create_robust_dataloader_iterator(
     dataloader: DataLoader,
-    dataloader_kwargs: Optional[Dict] = None,
+    dataloader_kwargs: Optional[Dict[str, Any]] = None,
     accelerator: Any = None,
     max_retries: int = 5,
     retry_delay: float = 5.0,
@@ -365,20 +369,23 @@ def create_robust_dataloader_iterator(
         RobustDataLoaderIterator instance
     """
 
-    def _create_factory():
-        def factory():
-            new_loader = DataLoader(**dataloader_kwargs)
+    def create_factory() -> Optional[Callable[[], DataLoader]]:
+        if dataloader_kwargs is None:
+            return None
+
+        kwargs = dataloader_kwargs  # Capture for closure
+
+        def factory() -> DataLoader:
+            new_loader = DataLoader(**kwargs)
             if accelerator is not None:
                 new_loader = accelerator.prepare(new_loader)
             return new_loader
 
         return factory
 
-    factory = _create_factory() if dataloader_kwargs is not None else None
-
     return RobustDataLoaderIterator(
         dataloader=dataloader,
-        dataloader_factory=factory,
+        dataloader_factory=create_factory(),
         max_retries=max_retries,
         retry_delay=retry_delay,
     )

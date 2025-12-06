@@ -8,11 +8,12 @@ import torch
 from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
 from torchvision import transforms
+from typing import Any
 
 try:
-    resample_filter = Image.Resampling.LANCZOS
+    resample_filter: Any = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
 except AttributeError:
-    resample_filter = Image.LANCZOS  # type: ignore
+    resample_filter = Image.LANCZOS  # type: ignore[attr-defined, misc]
 
 
 def resize_preserving_aspect_min_distortion(
@@ -66,7 +67,7 @@ def resize_preserving_aspect_min_distortion(
 
     if best_h == orig_h and best_w == orig_w:
         return image
-    return image.resize((best_w, best_h), Image.LANCZOS)
+    return image.resize((best_w, best_h), Image.LANCZOS)  # type: ignore[attr-defined, misc]
 
 
 def upscale_image(
@@ -228,7 +229,7 @@ def collate_fn_variable(
         all_scale_images.append(img_versions)
 
     # Group by scale level
-    padded_images = []
+    padded_images: list[list[Any]] = []
     for img_versions in all_scale_images:
         for i, img in enumerate(img_versions):
             if len(padded_images) <= i:
@@ -265,8 +266,8 @@ def collate_fn_variable(
 
         tensor_images = [transform(img.convert("RGB")).contiguous() for img in imgs]
         images.append(torch.stack(tensor_images, 0))
-
-    captions_tensor = pad_sequence(captions, batch_first=True, padding_value=0)
+    captions_list = [c for c in captions]
+    captions_tensor = pad_sequence(captions_list, batch_first=True, padding_value=0)
     return images, captions_tensor
 
 
@@ -283,5 +284,6 @@ def collate_fn_generate(data: List[Tuple]) -> Tuple[Tuple, torch.Tensor]:
             - captions: Padded token IDs [B, seq_len]
     """
     file_names, captions = zip(*data)
-    captions_tensor = pad_sequence(captions, batch_first=True, padding_value=0)
+    captions_list = [c for c in captions]
+    captions_tensor = pad_sequence(captions_list, batch_first=True, padding_value=0)
     return file_names, captions_tensor

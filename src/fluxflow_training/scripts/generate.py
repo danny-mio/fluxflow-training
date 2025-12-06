@@ -108,7 +108,7 @@ def generate(args):
 
             # Noise schedule
             scheduler = DPMSolverMultistepScheduler(num_train_timesteps=1000)
-            scheduler.set_timesteps(args.ddim_steps, device=device)
+            scheduler.set_timesteps(args.ddim_steps, device=device)  # type: ignore[arg-type]
 
             t = torch.randint(0, 1000, (B,), device=device)
             noised_img = scheduler.add_noise(img_seq, noise_img, t)  # type: ignore

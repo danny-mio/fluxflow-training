@@ -300,22 +300,22 @@ def train(args):
 
     # Apply loaded state dicts to models if they exist
     if loaded_states.get("diffuser.compressor"):
-        compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)
+        compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded compressor checkpoint")
     if loaded_states.get("diffuser.flow_processor"):
-        flow_processor.load_state_dict(loaded_states["diffuser.flow_processor"], strict=False)
+        flow_processor.load_state_dict(loaded_states["diffuser.flow_processor"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded flow_processor checkpoint")
     if loaded_states.get("diffuser.expander"):
-        expander.load_state_dict(loaded_states["diffuser.expander"], strict=False)
+        expander.load_state_dict(loaded_states["diffuser.expander"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded expander checkpoint")
     if loaded_states.get("text_encoder"):
-        text_encoder.load_state_dict(loaded_states["text_encoder"], strict=False)
+        text_encoder.load_state_dict(loaded_states["text_encoder"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded text_encoder checkpoint")
     if loaded_states.get("image_encoder"):
-        image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)
+        image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded image_encoder checkpoint")
     if loaded_states.get("D_img"):
-        D_img.load_state_dict(loaded_states["D_img"], strict=False)
+        D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded D_img checkpoint")
 
     diffuser.to(device)

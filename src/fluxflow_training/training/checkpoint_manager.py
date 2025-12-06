@@ -10,14 +10,14 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import safetensors.torch
 import torch
 from fluxflow.utils import get_logger
 from torch import nn
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import _LRScheduler
+from torch.optim.lr_scheduler import _LRScheduler  # type: ignore[attr-defined]
 
 logger = get_logger(__name__)
 
@@ -116,8 +116,8 @@ class CheckpointManager:
                 logger.debug(f"✓ Saved {name} to {disc_path}")
 
     def load_models_parallel(
-        self, checkpoint_path: Optional[str | Path] = None
-    ) -> dict[str, Optional[dict]]:
+        self, checkpoint_path: Optional[Union[str, Path]] = None
+    ) -> dict[str, Optional[dict[str, Any]]]:
         """
         Load model checkpoints in parallel for faster resume.
 
@@ -190,7 +190,7 @@ class CheckpointManager:
         batch_idx: int,
         global_step: int,
         optimizers: dict[str, Optimizer],
-        schedulers: dict[str, _LRScheduler],
+        schedulers: dict[str, _LRScheduler],  # type: ignore[type-arg]
         ema: Any,
         sampler: Any = None,
         kl_beta_current: float = 0.0,
@@ -312,7 +312,7 @@ class CheckpointManager:
     def load_optimizer_scheduler_ema_states(
         self,
         optimizers: dict[str, Optimizer],
-        schedulers: dict[str, _LRScheduler],
+        schedulers: dict[str, _LRScheduler],  # type: ignore[type-arg]
         ema: Any,
     ) -> bool:
         """
@@ -346,7 +346,7 @@ class CheckpointManager:
                 if "schedulers" in training_states:
                     for name, sched in schedulers.items():
                         if name in training_states["schedulers"]:
-                            sched.load_state_dict(training_states["schedulers"][name])
+                            sched.load_state_dict(training_states["schedulers"][name])  # type: ignore[arg-type]
                     logger.debug("✓ Scheduler states restored")
 
                 if "ema" in training_states:

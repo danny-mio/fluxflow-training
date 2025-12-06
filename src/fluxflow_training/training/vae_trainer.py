@@ -87,7 +87,7 @@ class VAETrainer:
         use_gan: bool = True,
         discriminator: Optional[nn.Module] = None,
         discriminator_optimizer: Optional[Optimizer] = None,
-        discriminator_scheduler: Optional[_LRScheduler] = None,
+        discriminator_scheduler: Optional[_LRScheduler] = None,  # type: ignore[type-arg]
         lambda_adv: float = 0.5,
         r1_interval: int = 16,
         r1_gamma: float = 5.0,
@@ -291,18 +291,18 @@ class VAETrainer:
         # Get the underlying scheduler (may be wrapped by accelerator)
         base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
         if isinstance(base_scheduler, ReduceLROnPlateau):
-            self.scheduler.step(total_loss)
+            self.scheduler.step(float(total_loss))  # type: ignore[arg-type]
         else:
-            self.scheduler.step()
+            self.scheduler.step()  # type: ignore[call-arg]
 
         if self.use_gan and self.discriminator_scheduler is not None:
             base_d_scheduler = getattr(
                 self.discriminator_scheduler, "scheduler", self.discriminator_scheduler
             )
             if isinstance(base_d_scheduler, ReduceLROnPlateau):
-                self.discriminator_scheduler.step(losses.get("discriminator", 0.0))
+                self.discriminator_scheduler.step(float(losses.get("discriminator", 0.0)))  # type: ignore[arg-type]
             else:
-                self.discriminator_scheduler.step()
+                self.discriminator_scheduler.step()  # type: ignore[call-arg]
 
         # Add comprehensive metrics
         vae_params = list(self.compressor.parameters()) + list(self.expander.parameters())

@@ -139,7 +139,8 @@ def create_optimizer(
         kwargs["momentum"] = optimizer_config.get("momentum", 0.0)
         kwargs["centered"] = optimizer_config.get("centered", False)
 
-    return optimizer_class(parameters, **kwargs)
+    result: optim.Optimizer = optimizer_class(parameters, **kwargs)  # type: ignore[call-arg]
+    return result
 
 
 def get_default_optimizer_config(model_name: str) -> Dict[str, Any]:

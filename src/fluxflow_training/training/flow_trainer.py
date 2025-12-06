@@ -56,9 +56,9 @@ class FlowTrainer:
         text_encoder: nn.Module,
         compressor: nn.Module,
         optimizer: Optimizer,
-        scheduler: _LRScheduler,
+        scheduler: _LRScheduler,  # type: ignore[type-arg]
         text_encoder_optimizer: Optimizer,
-        text_encoder_scheduler: _LRScheduler,
+        text_encoder_scheduler: _LRScheduler,  # type: ignore[type-arg]
         gradient_clip_norm: float = 1.0,
         num_train_timesteps: int = 1000,
         ema_decay: float = 0.9999,
@@ -108,8 +108,8 @@ class FlowTrainer:
 
         # Setup diffusion scheduler
         self.noise_scheduler = DPMSolverMultistepScheduler(num_train_timesteps=num_train_timesteps)
-        self.noise_scheduler.set_timesteps(num_train_timesteps)
-        self.alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(
+        self.noise_scheduler.set_timesteps(num_train_timesteps)  # type: ignore[arg-type]
+        self.alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(  # type: ignore[attr-defined]
             next(flow_processor.parameters()).device
         )
 
@@ -243,17 +243,17 @@ class FlowTrainer:
         # Get the underlying scheduler (may be wrapped by accelerator)
         base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
         if isinstance(base_scheduler, ReduceLROnPlateau):
-            self.scheduler.step(loss_value)
+            self.scheduler.step(loss_value)  # type: ignore[arg-type]
         else:
-            self.scheduler.step()
+            self.scheduler.step()  # type: ignore[call-arg]
 
         base_te_scheduler = getattr(
             self.text_encoder_scheduler, "scheduler", self.text_encoder_scheduler
         )
         if isinstance(base_te_scheduler, ReduceLROnPlateau):
-            self.text_encoder_scheduler.step(loss_value)
+            self.text_encoder_scheduler.step(loss_value)  # type: ignore[arg-type]
         else:
-            self.text_encoder_scheduler.step()
+            self.text_encoder_scheduler.step()  # type: ignore[call-arg]
 
         # Return comprehensive metrics
         metrics = {
