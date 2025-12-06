@@ -270,11 +270,12 @@ class CheckpointManager:
             torch.save(sampler_state, self.sampler_state_path)
 
         logger.debug(f"✓ Training state saved")
-        
+
         # Generate training diagrams if enabled
         if self.generate_diagrams:
             try:
                 from fluxflow_training.scripts.generate_training_graphs import generate_all_diagrams
+
                 logger.debug("Generating training diagrams...")
                 success = generate_all_diagrams(self.output_dir, verbose=False)
                 if success:

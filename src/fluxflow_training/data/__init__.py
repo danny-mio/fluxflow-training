@@ -1,12 +1,12 @@
 """FluxFlow data loading and preprocessing modules."""
 
+from .datasets import TTI2MDataset  # Backward compatibility alias
 from .datasets import (
     GroupedBatchSampler,
     ResumableDimensionSampler,
     StreamingGroupedBatchSampler,
     StreamingWebDataset,
     TextImageDataset,
-    TTI2MDataset,  # Backward compatibility alias
     build_dimension_cache,
     get_or_build_dimension_cache,
 )

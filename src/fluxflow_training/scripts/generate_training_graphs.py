@@ -521,11 +521,11 @@ def generate_summary_stats(metrics: List[Dict[str, Any]], output_dir: Path, verb
 def generate_all_diagrams(output_path: Path, verbose: bool = True) -> bool:
     """
     Generate all training diagrams for a given output path.
-    
+
     Args:
         output_path: Path to the training output directory
         verbose: Whether to print progress messages
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -551,12 +551,12 @@ def generate_all_diagrams(output_path: Path, verbose: bool = True) -> bool:
         if verbose:
             print(f"Loading metrics from: {metrics_file}")
         metrics = load_metrics(metrics_file)
-        
+
         if not metrics:
             if verbose:
                 print("No metrics found")
             return False
-            
+
         if verbose:
             print(f"Loaded {len(metrics)} metric entries")
             print(f"\nGenerating diagrams in: {graph_dir}")
@@ -574,9 +574,9 @@ def generate_all_diagrams(output_path: Path, verbose: bool = True) -> bool:
             print("-" * 60)
             print("\n✓ All diagrams generated successfully!")
             print(f"\nView your results in: {graph_dir}")
-        
+
         return True
-        
+
     except Exception as e:
         if verbose:
             print(f"Error generating diagrams: {e}")
@@ -601,7 +601,7 @@ Examples:
     )
 
     args = parser.parse_args()
-    
+
     success = generate_all_diagrams(Path(args.output_path), verbose=True)
     sys.exit(0 if success else 1)
 

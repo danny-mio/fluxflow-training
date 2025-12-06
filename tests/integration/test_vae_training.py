@@ -7,7 +7,6 @@ import torch.optim as optim
 from fluxflow.models.vae import FluxCompressor, FluxExpander
 
 
-
 class TestVAETrainingIntegration:
     """Integration tests for VAE training workflow."""
 

@@ -36,8 +36,8 @@ from transformers import AutoTokenizer
 
 from fluxflow_training.data import (
     ResumableDimensionSampler,
-    TextImageDataset,
     StreamingWebDataset,
+    TextImageDataset,
     collate_fn_variable,
     get_or_build_dimension_cache,
 )
@@ -288,15 +288,11 @@ def train(args):
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
     # Discriminators
-    D_img = PatchDiscriminator(
-        in_channels=args.channels, 
-        ctx_dim=args.vae_dim
-    )
+    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
 
     # Initialize checkpoint manager for easier model management
     checkpoint_manager = CheckpointManager(
-        output_dir=args.output_path,
-        generate_diagrams=args.generate_diagrams
+        output_dir=args.output_path, generate_diagrams=args.generate_diagrams
     )
 
     # Load checkpoints in parallel for faster resume
@@ -708,7 +704,11 @@ def train(args):
                                 real_imgs, input_ids, attention_mask
                             )
                             # Handle dict return type from train_step
-                            diff_loss = diff_metrics['flow_loss'] if isinstance(diff_metrics, dict) else diff_metrics
+                            diff_loss = (
+                                diff_metrics["flow_loss"]
+                                if isinstance(diff_metrics, dict)
+                                else diff_metrics
+                            )
                             avg_diff_loss += diff_loss / resolutions
                             diff_errors.add_item(diff_loss)
 
@@ -946,7 +946,9 @@ def parse_args():
     )
     parser.add_argument("--webdataset_image_key", type=str, default="png", help="Image key in tar")
     parser.add_argument("--webdataset_label_key", type=str, default="json", help="Label key in tar")
-    parser.add_argument("--webdataset_caption_key", type=str, default="prompt", help="Caption key within JSON")
+    parser.add_argument(
+        "--webdataset_caption_key", type=str, default="prompt", help="Caption key within JSON"
+    )
     parser.add_argument(
         "--webdataset_size",
         type=int,
@@ -1012,7 +1014,9 @@ def parse_args():
     # Training modes
     parser.add_argument("--train_vae", action="store_true", help="Train VAE (compressor+expander)")
     parser.add_argument("--gan_training", action="store_true", help="Enable GAN training for VAE")
-    parser.add_argument("--use_lpips", action="store_true", help="Enable LPIPS perceptual loss for VAE")
+    parser.add_argument(
+        "--use_lpips", action="store_true", help="Enable LPIPS perceptual loss for VAE"
+    )
     parser.add_argument("--train_spade", action="store_true", help="Use SPADE conditioning")
     parser.add_argument("--train_diff", action="store_true", help="Train flow model")
     parser.add_argument(
@@ -1102,7 +1106,10 @@ def parse_args():
         "--lambda_adv", type=float, default=0.5, help="GAN loss weight (increased from 0.1)"
     )
     parser.add_argument(
-        "--lambda_lpips", type=float, default=0.1, help="LPIPS perceptual loss weight (lower=sharper, higher=smoother)"
+        "--lambda_lpips",
+        type=float,
+        default=0.1,
+        help="LPIPS perceptual loss weight (lower=sharper, higher=smoother)",
     )
 
     args = parser.parse_args()
@@ -1144,7 +1151,10 @@ def parse_args():
                 args.data_path = config["data"]["data_path"]
             if "captions_file" in config["data"] and "captions_file" not in cli_provided:
                 args.captions_file = config["data"]["captions_file"]
-            if "fixed_prompt_prefix" in config["data"] and "fixed_prompt_prefix" not in cli_provided:
+            if (
+                "fixed_prompt_prefix" in config["data"]
+                and "fixed_prompt_prefix" not in cli_provided
+            ):
                 args.fixed_prompt_prefix = config["data"]["fixed_prompt_prefix"]
             # New WebDataset config options
             if "use_webdataset" in config["data"] and "use_webdataset" not in cli_provided:

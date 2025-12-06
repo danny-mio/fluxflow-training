@@ -99,9 +99,7 @@ def upscale_image(
         lr_img = Image.open(filename).convert("RGB")
         img_full = lr_img
         dirname, basename = os.path.split(filename)
-        upscaled_filename = os.path.join(
-            dirname, f"ups_{os.path.splitext(basename)[0]}.webp"
-        )
+        upscaled_filename = os.path.join(dirname, f"ups_{os.path.splitext(basename)[0]}.webp")
         if os.path.exists(upscaled_filename):
             img_full = Image.open(upscaled_filename).convert("RGB")
 
@@ -148,7 +146,7 @@ def generate_reduced_versions(
     Example:
         If image is 1024x768 (min=768) and reduced_min_sizes=[128, 256, 512]:
         Returns 3 images with min dimensions 128, 256, 512
-        
+
         If image is 380x512 (min=380) and reduced_min_sizes=[128, 256, 512]:
         Returns 2 images with min dimensions 128, 256
         (512 is skipped because 380 < 512)
@@ -158,10 +156,10 @@ def generate_reduced_versions(
     aspect_ratio = orig_w / orig_h
 
     reduced_images = []
-    
+
     # Sort sizes to ensure consistent ordering (smallest first)
     sorted_sizes = sorted(reduced_min_sizes)
-    
+
     for target_min in sorted_sizes:
         # Only create reduced version if image is larger than target
         if min_dim > target_min:
@@ -174,15 +172,15 @@ def generate_reduced_versions(
                 # Height is the smaller dimension
                 new_h = target_min
                 new_w = int(round(target_min * aspect_ratio))
-            
+
             # Ensure dimensions are multiples of 16 for model compatibility
             new_w = max(16, (new_w // 16) * 16)
             new_h = max(16, (new_h // 16) * 16)
-            
+
             # Resize using Lanczos for high-quality downscaling
             reduced_img = image.resize((new_w, new_h), resample_filter)
             reduced_images.append(reduced_img)
-    
+
     return reduced_images
 
 
@@ -208,9 +206,7 @@ def collate_fn_variable(
 
     # Load images
     if isinstance(filenames_or_images[0], str):
-        loaded_images = [
-            Image.open(filename).convert("RGB") for filename in filenames_or_images
-        ]
+        loaded_images = [Image.open(filename).convert("RGB") for filename in filenames_or_images]
     else:
         loaded_images = [img.convert("RGB") for img in filenames_or_images]
 
@@ -218,17 +214,17 @@ def collate_fn_variable(
     all_scale_images = []
     for idx, img in enumerate(loaded_images):
         img_versions = []
-        
+
         # Add reduced versions if configured
         if reduced_min_sizes:
             reduced = generate_reduced_versions(img, reduced_min_sizes)
             img_versions.extend(reduced)
-        
+
         # Add upscaled versions (existing behavior)
         filename = filenames_or_images[idx] if isinstance(filenames_or_images[idx], str) else None
         upscaled = upscale_image(img, filename=filename)
         img_versions.extend(upscaled)
-        
+
         all_scale_images.append(img_versions)
 
     # Group by scale level
@@ -256,6 +252,7 @@ def collate_fn_variable(
         if len(set(sizes)) > 1:
             # Find most common size
             from collections import Counter
+
             most_common_size = Counter(sizes).most_common(1)[0][0]
 
             # Resize any images that don't match

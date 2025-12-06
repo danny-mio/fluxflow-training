@@ -225,7 +225,7 @@ class StreamingWebDataset(IterableDataset):
 
     def _create_dataset(self):
         """Create WebDataset pipeline with robust error handling for corrupted images.
-        
+
         Performance considerations:
         - shardshuffle=10: Low value for faster startup (was 100)
         - shuffle=100: Small buffer for immediate first batch (was 1000)
@@ -276,7 +276,10 @@ class StreamingWebDataset(IterableDataset):
                 for img, label in dataset:
                     try:
                         prompt = (
-                            label.get(self.caption_key, "").replace("\n", " ").replace("\r", " ").strip()
+                            label.get(self.caption_key, "")
+                            .replace("\n", " ")
+                            .replace("\r", " ")
+                            .strip()
                         )
                         if not prompt:
                             continue

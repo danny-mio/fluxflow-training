@@ -1,6 +1,5 @@
 """Integration tests for training resume functionality."""
 
-
 import pytest
 import torch
 import torch.nn as nn

@@ -187,7 +187,7 @@ def get_device() -> torch.device:
 class RobustDataLoaderIterator:
     """
     Wrapper for DataLoader iteration with automatic error recovery and worker restart.
-    
+
     Handles worker failures, timeouts, and connection errors by recreating the
     DataLoader and continuing iteration. Useful for streaming WebDatasets.
     """
@@ -214,7 +214,7 @@ class RobustDataLoaderIterator:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.max_consecutive_errors = max_consecutive_errors
-        
+
         self._iterator: Optional[Iterator] = None
         self._consecutive_errors = 0
         self._total_errors = 0
@@ -230,37 +230,48 @@ class RobustDataLoaderIterator:
         """Get next batch with error recovery."""
         if self._iterator is None:
             self._iterator = iter(self.dataloader)
-        
+
         retry_count = 0
         last_error = None
-        
+
         while retry_count <= self.max_retries:
             try:
                 batch = next(self._iterator)
                 self._consecutive_errors = 0
                 self._batches_yielded += 1
                 return batch
-                
+
             except StopIteration:
                 # Normal end of epoch
                 raise
-                
+
             except (RuntimeError, OSError, BrokenPipeError, ConnectionError) as e:
                 last_error = e
                 self._consecutive_errors += 1
                 self._total_errors += 1
-                
+
                 error_msg = str(e).lower()
-                is_worker_error = any(x in error_msg for x in [
-                    "worker", "dataloader", "broken pipe", "connection",
-                    "timeout", "eof", "errno", "reset by peer"
-                ])
-                
+                is_worker_error = any(
+                    x in error_msg
+                    for x in [
+                        "worker",
+                        "dataloader",
+                        "broken pipe",
+                        "connection",
+                        "timeout",
+                        "eof",
+                        "errno",
+                        "reset by peer",
+                    ]
+                )
+
                 if is_worker_error or self._consecutive_errors >= self.max_consecutive_errors:
                     # Recreate DataLoader to recover from worker failure
                     print(f"DataLoader error ({type(e).__name__}): {e}")
-                    print(f"Attempting to recreate DataLoader (errors: {self._consecutive_errors} consecutive, {self._total_errors} total)")
-                    
+                    print(
+                        f"Attempting to recreate DataLoader (errors: {self._consecutive_errors} consecutive, {self._total_errors} total)"
+                    )
+
                     try:
                         self._recreate_dataloader()
                         self._consecutive_errors = 0
@@ -277,23 +288,27 @@ class RobustDataLoaderIterator:
                     # Try to continue with same iterator
                     retry_count += 1
                     delay = self.retry_delay * (2 ** (retry_count - 1))
-                    print(f"Batch error ({type(e).__name__}), retry {retry_count}/{self.max_retries} in {delay:.1f}s")
+                    print(
+                        f"Batch error ({type(e).__name__}), retry {retry_count}/{self.max_retries} in {delay:.1f}s"
+                    )
                     time.sleep(delay)
-                    
+
             except Exception as e:
                 # Unexpected error - log and retry
                 last_error = e
                 self._consecutive_errors += 1
                 self._total_errors += 1
                 retry_count += 1
-                
+
                 if retry_count > self.max_retries:
                     break
-                    
+
                 delay = self.retry_delay * (2 ** (retry_count - 1))
-                print(f"Unexpected error ({type(e).__name__}: {e}), retry {retry_count}/{self.max_retries} in {delay:.1f}s")
+                print(
+                    f"Unexpected error ({type(e).__name__}: {e}), retry {retry_count}/{self.max_retries} in {delay:.1f}s"
+                )
                 time.sleep(delay)
-        
+
         # All retries exhausted
         print(f"Max retries ({self.max_retries}) exceeded after {self._total_errors} total errors")
         if last_error:
@@ -306,17 +321,19 @@ class RobustDataLoaderIterator:
             # Use factory to create fresh DataLoader
             old_dataloader = self.dataloader
             self.dataloader = self.dataloader_factory()
-            
+
             # Try to clean up old dataloader
             try:
-                if hasattr(old_dataloader, '_iterator'):
+                if hasattr(old_dataloader, "_iterator"):
                     del old_dataloader._iterator
             except Exception:
                 pass
-        
+
         # Create new iterator
         self._iterator = iter(self.dataloader)
-        print(f"DataLoader recreated successfully (yielded {self._batches_yielded} batches before failure)")
+        print(
+            f"DataLoader recreated successfully (yielded {self._batches_yielded} batches before failure)"
+        )
 
     def get_stats(self) -> Dict[str, int]:
         """Get iteration statistics."""
@@ -336,26 +353,27 @@ def create_robust_dataloader_iterator(
 ) -> RobustDataLoaderIterator:
     """
     Create a robust iterator for a DataLoader with automatic recovery.
-    
+
     Args:
         dataloader: The DataLoader to wrap
         dataloader_kwargs: Optional kwargs to recreate DataLoader on failure
         accelerator: Optional Accelerator instance for preparing new DataLoaders
         max_retries: Maximum retries per batch
         retry_delay: Base delay between retries
-        
+
     Returns:
         RobustDataLoaderIterator instance
     """
     factory = None
-    
+
     if dataloader_kwargs is not None:
+
         def factory():
             new_loader = DataLoader(**dataloader_kwargs)
             if accelerator is not None:
                 new_loader = accelerator.prepare(new_loader)
             return new_loader
-    
+
     return RobustDataLoaderIterator(
         dataloader=dataloader,
         dataloader_factory=factory,

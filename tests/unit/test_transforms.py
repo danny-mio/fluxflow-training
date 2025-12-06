@@ -1,6 +1,5 @@
 """Unit tests for data transforms (src/data/transforms.py)."""
 
-
 import numpy as np
 import pytest
 import torch
@@ -516,7 +515,7 @@ class TestGenerateReducedVersions:
         """Should preserve aspect ratio in reduced versions."""
         img = Image.new("RGB", (1024, 512))  # 2:1 aspect ratio
         result = generate_reduced_versions(img, [256])
-        
+
         w, h = result[0].size
         original_ratio = 1024 / 512
         new_ratio = w / h
@@ -527,7 +526,7 @@ class TestGenerateReducedVersions:
         """Output dimensions should be multiples of 16."""
         img = Image.new("RGB", (1000, 750))
         result = generate_reduced_versions(img, [256])
-        
+
         w, h = result[0].size
         assert w % 16 == 0
         assert h % 16 == 0
@@ -536,7 +535,7 @@ class TestGenerateReducedVersions:
         """Results should be sorted by size (smallest first)."""
         img = Image.new("RGB", (1024, 1024))
         result = generate_reduced_versions(img, [512, 128, 256])
-        
+
         # Check sizes are increasing
         sizes = [min(r.size) for r in result]
         assert sizes == sorted(sizes)
@@ -545,7 +544,7 @@ class TestGenerateReducedVersions:
         """Should handle portrait images correctly."""
         img = Image.new("RGB", (512, 1024))  # Height is larger
         result = generate_reduced_versions(img, [256])
-        
+
         w, h = result[0].size
         # Width should be the smaller dimension
         assert w < h
@@ -555,7 +554,7 @@ class TestGenerateReducedVersions:
         # Create a simple test image with some content
         img = Image.new("RGB", (800, 600), color=(255, 128, 64))
         result = generate_reduced_versions(img, [128, 256])
-        
+
         assert len(result) == 2
         # Verify smallest version
         assert min(result[0].size) <= 128 + 16  # Allow for rounding
@@ -569,14 +568,14 @@ class TestCollateWithReducedVersions:
         # Create a large test image
         img_path = temp_dir / "large.jpg"
         Image.new("RGB", (1024, 1024)).save(img_path)
-        
+
         data = [(torch.tensor([1, 2, 3]), str(img_path))]
-        
+
         # With reduced versions
         images, _ = collate_fn_variable(
             data, channels=3, img_size=1024, reduced_min_sizes=[128, 256, 512]
         )
-        
+
         # Should have reduced versions + original (via upscale_image)
         # 3 reduced + at least 1 from upscale
         assert len(images) >= 4
@@ -585,14 +584,12 @@ class TestCollateWithReducedVersions:
         """Should work normally when reduced_min_sizes is None."""
         img_path = temp_dir / "test.jpg"
         Image.new("RGB", (512, 512)).save(img_path)
-        
+
         data = [(torch.tensor([1, 2]), str(img_path))]
-        
+
         # Without reduced versions (default behavior)
-        images, _ = collate_fn_variable(
-            data, channels=3, img_size=512, reduced_min_sizes=None
-        )
-        
+        images, _ = collate_fn_variable(data, channels=3, img_size=512, reduced_min_sizes=None)
+
         # Should just have upscale versions
         assert len(images) >= 1
 
@@ -600,12 +597,12 @@ class TestCollateWithReducedVersions:
         """Small images should not generate reduced versions."""
         img_path = temp_dir / "small.jpg"
         Image.new("RGB", (64, 64)).save(img_path)
-        
+
         data = [(torch.tensor([1]), str(img_path))]
-        
+
         images, _ = collate_fn_variable(
             data, channels=3, img_size=64, reduced_min_sizes=[128, 256, 512]
         )
-        
+
         # No reduced versions (image too small), just upscale
         assert len(images) >= 1
