@@ -10,9 +10,12 @@ Training tools and scripts for FluxFlow text-to-image generation models.
 pip install fluxflow-training
 ```
 
-This will automatically install `fluxflow` core package as a dependency.
+**What gets installed:**
+- `fluxflow-training` - Training scripts and configuration tools
+- `fluxflow` core package (automatically installed as dependency)
+- CLI commands: `fluxflow-train`, `fluxflow-generate`
 
-**Note**: Check [PyPI](https://pypi.org/project/fluxflow-training/) for current availability. If not yet published, use development installation below.
+**Package available on PyPI**: [fluxflow-training v0.1.0](https://pypi.org/project/fluxflow-training/)
 
 ### Development Install
 
@@ -26,7 +29,7 @@ pip install -e ".[dev]"
 
 ## 🚧 Training Status
 
-**Models Currently In Training**: FluxFlow is actively training models following the systematic [TRAINING_VALIDATION_PLAN.md](../TRAINING_VALIDATION_PLAN.md).
+**Models Currently In Training**: FluxFlow is actively training models following the systematic [TRAINING_VALIDATION_PLAN.md](https://github.com/danny-mio/fluxflow-core/blob/main/TRAINING_VALIDATION_PLAN.md).
 
 **Current Phase**: Phase 1 - VAE Training (Weeks 1-4)
 
@@ -35,7 +38,7 @@ pip install -e ".[dev]"
 - ⏳ ReLU baseline VAE pending
 - ⏳ Flow models pending VAE completion
 
-**When Available**: Trained checkpoints and empirical performance metrics will be published to [MODEL_ZOO.md](../MODEL_ZOO.md) upon validation completion.
+**When Available**: Trained checkpoints and empirical performance metrics will be published to [MODEL_ZOO.md](https://github.com/danny-mio/fluxflow-core/blob/main/MODEL_ZOO.md) upon validation completion.
 
 **Note**: All performance claims in documentation are theoretical targets pending empirical validation.
 
