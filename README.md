@@ -15,7 +15,7 @@ pip install fluxflow-training
 - `fluxflow` core package (automatically installed as dependency)
 - CLI commands: `fluxflow-train`, `fluxflow-generate`
 
-**Package available on PyPI**: [fluxflow-training v0.1.0](https://pypi.org/project/fluxflow-training/)
+**Package available on PyPI**: [fluxflow-training v0.1.1](https://pypi.org/project/fluxflow-training/)
 
 ### Development Install
 
