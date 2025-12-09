@@ -194,9 +194,7 @@ class TestParseArgsIntegration:
             },
         }
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(config, f)
             config_path = f.name
 
@@ -308,9 +306,7 @@ class TestEndToEndPipelineValidation:
         }
 
         # Write config to temp file
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             yaml.dump(config, f)
             config_path = f.name
 
