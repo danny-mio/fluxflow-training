@@ -1042,6 +1042,297 @@ The training script automatically saves:
 - `training_states.pt`: Optimizer, scheduler, EMA states
 - `sampler_state.pt`: Data sampler state
 
+## Pipeline Training Mode
+
+**New in v0.2.0**: Multi-step pipeline training allows you to define sequential training phases with different configurations.
+
+### What is Pipeline Training?
+
+Pipeline training breaks your training workflow into multiple sequential steps, each with its own:
+- Training mode (VAE-only, GAN-only, Flow-only, or combinations)
+- Learning rate and scheduler
+- Freeze/unfreeze configurations
+- Loss threshold transitions
+
+### When to Use Pipeline Training
+
+**Use pipeline training for:**
+- **Hypothesis testing**: Compare different training strategies (e.g., SPADE OFF → SPADE ON)
+- **Staged training**: VAE warmup → GAN training → Flow training
+- **Selective freezing**: Train components independently
+- **Loss-based transitions**: Automatically move to next step when loss threshold is met
+
+**Use standard training for:**
+- Simple single-mode training (VAE-only or Flow-only)
+- Quick experiments
+- Resume training with same configuration
+
+### Quick Start: Pipeline Training
+
+**Example 1: VAE Warmup → GAN Training**
+
+```yaml
+# config.yaml
+data:
+  data_path: "/path/to/images"
+  captions_file: "/path/to/captions.txt"
+
+training:
+  batch_size: 4
+  output_path: "outputs/pipeline_training"
+  
+  pipeline:
+    steps:
+      - name: "vae_warmup"
+        n_epochs: 10
+        train_vae: true
+        gan_training: false
+        lr: 1e-5
+        
+      - name: "vae_with_gan"
+        n_epochs: 40
+        train_vae: true
+        gan_training: true
+        lr: 1e-5
+        stop_condition:
+          loss_name: "loss_recon"
+          threshold: 0.01
+```
+
+**Run:**
+```bash
+fluxflow-train --config config.yaml
+```
+
+**Example 2: Multi-Stage with Different Optimizers**
+
+```yaml
+training:
+  batch_size: 2
+  
+  pipeline:
+    steps:
+      # Step 1: VAE warmup with Adam
+      - name: "vae_warmup"
+        n_epochs: 10
+        train_vae: true
+        gan_training: false
+        optim_sched_config: "configs/adam_warmup.json"
+        
+      # Step 2: GAN training with Lion
+      - name: "gan_training"
+        n_epochs: 30
+        train_vae: true
+        gan_training: true
+        train_spade: true
+        optim_sched_config: "configs/lion_gan.json"
+        
+      # Step 3: Flow training
+      - name: "flow_training"
+        n_epochs: 100
+        train_diff_full: true
+        freeze_vae: true  # Freeze VAE, train flow only
+        optim_sched_config: "configs/lion_flow.json"
+```
+
+**Optimizer config example (lion_gan.json):**
+```json
+{
+  "optimizers": {
+    "vae": {
+      "type": "Lion",
+      "lr": 5e-6,
+      "weight_decay": 0.01
+    },
+    "discriminator": {
+      "type": "AdamW",
+      "lr": 5e-6,
+      "betas": [0.0, 0.9],
+      "amsgrad": true
+    }
+  },
+  "schedulers": {
+    "vae": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1},
+    "discriminator": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1}
+  }
+}
+```
+
+### Pipeline-Specific Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `steps[].name` | str | Unique step identifier (used in logs, checkpoints) |
+| `steps[].n_epochs` | int | Epochs for this step only |
+| `steps[].max_steps` | int | Optional: max batches (for testing) |
+| `steps[].freeze_vae` | bool | Freeze VAE encoder/decoder |
+| `steps[].freeze_flow` | bool | Freeze flow model |
+| `steps[].freeze_text_encoder` | bool | Freeze text encoder |
+| `steps[].optim_sched_config` | str | Path to optimizer/scheduler config JSON |
+| `steps[].stop_condition.loss_name` | str | Loss to monitor (e.g., "loss_recon", "loss_flow") |
+| `steps[].stop_condition.threshold` | float | Exit step when loss < threshold |
+
+### Pipeline Features
+
+#### ✅ Per-Step Checkpoints
+- Each step saves its own checkpoints: `flxflow_step_vae_warmup_final.safetensors`
+- Resume from any step: automatically loads the last completed step
+- Step-specific metrics files: `outputs/graph/training_metrics_vae_warmup.jsonl`
+
+#### ✅ Selective Freezing
+- Freeze any combination of models between steps
+- Example: Train VAE in step 1, freeze it in step 2 for flow training
+- Gradients automatically disabled for frozen models
+
+#### ✅ Loss-Threshold Transitions
+- Automatically exit step when loss reaches target
+- Useful for adaptive training (exit VAE warmup when reconstruction is good enough)
+- Example: `stop_condition: {loss_name: "loss_recon", threshold: 0.01}`
+
+#### ✅ Inline Optimizer/Scheduler Configs
+- Different optimizers per step (e.g., Adam warmup → Lion training)
+- Different schedulers per step
+- Full control over per-model hyperparameters
+
+#### ✅ GAN-Only Training Mode
+- `train_reconstruction: false` - Train encoder/decoder with adversarial loss only
+- No pixel-level reconstruction loss computed
+- Use case: SPADE conditioning without reconstruction overhead
+- Example:
+  ```yaml
+  - name: "gan_only"
+    train_vae: true
+    gan_training: true
+    train_spade: true
+    train_reconstruction: false  # GAN-only mode
+  ```
+
+#### ✅ Full Resume Support
+- Resumes from last completed step
+- Preserves optimizer/scheduler/EMA states
+- Mid-step resume: continues from exact batch within step
+
+### Complete Pipeline Example
+
+```yaml
+# config.yaml - Complete 3-stage training pipeline
+data:
+  data_path: "/data/images"
+  captions_file: "/data/captions.txt"
+
+model:
+  vae_dim: 128
+  feature_maps_dim: 128
+  feature_maps_dim_disc: 8
+
+training:
+  batch_size: 4
+  workers: 8
+  output_path: "outputs/full_pipeline"
+  checkpoint_save_interval: 100
+  
+  pipeline:
+    steps:
+      # Step 1: VAE reconstruction warmup (no GAN)
+      - name: "vae_warmup"
+        n_epochs: 10
+        train_vae: true
+        gan_training: false
+        train_spade: false
+        lr: 2e-5
+        kl_beta: 0.0001
+        stop_condition:
+          loss_name: "loss_recon"
+          threshold: 0.02  # Exit when reconstruction is good
+        
+      # Step 2: Add SPADE and GAN
+      - name: "vae_spade_gan"
+        n_epochs: 40
+        train_vae: true
+        gan_training: true
+        train_spade: true
+        lr: 1e-5
+        lambda_adv: 0.9
+        kl_beta: 0.001
+        optim_sched_config: "configs/lion_gan.json"
+        
+      # Step 3: Flow training (freeze VAE)
+      - name: "flow_training"
+        n_epochs: 100
+        train_diff_full: true
+        train_vae: false
+        freeze_vae: true
+        lr: 5e-7
+        sample_captions:
+          - "a photo of a cat sitting on a couch"
+          - "an illustration of mountains at sunset"
+        optim_sched_config: "configs/lion_flow.json"
+```
+
+**Run:**
+```bash
+fluxflow-train --config config.yaml
+```
+
+**Output structure:**
+```
+outputs/full_pipeline/
+├── flxflow_step_vae_warmup_final.safetensors
+├── flxflow_step_vae_spade_gan_final.safetensors
+├── flxflow_step_flow_training_final.safetensors
+├── graph/
+│   ├── training_metrics_vae_warmup.jsonl
+│   ├── training_metrics_vae_spade_gan.jsonl
+│   ├── training_metrics_flow_training.jsonl
+│   ├── training_losses_vae_warmup.png
+│   ├── training_losses_vae_spade_gan.png
+│   └── training_losses_flow_training.png
+└── samples/
+    ├── sample_vae_warmup_epoch_5_batch_100.png
+    ├── sample_vae_spade_gan_epoch_20_batch_500.png
+    └── sample_flow_training_epoch_50_batch_1000.png
+```
+
+### Pipeline vs. Standard Training
+
+| Feature | Standard Training | Pipeline Training |
+|---------|------------------|------------------|
+| Configuration | CLI args | YAML config |
+| Stages | Single mode | Multiple sequential steps |
+| Per-step checkpoints | ❌ | ✅ |
+| Per-step optimizers | ❌ | ✅ |
+| Selective freezing | Manual | Per-step config |
+| Loss-based transitions | Manual | Automatic |
+| Hypothesis testing | Requires multiple runs | Single run |
+| Resume mid-pipeline | ❌ | ✅ |
+
+**Recommendation**: Use pipeline mode for production training, standard mode for quick tests.
+
+### Troubleshooting Pipeline Training
+
+**Issue**: Pipeline doesn't start / "No pipeline steps defined"
+- **Solution**: Ensure `training.pipeline.steps` exists in YAML config
+- **Check**: `steps` must be a list with at least one entry
+
+**Issue**: Step checkpoint not found when resuming
+- **Solution**: Pipeline automatically loads last completed step
+- **Check**: Look for `flxflow_step_<name>_final.safetensors` in output directory
+
+**Issue**: Loss-based stop condition never triggers
+- **Solution**: Check `loss_name` matches actual logged loss key
+- **Valid keys**: `loss_recon`, `loss_kl`, `loss_flow`, `loss_gen`, `loss_disc`
+- **Check logs**: See current loss values in console output
+
+**Issue**: Optimizer config not loading
+- **Solution**: Verify JSON file path is correct and valid
+- **Check**: Run `python -m json.tool <config.json>` to validate JSON
+
+**Issue**: Models not freezing
+- **Solution**: Ensure `freeze_vae`, `freeze_flow`, or `freeze_text_encoder` is set to `true` (not `True`)
+- **Check logs**: Should see "Freezing <model_name>" in output
+
+---
+
 ## Training Strategies
 
 ### Recommended 3-Stage Training

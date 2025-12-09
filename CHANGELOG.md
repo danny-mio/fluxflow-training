@@ -4,6 +4,126 @@ All notable changes to FluxFlow Training will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.0] - 2024-12-09
+
+### 🚀 Major Features
+
+#### Pipeline Training Mode (NEW)
+- **Multi-step sequential training** with per-step configuration
+  - Define training stages in YAML config (warmup → GAN → flow, etc.)
+  - Each step has its own: epochs, training modes, optimizers, schedulers
+  - Automatic step detection and orchestration
+- **Per-step freeze/unfreeze** for selective component training
+  - `freeze_vae`, `freeze_flow`, `freeze_text_encoder` per step
+  - Gradients automatically disabled for frozen models
+- **Loss-threshold transitions** for adaptive training
+  - Exit step when loss reaches target (e.g., `loss_recon < 0.01`)
+  - Automatic progression to next step
+- **Inline optimizer/scheduler configs** per step
+  - Different optimizers per step (e.g., Adam warmup → Lion training)
+  - Full per-model hyperparameter control via JSON config files
+- **Per-step checkpoints and metrics**
+  - Step-specific checkpoints: `flxflow_step_<name>_final.safetensors`
+  - Step-specific metrics: `training_metrics_<step_name>.jsonl`
+  - Step-specific diagrams: `training_losses_<step_name>.png`
+- **Full resume support** mid-pipeline
+  - Automatically loads last completed step
+  - Preserves optimizer/scheduler/EMA states across steps
+
+#### GAN-Only Training Mode (NEW)
+- **`train_reconstruction` parameter** (default: `true`)
+  - Set to `false` to train encoder/decoder with adversarial loss only
+  - No pixel-level reconstruction loss computed
+  - Use case: SPADE conditioning without reconstruction overhead
+- **Integrated with pipeline mode**
+  - Example: GAN-only warmup → full VAE+GAN training
+
+### ✨ Enhanced Logging & Monitoring
+
+- **Batch timing** with `Xs/batch` in console output
+- **Step-specific progress files** for pipeline mode
+  - Each step writes to its own `training_metrics_<step_name>.jsonl`
+- **Correct GAN loss keys** in logs
+  - `loss_gen` (generator loss) and `loss_disc` (discriminator loss)
+  - Previously logged with inconsistent keys
+- **Mid-epoch sample generation** with batch numbers in filenames
+  - Sample naming: `sample_<step>_epoch_<N>_batch_<M>.png`
+  - Re-enabled after temporary disable in v0.1.x
+
+### 🐛 Bug Fixes
+
+- **GAN-only mode fixes**
+  - Fixed encoder gradients not flowing when `train_reconstruction=false`
+  - Fixed VAE trainer not called when `train_vae=false` but GAN enabled
+  - Fixed EMA not created for GAN-only mode
+  - Fixed metrics/console logging for GAN-only (check buffer instead of `train_vae` flag)
+- **Pipeline mode fixes**
+  - Fixed checkpoint resume state tracking for multi-step pipelines
+  - Fixed diagram generation for step-specific metrics files
+  - Fixed FloatBuffer attribute error (`count` → `len(_items)`)
+- **Sample generation fixes**
+  - Fixed sample file renaming conflicts
+  - Use epoch instead of batch in primary sample filenames
+  - Add step/epoch/batch naming for clarity
+
+### 📊 Diagram Generation Improvements
+
+- **Pipeline-aware diagram generation**
+  - Generates separate diagrams per pipeline step
+  - Aggregates metrics across steps for overview
+- **Step-specific graphs**
+  - Loss curves per step for focused analysis
+  - Learning rate schedules per step
+
+### 🧪 Testing
+
+- **Comprehensive unit tests** for logging output
+  - All config combinations tested (VAE, GAN, Flow, Pipeline)
+  - 61/61 tests passing
+- **Unit tests for `train_reconstruction` parameter**
+  - Validates GAN-only mode behavior
+  - Ensures encoder gradients flow correctly
+
+### 📚 Documentation
+
+- **New**: `docs/PIPELINE_ARCHITECTURE.md` (547 lines)
+  - Complete pipeline training guide
+  - Configuration reference with examples
+  - Troubleshooting guide
+  - GAN-only mode documentation
+- **Updated**: `README.md`
+  - Pipeline training mode section
+  - GAN-only mode section
+  - Enhanced console output examples
+  - Sample naming conventions
+  - v0.2.0 features highlighted
+- **Updated**: `docs/TRAINING_GUIDE.md`
+  - 100+ line pipeline training section
+  - Quick start examples
+  - Pipeline vs. standard training comparison
+  - Complete 3-stage pipeline example
+- **Updated**: `CONTRIBUTING.md`
+  - Pipeline testing guidance
+  - Step-by-step contribution workflow
+
+### 🛠️ Technical Improvements
+
+- **Max steps parameter** for quick testing
+  - `max_steps` CLI arg and pipeline config
+  - Exit training after N batches (useful for CI/testing)
+- **Step/epoch/batch naming** for sample images
+  - Clear provenance for generated samples
+  - Easier correlation with training logs
+
+### 📦 Configuration
+
+- **YAML-first configuration** for pipeline mode
+  - CLI args still supported for standard training
+  - Pipeline mode requires YAML config file
+- **Backward compatibility**
+  - All existing CLI args still work
+  - Standard training mode unchanged
+
 ## [Unreleased]
 
 ### Added

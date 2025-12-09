@@ -1,454 +1,547 @@
 # Pipeline Training Architecture
 
+**Status**: ✅ **FULLY IMPLEMENTED** (v0.2.0)
+
 ## Overview
 
-Multi-step training pipelines allow sequential training phases with different configurations, enabling hypothesis testing (e.g., SPADE OFF → SPADE ON) and complex training strategies.
+Multi-step training pipelines allow sequential training phases with different configurations, enabling:
+- **Hypothesis testing** (e.g., SPADE OFF → SPADE ON, GAN-only → VAE+GAN)
+- **Staged training** (VAE warmup → Flow training)
+- **Per-step optimization** (different learning rates, schedulers per phase)
+- **Selective freezing** (freeze encoder in one step, unfreeze in next)
 
-## Current Status
+## Quick Start
 
-- ✅ **Phase 1**: Pipeline config parsing and validation
-- ✅ **Phase 2**: train.py integration and dry-run validation
-- ⏸️ **Phase 3**: Full pipeline execution (architecture documented, implementation deferred)
+### Minimal Pipeline Example
 
-## Architecture
-
-### Components
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        train.py                              │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ main()                                                 │  │
-│  │  ├─ detect_config_mode()                              │  │
-│  │  ├─ validate_and_show_plan() [if --validate-pipeline]│  │
-│  │  └─ train_pipeline() or train_legacy()               │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                               │
-                               ├─ Legacy Mode
-                               │  └─ train_legacy() - existing training loop
-                               │
-                               └─ Pipeline Mode
-                                  └─ train_pipeline()
-                                       │
-                                       ▼
-┌────────────────────────────────────────────────────────────────┐
-│              TrainingPipelineOrchestrator                       │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ __init__(pipeline_config, checkpoint_manager,           │  │
-│  │          accelerator, device)                           │  │
-│  │                                                          │  │
-│  │ run(models, dataloader, tokenizer, args, config)        │  │
-│  │  ├─ resume_from_checkpoint() [if checkpoint exists]    │  │
-│  │  ├─ for each step in pipeline:                         │  │
-│  │  │    ├─ configure_step_models() [freeze/unfreeze]     │  │
-│  │  │    ├─ create_step_optimizers()                      │  │
-│  │  │    ├─ create_step_schedulers()                      │  │
-│  │  │    ├─ create_step_trainers() [VAE/Flow]            │  │
-│  │  │    ├─ for epoch in range(step.n_epochs):           │  │
-│  │  │    │    ├─ train_epoch()                           │  │
-│  │  │    │    ├─ update_metrics()                        │  │
-│  │  │    │    ├─ should_transition()                     │  │
-│  │  │    │    └─ save_checkpoint() [with pipeline meta]  │  │
-│  │  │    └─ cleanup optimizers/schedulers                │  │
-│  │  └─ print_pipeline_summary()                           │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────┘
+```yaml
+training:
+  pipeline:
+    steps:
+      - name: "vae_warmup"
+        n_epochs: 10
+        train_vae: true
+        gan_training: false
+        
+      - name: "vae_gan"
+        n_epochs: 20
+        train_vae: true
+        gan_training: true
 ```
 
-### Data Flow
+### Run Pipeline Training
 
-```
-Config (YAML)
-    │
-    ├─ parse_pipeline_config() → PipelineConfig
-    │                              │
-    │                              ├─ steps: [PipelineStepConfig, ...]
-    │                              └─ defaults: PipelineStepConfig
-    │
-    ▼
-train_pipeline(args, config)
-    │
-    ├─ Initialize models (diffuser, text_encoder, discriminator)
-    ├─ Initialize dataset/dataloader
-    ├─ Initialize checkpoint_manager, accelerator
-    │
-    ▼
-TrainingPipelineOrchestrator.run(models, dataloader, ...)
-    │
-    ├─ Resume from checkpoint [optional]
-    │   └─ Restore: step_index, epoch, batch_idx
-    │
-    └─ For each step in pipeline:
-        │
-        ├─ Configure step
-        │   ├─ Freeze/unfreeze models per step config
-        │   ├─ Create optimizers (inline YAML config)
-        │   ├─ Create schedulers (inline YAML config)
-        │   └─ Create trainers (VAETrainer, FlowTrainer)
-        │
-        ├─ Train step
-        │   └─ For epoch in range(step.n_epochs):
-        │       ├─ For batch in dataloader:
-        │       │   ├─ vae_trainer.train_step() [if step.train_vae]
-        │       │   ├─ flow_trainer.train_step() [if step.train_flow]
-        │       │   ├─ update_metrics({"vae_loss": ..., "flow_loss": ...})
-        │       │   └─ log progress
-        │       │
-        │       ├─ Check transition_criteria
-        │       │   ├─ Mode: "epoch" → transition after n_epochs
-        │       │   └─ Mode: "loss_threshold" → transition if loss < threshold
-        │       │
-        │       └─ Save checkpoint
-        │           └─ Include pipeline metadata:
-        │               ├─ current_step_index
-        │               ├─ current_step_name
-        │               ├─ step_epoch
-        │               ├─ total_pipeline_progress
-        │               └─ pipeline_config (for resume)
-        │
-        └─ Cleanup
-            └─ Delete optimizers/schedulers (free memory)
+```bash
+fluxflow-train --config config.yaml
 ```
 
-## Implementation Plan
+Pipeline mode is automatically detected when `training.pipeline.steps` is present in config.
 
-### Phase 3b.1: Extract Helper Functions (HIGH PRIORITY)
+---
 
-Create reusable initialization helpers in `train.py`:
+## Configuration Reference
+
+### Pipeline Structure
+
+```yaml
+training:
+  # Global training settings
+  batch_size: 4
+  workers: 8
+  
+  pipeline:
+    # Optional: Global defaults for all steps
+    defaults:
+      freeze:
+        - text_encoder
+      optimization:
+        optimizers:
+          vae:
+            type: "AdamW"
+            lr: 0.0001
+    
+    # Required: List of training steps
+    steps:
+      - name: "step1"
+        n_epochs: 10
+        # ... step config
+      
+      - name: "step2"
+        n_epochs: 5
+        # ... step config
+```
+
+### Step Configuration
+
+#### Required Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `str` | Unique step identifier (used in checkpoints, samples) |
+| `n_epochs` | `int` | Number of epochs for this step |
+
+#### Training Modes
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `train_vae` | `bool` | `false` | Train VAE encoder/decoder with reconstruction loss |
+| `train_spade` | `bool` | `false` | Use SPADE conditioning in decoder |
+| `gan_training` | `bool` | `false` | Train GAN discriminator |
+| `use_lpips` | `bool` | `false` | Add LPIPS perceptual loss |
+| `train_diff` | `bool` | `false` | Train flow processor (partial) |
+| `train_diff_full` | `bool` | `false` | Train flow processor (full) |
+
+#### Special Training Modes
+
+**GAN-Only Mode** (train encoder/decoder with adversarial loss, no reconstruction):
+```yaml
+train_vae: false          # Don't compute reconstruction loss  
+gan_training: true        # Train GAN discriminator
+train_spade: true         # Optional: SPADE conditioning
+```
+
+**Reconstruction Training** (VAE only, no GAN):
+```yaml
+train_vae: true
+gan_training: false
+use_lpips: true           # Optional: perceptual loss
+```
+
+#### Model Freezing
+
+```yaml
+freeze:
+  - compressor
+  - expander
+  - flow_processor
+  - text_encoder
+  - discriminator
+
+unfreeze:  # Explicit unfreeze (overrides freeze)
+  - compressor
+```
+
+#### Loss Weights
+
+```yaml
+kl_beta: 0.0001           # KL divergence weight
+kl_warmup_steps: 5000     # Steps to reach full kl_beta
+kl_free_bits: 0.0         # Free bits threshold (nats)
+lambda_adv: 0.5           # GAN adversarial loss weight
+lambda_lpips: 0.1         # LPIPS perceptual loss weight
+```
+
+#### Optimization (Per-Step)
+
+```yaml
+optimization:
+  optimizers:
+    vae:
+      type: "AdamW"
+      lr: 0.0001
+      betas: [0.9, 0.999]
+      weight_decay: 0.01
+    discriminator:
+      type: "AdamW"
+      lr: 0.0001
+    flow:
+      type: "AdamW"
+      lr: 0.00005
+    text_encoder:
+      type: "SGD"
+      lr: 0.00001
+      momentum: 0.9
+  
+  schedulers:
+    vae:
+      type: "CosineAnnealingLR"
+      eta_min_factor: 0.1
+    discriminator:
+      type: "StepLR"
+      step_size: 10
+      gamma: 0.5
+```
+
+**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`  
+**Supported Schedulers**: `CosineAnnealingLR`, `StepLR`, `ExponentialLR`, `ReduceLROnPlateau`
+
+#### Transition Criteria
+
+Control when to move to the next step:
+
+**Epoch-based (default)**:
+```yaml
+transition_on:
+  mode: "epoch"
+  # Automatically transitions after n_epochs completes
+```
+
+**Loss threshold**:
+```yaml
+transition_on:
+  mode: "loss_threshold"
+  metric: "vae_loss"       # Metric to monitor
+  threshold: 0.05          # Transition when metric < threshold
+  max_epochs: 50           # Safety limit (prevent infinite training)
+```
+
+**Supported metrics**: `vae_loss`, `kl_loss`, `flow_loss`, `g_loss`, `d_loss`
+
+#### Testing/Debugging
+
+```yaml
+max_steps: 30             # Limit batches per epoch (for quick testing)
+```
+
+---
+
+## Architecture Components
+
+### TrainingPipelineOrchestrator
+
+Main class coordinating multi-step training.
+
+**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py`
+
+**Key Methods**:
+- `run()` - Execute complete pipeline
+- `configure_step_models()` - Freeze/unfreeze models per step
+- `should_transition()` - Check transition criteria
+- `update_metrics()` - Track smoothed metrics for loss thresholds
+
+### PipelineConfig
+
+Dataclass representing pipeline configuration.
+
+**Location**: `src/fluxflow_training/training/pipeline_config.py`
+
+**Validation**: `PipelineConfigValidator` checks:
+- Step names are unique
+- Freeze/unfreeze don't conflict
+- Training modes are valid
+- Optimizer/scheduler types are supported
+- Transition criteria are properly configured
+
+---
+
+## Checkpoint Format
+
+Pipeline checkpoints include step-local state:
 
 ```python
-def initialize_models(args, device):
-    """Initialize FluxFlow models from config."""
-    text_encoder = BertTextEncoder(...)
-    compressor = FluxCompressor(...)
-    expander = FluxExpander(...)
-    flow_processor = FluxFlowProcessor(...)
-    diffuser = FluxPipeline(compressor, flow_processor, expander)
-    D_img = PatchDiscriminator(...)
-    
-    # Move to device
-    diffuser.to(device)
-    text_encoder.to(device)
-    D_img.to(device)
-    
-    return {
-        "diffuser": diffuser,
-        "compressor": compressor,
-        "expander": expander,
-        "flow_processor": flow_processor,
-        "text_encoder": text_encoder,
-        "D_img": D_img,
+{
+  "epoch": 42,              # Global epoch counter
+  "global_step": 12847,     # Global step counter
+  "models": {...},          # Model state dicts
+  "optimizers": {...},      # Optimizer state
+  "schedulers": {...},      # Scheduler state
+  "ema": {...},            # EMA state
+  
+  # Pipeline-specific metadata
+  "pipeline_metadata": {
+    "current_step": 2,                  # Step index (0-based)
+    "current_step_name": "vae_gan",     # Step name
+    "step_start_epoch": 30,             # When this step started
+    "current_step_epoch": 12,           # Epoch within current step
+    "step_metrics": {                   # Per-step metric history
+      "vae_warmup": {"vae_loss": [...], "kl_loss": [...]},
+      "vae_gan": {"vae_loss": [...], "g_loss": [...]}
     }
-
-def initialize_dataloader(args, tokenizer, device):
-    """Initialize dataset and dataloader from config."""
-    if args.use_webdataset:
-        dataset = StreamingWebDataset(...)
-        sampler = None
-    else:
-        dataset = TextImageDataset(...)
-        dimension_cache = get_or_build_dimension_cache(...)
-        sampler = ResumableDimensionSampler(...)
-    
-    dataloader = DataLoader(dataset, ...)
-    return dataloader, sampler
+  }
+}
 ```
 
-### Phase 3b.2: Implement Orchestrator.run() (CORE LOGIC)
+### Resume Behavior
 
-```python
-def run(self, models, dataloader, tokenizer, args, config):
-    """Execute complete training pipeline.
-    
-    Args:
-        models: Dict of initialized models
-        dataloader: Initialized DataLoader
-        tokenizer: Tokenizer for text processing
-        args: CLI arguments
-        config: Full YAML config dict
-    """
-    # Resume from checkpoint
-    start_step, start_epoch, start_batch = self.resume_from_checkpoint()
-    
-    # Initialize progress logger
-    progress_logger = TrainingProgressLogger(args.output_path)
-    
-    # Main pipeline loop
-    for step_idx, step_config in enumerate(self.config.steps):
-        if step_idx < start_step:
-            continue  # Skip completed steps
-        
-        print(f"\n{'='*80}")
-        print(f"PIPELINE STEP {step_idx+1}/{len(self.config.steps)}: {step_config.name}")
-        print(f"{'='*80}\n")
-        
-        # Configure models for this step
-        self.configure_step_models(step_config)
-        
-        # Create optimizers
-        optimizers = self._create_step_optimizers(step_config, models)
-        
-        # Create schedulers
-        schedulers = self._create_step_schedulers(step_config, optimizers)
-        
-        # Prepare with accelerator
-        prepared = self.accelerator.prepare(*optimizers.values(), *schedulers.values())
-        # Unpack prepared objects...
-        
-        # Create trainers
-        trainers = self._create_step_trainers(step_config, models, optimizers, schedulers)
-        
-        # Training loop for this step
-        for epoch in range(start_epoch if step_idx == start_step else 0, step_config.n_epochs):
-            for batch_idx, (imgs, input_ids) in enumerate(dataloader):
-                # Skip batches if resuming mid-epoch
-                if step_idx == start_step and epoch == start_epoch and batch_idx < start_batch:
-                    continue
-                
-                # Train VAE
-                if step_config.train_vae and trainers.get("vae"):
-                    vae_losses = trainers["vae"].train_step(imgs)
-                    self.update_metrics("vae_loss", vae_losses["vae"])
-                
-                # Train Flow
-                if (step_config.train_diff or step_config.train_diff_full) and trainers.get("flow"):
-                    flow_losses = trainers["flow"].train_step(imgs, input_ids, attention_mask)
-                    self.update_metrics("flow_loss", flow_losses["flow_loss"])
-                
-                # Log progress
-                if batch_idx % args.log_interval == 0:
-                    self._log_progress(step_idx, epoch, batch_idx, args)
-                
-                # Save checkpoint
-                if batch_idx % args.checkpoint_save_interval == 0 and batch_idx > 0:
-                    self._save_checkpoint(step_idx, epoch, batch_idx, models, optimizers, schedulers)
-            
-            # Check transition criteria
-            if self.should_transition(step_config, epoch):
-                print(f"Transition criteria met, moving to next step")
-                break
-        
-        # Cleanup
-        del optimizers, schedulers, trainers
-        torch.cuda.empty_cache()
+When resuming from a pipeline checkpoint:
+1. Loads step index, epoch, and batch from metadata
+2. Skips completed steps
+3. Resumes from mid-step if training was interrupted
+4. Recreates optimizers/schedulers for current step
+5. Applies correct freeze/unfreeze configuration
+
+**Example**:
+```bash
+# Training interrupted at step 2, epoch 5, batch 127
+fluxflow-train --config config.yaml
+
+# Output:
+# Resuming from checkpoint: step=2 (vae_gan), epoch=5, batch=127
+# Skipping steps: vae_warmup, vae_spade_off
+# Starting step: vae_gan, epoch 5, batch 127
 ```
 
-### Phase 3b.3: Helper Methods
+---
 
-```python
-def _create_step_optimizers(self, step_config, models):
-    """Create optimizers for current step from inline config."""
-    optimizers = {}
-    
-    if not step_config.optimization or not step_config.optimization.optimizers:
-        return optimizers  # Use defaults or skip
-    
-    for name, opt_config in step_config.optimization.optimizers.items():
-        if name == "vae":
-            params = list(models["compressor"].parameters()) + list(models["expander"].parameters())
-        elif name == "flow":
-            params = models["flow_processor"].parameters()
-        elif name == "text_encoder":
-            params = models["text_encoder"].parameters()
-        elif name == "discriminator":
-            params = models["D_img"].parameters()
-        else:
-            continue
-        
-        # Create optimizer from config
-        optimizer = create_optimizer(params, opt_config)
-        optimizers[name] = optimizer
-    
-    return optimizers
+## Sample Naming Convention
 
-def _create_step_schedulers(self, step_config, optimizers):
-    """Create schedulers for current step from inline config."""
-    schedulers = {}
-    
-    if not step_config.optimization or not step_config.optimization.schedulers:
-        return schedulers
-    
-    # Calculate total steps for this step
-    total_steps = step_config.n_epochs * len(self.dataloader)
-    
-    for name, sched_config in step_config.optimization.schedulers.items():
-        if name not in optimizers:
-            continue
-        
-        scheduler = create_scheduler(optimizers[name], sched_config, total_steps)
-        schedulers[name] = scheduler
-    
-    return schedulers
+Pipeline mode uses structured naming for samples:
 
-def _create_step_trainers(self, step_config, models, optimizers, schedulers):
-    """Create trainers for current step."""
-    trainers = {}
-    
-    if step_config.train_vae and "vae" in optimizers:
-        trainers["vae"] = VAETrainer(
-            compressor=models["compressor"],
-            expander=models["expander"],
-            optimizer=optimizers["vae"],
-            scheduler=schedulers.get("vae"),
-            use_spade=step_config.train_spade,
-            discriminator=models["D_img"] if step_config.gan_training else None,
-            discriminator_optimizer=optimizers.get("discriminator"),
-            discriminator_scheduler=schedulers.get("discriminator"),
-            accelerator=self.accelerator,
-            # ... other params from step_config
-        )
-    
-    if (step_config.train_diff or step_config.train_diff_full) and "flow" in optimizers:
-        trainers["flow"] = FlowTrainer(
-            flow_processor=models["flow_processor"],
-            text_encoder=models["text_encoder"],
-            compressor=models["compressor"],
-            optimizer=optimizers["flow"],
-            scheduler=schedulers.get("flow"),
-            text_encoder_optimizer=optimizers.get("text_encoder"),
-            text_encoder_scheduler=schedulers.get("text_encoder"),
-            accelerator=self.accelerator,
-            # ... other params
-        )
-    
-    return trainers
+### Format
 
-def _save_checkpoint(self, step_idx, epoch, batch_idx, models, optimizers, schedulers):
-    """Save checkpoint with pipeline metadata."""
-    # Get pipeline metadata
-    metadata = self.get_pipeline_metadata(step_idx, epoch, batch_idx)
-    
-    # Save models
-    self.checkpoint_manager.save_models(
-        diffuser=models["diffuser"],
-        text_encoder=models["text_encoder"],
-        discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
-    )
-    
-    # Save training state with pipeline metadata
-    self.checkpoint_manager.save_training_state(
-        epoch=epoch,
-        batch_idx=batch_idx,
-        global_step=metadata["global_step"],
-        optimizers=optimizers,
-        schedulers=schedulers,
-        ema=None,  # TODO: Add EMA support
-        pipeline_metadata=metadata,
-    )
+**Mid-epoch samples** (generated every `checkpoint_save_interval` batches):
+```
+{stepname}_{step:03d}_{epoch:03d}_{batch:05d}_{hash}-{suffix}.webp
 ```
 
-### Phase 3b.4: Update train_pipeline()
-
-```python
-def train_pipeline(args, config):
-    """Pipeline-based training loop for FluxFlow."""
-    # ... existing initialization code ...
-    
-    # Initialize models
-    models = initialize_models(args, device)
-    
-    # Load checkpoints if resuming
-    if args.model_checkpoint and os.path.exists(args.model_checkpoint):
-        loaded_states = checkpoint_manager.load_models_parallel(checkpoint_path=args.model_checkpoint)
-        # Apply state dicts...
-    
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, ...)
-    
-    # Initialize dataloader
-    dataloader, sampler = initialize_dataloader(args, tokenizer, device)
-    
-    # Run pipeline
-    orchestrator.run(
-        models=models,
-        dataloader=dataloader,
-        tokenizer=tokenizer,
-        args=args,
-        config=config,
-    )
+**End-of-epoch samples**:
+```
+{stepname}_{step:03d}_{epoch:03d}_{hash}-{suffix}.webp
 ```
 
-## Testing Strategy
+### Examples
 
-### Unit Tests (Existing ✅)
-- ✅ Pipeline config parsing
-- ✅ Pipeline config validation
-- ✅ Orchestrator initialization
-- ✅ Model freeze/unfreeze
-- ✅ Metric tracking
-- ✅ Transition criteria evaluation
+```
+vae_warmup_001_001_00010_abc123-original.webp    # Step 1, epoch 1, batch 10
+vae_warmup_001_001_00020_abc123-ctx.webp         # Step 1, epoch 1, batch 20
+vae_warmup_001_001_abc123-nr_o.webp              # Step 1, epoch 1, end-of-epoch
+vae_gan_002_005_def456-original.webp             # Step 2, epoch 5, end-of-epoch
+```
 
-### Integration Tests (TODO)
-- [ ] Model initialization helper
-- [ ] Dataloader initialization helper
-- [ ] Single-step training (minimal)
-- [ ] Multi-step training (minimal)
-- [ ] Checkpoint save/resume with pipeline metadata
-- [ ] Transition criteria (loss threshold)
+### Suffix Meanings
 
-### End-to-End Tests (TODO)
-- [ ] Full 2-step pipeline on toy dataset
-- [ ] Resume from mid-step checkpoint
-- [ ] Validate SPADE ON/OFF hypothesis
+| Suffix | Description |
+|--------|-------------|
+| `-original` or `_ns_i` | Original input image |
+| `-nr_o` | VAE reconstruction output (no random sampling) |
+| `_ns_o` | VAE reconstruction with random sampling |
+| `-ctx` | Context vector visualization |
+| `-nc` | Non-context (image without context) |
 
-## Design Decisions
+---
 
-### Why separate initialization from orchestrator?
+## Logging Output
 
-**Pros:**
-- Orchestrator focuses on orchestration logic
-- Initialization can be reused between pipeline and legacy modes
-- Easier to test in isolation
-- Models can be pre-loaded with different strategies
+### Console Output Format
 
-**Cons:**
-- More parameters to pass to `run()`
-- Less self-contained
+```
+[HH:MM:SS] Step {name} ({idx}/{total}) | Epoch {e}/{n} | Batch {b}/{total} | VAE: X.XX | KL: X.XX | G: X.XX | D: X.XX | LPIPS: X.XX | Xs/batch
+```
 
-**Decision**: Separate initialization for flexibility and testability.
+**Example**:
+```
+[00:15:23] Step vae_gan (2/4) | Epoch 5/20 | Batch 127/500 | VAE: 0.0234 | KL: 12.45 | G: 0.156 | D: 0.089 | LPIPS: 0.0812 | 3.2s/batch
+```
 
-### Why inline YAML for optimizers/schedulers?
+### Metrics Shown by Training Mode
 
-**Pros:**
-- Single source of truth (no external JSON files)
-- Step-specific configurations visible in one place
-- Easier to version control
-- No file path management
+| Mode | Metrics Displayed |
+|------|-------------------|
+| `train_vae: true` | VAE, KL, (G, D if gan_training), (LPIPS if use_lpips) |
+| `train_vae: false, gan_training: true` | VAE (0.0), KL, G, D |
+| `train_diff: true` | Flow |
 
-**Cons:**
-- More verbose YAML
-- No config reuse across steps (but defaults handle this)
+### JSONL Metrics File
 
-**Decision**: Inline YAML for clarity and maintainability.
+Pipeline mode creates step-specific metrics files:
 
-### Why NotImplementedError for run()?
+```
+outputs/flux/graph/training_metrics_vae_warmup.jsonl
+outputs/flux/graph/training_metrics_vae_gan.jsonl
+outputs/flux/graph/training_metrics_flow.jsonl
+```
 
-**Pros:**
-- Honest about current state
-- Clear signal that work is needed
-- Validation and planning work is still valuable
-- Allows incremental implementation
+**Format**:
+```json
+{
+  "timestamp": "2025-12-09T17:30:45.123456",
+  "session_id": "20251209_173000",
+  "epoch": 5,
+  "batch": 127,
+  "global_step": 2847,
+  "metrics": {
+    "vae_loss": 0.0234,
+    "kl_loss": 12.45,
+    "g_loss": 0.156,
+    "d_loss": 0.089,
+    "lpips_loss": 0.0812
+  }
+}
+```
 
-**Cons:**
-- Feature not usable yet
-- May disappoint users
+---
 
-**Decision**: Pragmatic approach - document architecture thoroughly, implement incrementally.
+## Validation
 
-## Next Steps (Priority Order)
+Validate pipeline config before training:
 
-1. **Extract initialization helpers** from train_legacy() - enables code reuse
-2. **Implement orchestrator._create_step_optimizers()** - critical for per-step configs
-3. **Implement orchestrator._create_step_schedulers()** - critical for per-step configs
-4. **Implement orchestrator._create_step_trainers()** - critical for per-step training
-5. **Implement orchestrator training loop** - core execution logic
-6. **Add integration tests** - verify end-to-end flow
-7. **Update documentation** - user guide and migration path
+```bash
+fluxflow-train --config pipeline.yaml --validate-pipeline
+```
 
-## References
+**Checks**:
+- ✅ YAML syntax valid
+- ✅ Required fields present (`name`, `n_epochs`)
+- ✅ Step names unique
+- ✅ Training modes valid (at least one enabled)
+- ✅ Freeze/unfreeze no conflicts
+- ✅ Optimizer types supported
+- ✅ Scheduler types supported
+- ✅ Transition criteria valid
+- ✅ Loss threshold metrics exist
 
-- [Pipeline Config](../src/fluxflow_training/training/pipeline_config.py)
-- [Pipeline Orchestrator](../src/fluxflow_training/training/pipeline_orchestrator.py)
-- [Train Script](../src/fluxflow_training/scripts/train.py)
-- [Config Example](../config.example.yaml)
+**Example Output**:
+```
+✅ Pipeline validation passed!
+
+Pipeline Summary:
+  Total steps: 4
+  Total epochs: 85
+  
+Step 1: vae_warmup (10 epochs)
+  Training: VAE
+  Freeze: flow_processor, text_encoder
+  
+Step 2: vae_gan (20 epochs)
+  Training: VAE, GAN
+  Transition: loss_threshold (vae_loss < 0.05, max 50 epochs)
+  
+...
+```
+
+---
+
+## Complete Example
+
+See `test_pipeline_minimal.yaml` for a working minimal example:
+
+```yaml
+training:
+  batch_size: 2
+  workers: 1
+  
+  pipeline:
+    steps:
+      - name: "vae_only"
+        n_epochs: 2
+        max_steps: 2              # Quick test: 2 batches only
+        train_vae: true
+        gan_training: false
+        freeze:
+          - flow_processor
+          - text_encoder
+        optimization:
+          optimizers:
+            vae:
+              type: "AdamW"
+              lr: 0.0001
+        transition_on:
+          mode: "epoch"
+      
+      - name: "vae_gan"
+        n_epochs: 2
+        max_steps: 2
+        train_vae: true
+        gan_training: true
+        freeze:
+          - flow_processor
+          - text_encoder
+        optimization:
+          optimizers:
+            vae:
+              type: "AdamW"
+              lr: 0.00005
+            discriminator:
+              type: "AdamW"
+              lr: 0.00005
+        transition_on:
+          mode: "epoch"
+```
+
+Run with:
+```bash
+fluxflow-train --config test_pipeline_minimal.yaml
+```
+
+---
+
+## Implementation Notes
+
+### Training Flow
+
+1. **Initialize**: Parse config, create checkpoint manager
+2. **Resume** (if checkpoint exists): Load step/epoch/batch from metadata
+3. **For each step**:
+   - Configure models (freeze/unfreeze)
+   - Create optimizers from inline config
+   - Create schedulers from inline config
+   - Create trainers (VAE, Flow)
+   - For each epoch:
+     - Training loop
+     - Update metrics
+     - Save checkpoint (mid-epoch + end-of-epoch)
+     - Generate samples
+   - Check transition criteria
+   - If threshold not met and `max_epochs` reached, log warning and transition
+4. **Complete**: Save final checkpoint
+
+### Gradient Flow in GAN-Only Mode
+
+When `train_vae: false` but `gan_training: true`:
+
+- **Encoder gradients**: KL divergence + GAN generator loss
+- **Decoder gradients**: GAN generator loss
+- **Discriminator gradients**: Hinge loss + R1 penalty
+
+The latent is **NOT detached** when `train_reconstruction=false`, allowing encoder to learn from GAN gradients.
+
+### EMA Handling
+
+EMA (Exponential Moving Average) is created when any of these are true:
+- `train_vae: true`
+- `gan_training: true`
+- `train_spade: true`
+- `use_lpips: true`
+
+This ensures EMA exists even in GAN-only mode.
+
+---
+
+## Troubleshooting
+
+### "AttributeError: 'list' object has no attribute 'get'"
+
+**Cause**: Missing `steps:` wrapper in config.
+
+**Fix**:
+```yaml
+# Wrong
+pipeline:
+  - name: "step1"
+
+# Correct
+pipeline:
+  steps:
+    - name: "step1"
+```
+
+### "AttributeError: 'NoneType' object has no attribute 'update'" (EMA)
+
+**Cause**: Bug in versions < 0.2.0 where EMA wasn't created for GAN-only mode.
+
+**Fix**: Upgrade to v0.2.0+ or set `train_vae: true`.
+
+### Empty metrics in JSONL file
+
+**Cause**: Bug in versions < 0.2.0 where VAE trainer wasn't called when `train_vae: false`.
+
+**Fix**: Upgrade to v0.2.0+.
+
+### Samples not updating during training
+
+**Cause**: Mid-epoch sample generation was disabled in early versions.
+
+**Fix**: Upgrade to v0.2.0+ where mid-epoch samples respect `checkpoint_save_interval`.
+
+---
+
+## Related Documentation
+
+- [README.md](../README.md) - Quick start and features
+- [TRAINING_GUIDE.md](TRAINING_GUIDE.md) - Detailed training strategies
+- [CONTRIBUTING.md](../CONTRIBUTING.md) - Development guide
+
+---
+
+**Last Updated**: 2025-12-09  
+**Version**: 0.2.0
