@@ -808,8 +808,12 @@ class TrainingPipelineOrchestrator:
             schedulers = self._create_step_schedulers(step, optimizers, total_steps)
 
             # Create EMA if training VAE
+            # Create EMA if we need VAE trainer (for VAE, GAN, SPADE, or LPIPS)
+            needs_vae_trainer = (
+                step.train_vae or step.gan_training or step.train_spade or step.use_lpips
+            )
             ema = None
-            if step.train_vae:
+            if needs_vae_trainer:
                 ema = EMA(
                     nn.ModuleList([models["compressor"], models["expander"]]),
                     decay=0.999,

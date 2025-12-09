@@ -289,8 +289,9 @@ class VAETrainer:
         if self.use_lpips:
             losses["lpips"] = gen_losses["lpips"]
 
-        # Update EMA
-        self.ema.update()
+        # Update EMA (if available)
+        if self.ema is not None:
+            self.ema.update()
 
         # Step schedulers (ReduceLROnPlateau requires metric, others don't)
         total_loss = gen_losses["vae"]  # Use recon_loss for scheduler
