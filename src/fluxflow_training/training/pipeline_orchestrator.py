@@ -626,26 +626,19 @@ class TrainingPipelineOrchestrator:
                         self.device,
                     )
 
-                    # Rename files to include step/epoch/batch info
-                    # Pattern: <base>_recon_epoch_<N>.<ext> → <prefix>_<hash>-<suffix>.<ext>
-                    base_name = os.path.splitext(os.path.basename(img_addr))[0]
-                    pattern = os.path.join(
-                        args.output_path, f"{base_name}_*_epoch_{sample_epoch}.*"
-                    )
+                    # Rename files to include step/epoch info
+                    # Pattern: vae_epoch_0031-{hash}-{suffix}.webp → {prefix}_{hash}-{suffix}.webp
+                    pattern = os.path.join(args.output_path, f"vae_epoch_{sample_epoch:04d}-*.webp")
                     for old_file in glob.glob(pattern):
                         old_filename = os.path.basename(old_file)
-                        # Extract hash and suffix (e.g., "cd7a10cde99011c1e6cb6770fa3834eb-ctx.webp")
-                        parts = old_filename.split("_epoch_")[0].split("_")
-                        if len(parts) >= 2:
-                            hash_suffix = "_".join(parts[1:])  # Everything after base name
-                        else:
-                            hash_suffix = parts[0] if parts else "unknown"
+                        # Extract hash and suffix: "vae_epoch_0031-cd7a10...-ctx.webp"
+                        # Split on first '-' after epoch number
+                        parts = old_filename.replace(f"vae_epoch_{sample_epoch:04d}-", "")
+                        # parts = "cd7a10...-ctx.webp"
+                        hash_suffix = parts.replace(".webp", "")
 
-                        # Get file extension
-                        ext = os.path.splitext(old_file)[1]
-
-                        # New filename: stepname_step_epoch_batch_hash-suffix.ext
-                        new_filename = f"{sample_prefix}_{hash_suffix}{ext}"
+                        # New filename: stepname_step_epoch_hash-suffix.webp
+                        new_filename = f"{sample_prefix}_{hash_suffix}.webp"
                         new_file = os.path.join(args.output_path, new_filename)
 
                         os.rename(old_file, new_file)
@@ -959,21 +952,8 @@ class TrainingPipelineOrchestrator:
                             step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
                         )
 
-                        # Generate samples at checkpoint intervals
-                        if (
-                            hasattr(args, "samples_per_checkpoint")
-                            and args.samples_per_checkpoint > 0
-                        ):
-                            self._generate_samples(
-                                step,
-                                step_idx,
-                                epoch,
-                                batch_idx,
-                                models,
-                                tokenizer,
-                                args,
-                                parsed_sample_sizes,
-                            )
+                        # Note: Mid-epoch sample generation disabled
+                        # Samples only generated at end of epoch to avoid duplicates
 
                 # End-of-epoch checkpoint (always save after completing an epoch)
                 epoch_time = time.time() - epoch_start_time
