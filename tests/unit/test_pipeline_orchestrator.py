@@ -22,7 +22,9 @@ def mock_models():
     models = {}
     for name in ["compressor", "expander", "flow_processor", "text_encoder", "discriminator"]:
         model = Mock(spec=nn.Module)
-        model.parameters = Mock(return_value=[Mock(spec=nn.Parameter, numel=Mock(return_value=1000))])
+        model.parameters = Mock(
+            return_value=[Mock(spec=nn.Parameter, numel=Mock(return_value=1000))]
+        )
         models[name] = model
     return models
 
@@ -96,7 +98,7 @@ class TestOrchestratorInitialization:
             dataloader=Mock(),
             dataset=Mock(),
         )
-        
+
         # Should initialize successfully
         assert orchestrator is not None
 
@@ -457,13 +459,14 @@ class TestPipelineMetadata:
         )
 
         orchestrator.steps_completed = ["step1"]
-        metadata = orchestrator.get_pipeline_metadata(step_index=1, epoch=15)
+        metadata = orchestrator.get_pipeline_metadata(step_index=1, step_epoch=3, batch_idx=42)
 
         assert metadata["current_step_index"] == 1
         assert metadata["current_step_name"] == "step2"
+        assert metadata["current_step_epoch"] == 3
+        assert metadata["current_batch_idx"] == 42
         assert metadata["total_steps"] == 2
         assert metadata["steps_completed"] == ["step1"]
-        assert metadata["step_start_epoch"] == 15
 
 
 class TestResumeFromCheckpoint:
@@ -520,15 +523,17 @@ class TestResumeFromCheckpoint:
     def test_resume_pipeline_checkpoint(
         self, simple_pipeline_config, mock_models, mock_checkpoint_manager
     ):
-        """Test resume from pipeline checkpoint."""
+        """Test resume from pipeline checkpoint with new format."""
         mock_checkpoint_manager.load_training_state.return_value = {
             "mode": "pipeline",
-            "epoch": 15,
+            "epoch": 3,  # This is step-local epoch
             "batch_idx": 75,
             "global_step": 2500,
             "pipeline": {
                 "current_step_index": 1,
                 "current_step_name": "step2",
+                "current_step_epoch": 3,  # Explicit step-local epoch
+                "current_batch_idx": 75,
                 "total_steps": 2,
                 "steps_completed": ["step1"],
             },
@@ -543,13 +548,48 @@ class TestResumeFromCheckpoint:
             dataset=Mock(),
         )
 
-        step_idx, epoch, batch_idx = orchestrator.resume_from_checkpoint()
+        step_idx, step_epoch, batch_idx = orchestrator.resume_from_checkpoint()
 
         assert step_idx == 1
-        assert epoch == 15
+        assert step_epoch == 3  # Step-local epoch, not global
         assert batch_idx == 75
         assert orchestrator.global_step == 2500
         assert orchestrator.steps_completed == ["step1"]
+
+    def test_resume_pipeline_checkpoint_backward_compat(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test resume from old pipeline checkpoint without step_epoch (backward compatibility)."""
+        mock_checkpoint_manager.load_training_state.return_value = {
+            "mode": "pipeline",
+            "epoch": 5,  # Old format: global epoch
+            "batch_idx": 30,
+            "global_step": 1200,
+            "pipeline": {
+                "current_step_index": 0,
+                "current_step_name": "step1",
+                "total_steps": 2,
+                "steps_completed": [],
+                # No current_step_epoch or current_batch_idx (old format)
+            },
+        }
+
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step_idx, step_epoch, batch_idx = orchestrator.resume_from_checkpoint()
+
+        # Should fall back to global epoch from training_state
+        assert step_idx == 0
+        assert step_epoch == 5  # Falls back to epoch from training_state
+        assert batch_idx == 30  # Falls back to batch_idx from training_state
+        assert orchestrator.global_step == 1200
 
 
 class TestPrintPipelineSummary:

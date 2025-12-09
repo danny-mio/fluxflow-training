@@ -280,13 +280,14 @@ class TrainingPipelineOrchestrator:
 
         return False, "Unknown transition mode"
 
-    def get_pipeline_metadata(self, step_index: int, epoch: int) -> dict:
+    def get_pipeline_metadata(self, step_index: int, step_epoch: int, batch_idx: int) -> dict:
         """
         Get pipeline metadata for checkpoint saving.
 
         Args:
             step_index: Current step index
-            epoch: Current epoch (global, across all steps)
+            step_epoch: Current epoch within the current step (0-based)
+            batch_idx: Current batch index within the current epoch
 
         Returns:
             Dictionary with pipeline state metadata
@@ -296,9 +297,10 @@ class TrainingPipelineOrchestrator:
         return {
             "current_step_index": step_index,
             "current_step_name": current_step.name,
+            "current_step_epoch": step_epoch,
+            "current_batch_idx": batch_idx,
             "total_steps": len(self.config.steps),
             "steps_completed": self.steps_completed.copy(),
-            "step_start_epoch": epoch,
         }
 
     def resume_from_checkpoint(self) -> tuple[int, int, int]:
@@ -306,7 +308,8 @@ class TrainingPipelineOrchestrator:
         Resume pipeline from checkpoint if available.
 
         Returns:
-            Tuple of (step_index, epoch, batch_idx)
+            Tuple of (step_index, step_epoch, batch_idx)
+                step_epoch: Epoch number within the current step (0-based)
         """
         training_state = self.checkpoint_manager.load_training_state()
 
@@ -321,8 +324,14 @@ class TrainingPipelineOrchestrator:
 
         pipeline_meta = training_state.get("pipeline", {})
         step_index = pipeline_meta.get("current_step_index", 0)
-        epoch = training_state.get("epoch", 0)
-        batch_idx = training_state.get("batch_idx", 0)
+
+        # Use step-local epoch from pipeline metadata (new format)
+        # Fall back to global epoch for backward compatibility
+        step_epoch = pipeline_meta.get("current_step_epoch", training_state.get("epoch", 0))
+
+        # Use batch_idx from pipeline metadata if available, else from training state
+        batch_idx = pipeline_meta.get("current_batch_idx", training_state.get("batch_idx", 0))
+
         self.global_step = training_state.get("global_step", 0)
         self.steps_completed = pipeline_meta.get("steps_completed", [])
 
@@ -330,10 +339,10 @@ class TrainingPipelineOrchestrator:
             f"Resuming from checkpoint: "
             f"step {step_index + 1}/{len(self.config.steps)} "
             f"('{pipeline_meta.get('current_step_name', 'unknown')}'), "
-            f"epoch {epoch}, batch {batch_idx}"
+            f"step_epoch {step_epoch + 1}, batch {batch_idx}, global_step {self.global_step}"
         )
 
-        return step_index, epoch, batch_idx
+        return step_index, step_epoch, batch_idx
 
     def print_pipeline_summary(self) -> None:
         """Print pipeline execution plan summary."""
@@ -504,11 +513,23 @@ class TrainingPipelineOrchestrator:
         return trainers
 
     def _save_checkpoint(
-        self, step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+        self, step_idx, step_epoch, batch_idx, models, optimizers, schedulers, ema, args
     ):
-        """Save checkpoint with pipeline metadata."""
+        """
+        Save checkpoint with pipeline metadata.
+
+        Args:
+            step_idx: Current pipeline step index
+            step_epoch: Current epoch within the step (0-based)
+            batch_idx: Current batch index
+            models: Dictionary of models
+            optimizers: Dictionary of optimizers
+            schedulers: Dictionary of schedulers
+            ema: EMA module (if applicable)
+            args: Training arguments
+        """
         # Get pipeline metadata
-        metadata = self.get_pipeline_metadata(step_idx, epoch, batch_idx)
+        metadata = self.get_pipeline_metadata(step_idx, step_epoch, batch_idx)
 
         # Save models
         self.checkpoint_manager.save_models(
@@ -519,7 +540,7 @@ class TrainingPipelineOrchestrator:
 
         # Save training state with pipeline metadata
         self.checkpoint_manager.save_training_state(
-            epoch=epoch,
+            epoch=step_epoch,  # Use step-local epoch for consistency
             batch_idx=batch_idx,
             global_step=self.global_step,
             optimizers=optimizers,
@@ -528,7 +549,10 @@ class TrainingPipelineOrchestrator:
             pipeline_metadata=metadata,
         )
 
-        logger.info(f"Checkpoint saved at step {step_idx+1}, epoch {epoch+1}, batch {batch_idx}")
+        logger.info(
+            f"Checkpoint saved: step {step_idx+1}/{len(self.config.steps)}, "
+            f"epoch {step_epoch+1}, batch {batch_idx}, global_step {self.global_step}"
+        )
 
     def run(self, models, dataloader, sampler, tokenizer, progress_logger, args, config) -> None:
         """
@@ -734,28 +758,47 @@ class TrainingPipelineOrchestrator:
                             learning_rates={},
                         )
 
-                    # Checkpoint saving
+                    # Checkpoint saving (mid-epoch)
                     if batch_idx % args.checkpoint_save_interval == 0 and batch_idx > 0:
                         self._save_checkpoint(
                             step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
                         )
 
-                # Check transition criteria
-                if self.should_transition(step, epoch):
-                    print(f"\nTransition criteria met after epoch {epoch+1}, moving to next step")
-                    break
-
+                # End-of-epoch checkpoint (always save after completing an epoch)
                 epoch_time = time.time() - epoch_start_time
                 print(f"Epoch {epoch+1} completed in {format_duration(epoch_time)}")
+
+                self._save_checkpoint(
+                    step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                )
+                logger.info(f"End-of-epoch checkpoint saved")
+
+                # Check transition criteria (after saving checkpoint)
+                should_trans, reason = self.should_transition(step, epoch)
+                if should_trans:
+                    print(f"\nTransition criteria met: {reason}")
+                    print(f"Moving to next step...")
+                    # Save checkpoint before transitioning
+                    self._save_checkpoint(
+                        step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                    )
+                    logger.info("Pre-transition checkpoint saved")
+                    break
+
+            # Save final checkpoint at end of step
+            logger.info(f"Step {step_idx+1} complete, saving final checkpoint")
+            self._save_checkpoint(
+                step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+            )
+
+            # Mark step as completed
+            self.steps_completed.append(step.name)
 
             # Cleanup
             del optimizers, schedulers, trainers
             if ema:
                 del ema
             torch.cuda.empty_cache()
-
-            # Mark step as completed
-            self.steps_completed.append(step.name)
 
             # Reset start_epoch and start_batch for next step
             start_epoch = 0
