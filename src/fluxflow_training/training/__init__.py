@@ -19,6 +19,7 @@ from .pipeline_config import (
     TransitionCriteria,
     parse_pipeline_config,
 )
+from .pipeline_orchestrator import TrainingPipelineOrchestrator
 from .progress_logger import TrainingProgressLogger
 from .schedulers import (
     cosine_anneal_beta,
@@ -70,4 +71,6 @@ __all__ = [
     "SchedulerConfig",
     "OptimizationConfig",
     "parse_pipeline_config",
+    # Pipeline orchestration
+    "TrainingPipelineOrchestrator",
 ]
