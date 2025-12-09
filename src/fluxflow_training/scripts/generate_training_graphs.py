@@ -84,7 +84,9 @@ def extract_metric_series(metrics: List[Dict[str, Any]], metric_name: str) -> tu
     return steps, values
 
 
-def plot_kl_loss(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True):
+def plot_kl_loss(
+    metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True, prefix: str = ""
+):
     """
     Generate KL divergence loss plot with beta warmup (separate due to different scales).
 
@@ -92,6 +94,7 @@ def plot_kl_loss(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool 
         metrics: List of metric dictionaries
         output_dir: Directory to save the plot
         verbose: Whether to print status messages
+        prefix: Filename prefix (e.g., "step1_" for pipeline mode)
     """
     steps_kl, kl_vals = extract_metric_series(metrics, "kl_loss")
     steps_beta, beta_vals = extract_metric_series(metrics, "kl_beta")
@@ -139,14 +142,16 @@ def plot_kl_loss(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool 
     ax1.set_title("KL Divergence Loss and Beta Warmup", fontsize=14, fontweight="bold")
 
     plt.tight_layout()
-    output_file = output_dir / "kl_loss.png"
+    output_file = output_dir / f"{prefix}kl_loss.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     if verbose:
         print(f"✓ Generated: {output_file}")
     plt.close(fig)
 
 
-def plot_losses(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True):
+def plot_losses(
+    metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True, prefix: str = ""
+):
     """
     Generate loss curves plot (excluding KL loss which has different scale).
 
@@ -202,14 +207,16 @@ def plot_losses(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool =
     ax.set_yscale("log")
 
     plt.tight_layout()
-    output_file = output_dir / "training_losses.png"
+    output_file = output_dir / f"{prefix}training_losses.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     if verbose:
         print(f"✓ Generated: {output_file}")
     plt.close(fig)
 
 
-def plot_learning_rates(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True):
+def plot_learning_rates(
+    metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True, prefix: str = ""
+):
     """
     Generate learning rate curves plot.
 
@@ -268,14 +275,16 @@ def plot_learning_rates(metrics: List[Dict[str, Any]], output_dir: Path, verbose
     ax.set_yscale("log")
 
     plt.tight_layout()
-    output_file = output_dir / "learning_rates.png"
+    output_file = output_dir / f"{prefix}learning_rates.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     if verbose:
         print(f"✓ Generated: {output_file}")
     plt.close(fig)
 
 
-def plot_batch_times(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True):
+def plot_batch_times(
+    metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True, prefix: str = ""
+):
     """
     Generate batch time plot.
 
@@ -323,14 +332,16 @@ def plot_batch_times(metrics: List[Dict[str, Any]], output_dir: Path, verbose: b
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    output_file = output_dir / "batch_times.png"
+    output_file = output_dir / f"{prefix}batch_times.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     if verbose:
         print(f"✓ Generated: {output_file}")
     plt.close(fig)
 
 
-def plot_combined_overview(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True):
+def plot_combined_overview(
+    metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True, prefix: str = ""
+):
     """
     Generate a combined overview plot with multiple subplots.
 
@@ -429,14 +440,16 @@ def plot_combined_overview(metrics: List[Dict[str, Any]], output_dir: Path, verb
             ax.set_yscale("log")
 
     plt.tight_layout()
-    output_file = output_dir / "training_overview.png"
+    output_file = output_dir / f"{prefix}training_overview.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     if verbose:
         print(f"✓ Generated: {output_file}")
     plt.close(fig)
 
 
-def generate_summary_stats(metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True):
+def generate_summary_stats(
+    metrics: List[Dict[str, Any]], output_dir: Path, verbose: bool = True, prefix: str = ""
+):
     """
     Generate a text summary of training statistics.
 
@@ -508,7 +521,7 @@ def generate_summary_stats(metrics: List[Dict[str, Any]], output_dir: Path, verb
     summary_lines.append("\n" + "=" * 60)
 
     # Save summary
-    output_file = output_dir / "training_summary.txt"
+    output_file = output_dir / f"{prefix}training_summary.txt"
     with open(output_file, "w") as f:
         f.write("\n".join(summary_lines))
 
@@ -521,6 +534,9 @@ def generate_summary_stats(metrics: List[Dict[str, Any]], output_dir: Path, verb
 def generate_all_diagrams(output_path: Path, verbose: bool = True) -> bool:
     """
     Generate all training diagrams for a given output path.
+
+    Supports both legacy mode (training_metrics.jsonl) and pipeline mode
+    (training_metrics_<step_name>.jsonl for each step).
 
     Args:
         output_path: Path to the training output directory
@@ -542,40 +558,70 @@ def generate_all_diagrams(output_path: Path, verbose: bool = True) -> bool:
                 print(f"Error: Graph directory not found: {graph_dir}")
             return False
 
-        metrics_file = graph_dir / "training_metrics.jsonl"
-        if not metrics_file.exists():
+        # Find all metrics files (legacy or pipeline mode)
+        metrics_files = list(graph_dir.glob("training_metrics*.jsonl"))
+
+        if not metrics_files:
             if verbose:
-                print(f"Error: Metrics file not found: {metrics_file}")
+                print(f"Error: No metrics files found in: {graph_dir}")
             return False
 
-        if verbose:
-            print(f"Loading metrics from: {metrics_file}")
-        metrics = load_metrics(metrics_file)
+        # Generate diagrams for each metrics file
+        success_count = 0
+        for metrics_file in sorted(metrics_files):
+            # Extract step name from filename (if present)
+            filename = metrics_file.stem  # "training_metrics" or "training_metrics_step_name"
+            if filename == "training_metrics":
+                step_name = None  # Legacy mode
+                output_prefix = ""
+            else:
+                # Extract step name: "training_metrics_gan_warmup" → "gan_warmup"
+                step_name = filename.replace("training_metrics_", "")
+                output_prefix = f"{step_name}_"
 
-        if not metrics:
             if verbose:
-                print("No metrics found")
-            return False
+                if step_name:
+                    print(f"\n{'='*60}")
+                    print(f"Processing step: {step_name}")
+                    print(f"{'='*60}")
+                print(f"Loading metrics from: {metrics_file}")
+
+            metrics = load_metrics(metrics_file)
+
+            if not metrics:
+                if verbose:
+                    print(f"No metrics found in {metrics_file}")
+                continue
+
+            if verbose:
+                print(f"Loaded {len(metrics)} metric entries")
+                print(f"\nGenerating diagrams in: {graph_dir}")
+                print("-" * 60)
+
+            # Generate all plots with step-specific prefixes
+            plot_kl_loss(metrics, graph_dir, verbose, prefix=output_prefix)
+            plot_losses(metrics, graph_dir, verbose, prefix=output_prefix)
+            plot_learning_rates(metrics, graph_dir, verbose, prefix=output_prefix)
+            plot_batch_times(metrics, graph_dir, verbose, prefix=output_prefix)
+            plot_combined_overview(metrics, graph_dir, verbose, prefix=output_prefix)
+            generate_summary_stats(metrics, graph_dir, verbose, prefix=output_prefix)
+
+            success_count += 1
+
+            if verbose:
+                print("-" * 60)
+                if step_name:
+                    print(f"✓ Step '{step_name}' diagrams generated successfully!")
+                else:
+                    print("✓ Diagrams generated successfully!")
 
         if verbose:
-            print(f"Loaded {len(metrics)} metric entries")
-            print(f"\nGenerating diagrams in: {graph_dir}")
-            print("-" * 60)
+            print(f"\n{'='*60}")
+            print(f"✓ Generated diagrams for {success_count} file(s)")
+            print(f"View your results in: {graph_dir}")
+            print(f"{'='*60}")
 
-        # Generate all plots
-        plot_kl_loss(metrics, graph_dir, verbose)
-        plot_losses(metrics, graph_dir, verbose)
-        plot_learning_rates(metrics, graph_dir, verbose)
-        plot_batch_times(metrics, graph_dir, verbose)
-        plot_combined_overview(metrics, graph_dir, verbose)
-        generate_summary_stats(metrics, graph_dir, verbose)
-
-        if verbose:
-            print("-" * 60)
-            print("\n✓ All diagrams generated successfully!")
-            print(f"\nView your results in: {graph_dir}")
-
-        return True
+        return success_count > 0
 
     except Exception as e:
         if verbose:
