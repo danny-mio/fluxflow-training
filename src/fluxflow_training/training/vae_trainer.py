@@ -436,15 +436,21 @@ class VAETrainer:
         beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
         kl = kl_standard_normal(mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean")
 
-        # GAN generator loss (decoder only - detach encoder gradients)
+        # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
         if self.use_gan and self.discriminator is not None:
-            # CRITICAL: Detach latent to prevent GAN gradients flowing to encoder
-            # The encoder should only learn from reconstruction + KL loss
-            # The decoder learns to generate realistic images from any latent
-            packed_rec_detached = packed_rec.detach()
-            out_imgs_gan = self.expander(packed_rec_detached, use_context=self.use_spade)
-            ctx_vec_rec = packed_rec_detached[:, :-1, :].contiguous().mean(dim=1)
+            # Detach latent only when training reconstruction
+            # - When train_reconstruction=True: Encoder learns from recon+KL, decoder from GAN
+            # - When train_reconstruction=False: Both encoder+decoder learn from GAN+KL
+            if self.train_reconstruction:
+                # Detach to prevent GAN gradients flowing to encoder
+                packed_rec_for_gan = packed_rec.detach()
+            else:
+                # Don't detach - encoder needs GAN gradients when no reconstruction loss
+                packed_rec_for_gan = packed_rec
+
+            out_imgs_gan = self.expander(packed_rec_for_gan, use_context=self.use_spade)
+            ctx_vec_rec = packed_rec_for_gan[:, :-1, :].contiguous().mean(dim=1)
             g_real_logits = self.discriminator(out_imgs_gan, ctx_vec_rec)
             G_img_loss = self.lambda_adv * g_hinge_loss(g_real_logits)
 
