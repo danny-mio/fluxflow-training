@@ -862,8 +862,8 @@ class TrainingPipelineOrchestrator:
                     for ri in imgs:
                         real_imgs = ri.to(self.device).detach()
 
-                        # VAE training
-                        if step.train_vae and trainers.get("vae"):
+                        # VAE/GAN/SPADE training (runs if trainer exists, even with train_vae=false)
+                        if trainers.get("vae"):
                             vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
                             vae_errors.add_item(vae_losses["vae"])
                             kl_errors.add_item(vae_losses["kl"])
