@@ -654,3 +654,150 @@ class TestTrainReconstructionParameter:
         assert "train_reconstruction: bool = True" in content
         # Check it's stored as instance variable
         assert "self.train_reconstruction = train_reconstruction" in content
+
+
+class TestLoggingOutput:
+    """Test console and metrics logging for different config combinations."""
+
+    def test_gan_only_mode_shows_gan_losses(self):
+        """GAN-only mode (train_vae=false, gan_training=true) should show G and D losses."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify GAN losses are tracked from correct keys
+        assert '"generator" in vae_losses' in content
+        assert '"discriminator" in vae_losses' in content
+        assert 'g_errors.add_item(vae_losses["generator"])' in content
+        assert 'd_errors.add_item(vae_losses["discriminator"])' in content
+
+        # Verify GAN losses are logged to console
+        assert "step.gan_training and len(g_errors._items) > 0" in content
+        assert 'f" | G: {g_errors.average:.4f} | D: {d_errors.average:.4f}"' in content
+
+        # Verify GAN losses are logged to metrics
+        assert 'metrics["g_loss"] = g_errors.average' in content
+        assert 'metrics["d_loss"] = d_errors.average' in content
+
+    def test_lpips_mode_shows_lpips_loss(self):
+        """LPIPS mode (use_lpips=true) should show LPIPS loss."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify LPIPS loss is tracked from correct key
+        assert '"lpips" in vae_losses' in content
+        assert 'lpips_errors.add_item(vae_losses["lpips"])' in content
+
+        # Verify LPIPS loss is logged to console
+        assert "step.use_lpips and len(lpips_errors._items) > 0" in content
+        assert 'f" | LPIPS: {lpips_errors.average:.4f}"' in content
+
+        # Verify LPIPS loss is logged to metrics
+        assert 'metrics["lpips_loss"] = lpips_errors.average' in content
+
+    def test_vae_mode_shows_vae_and_kl(self):
+        """VAE mode should show VAE and KL losses."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify VAE and KL are always tracked when VAE trainer runs
+        assert 'vae_errors.add_item(vae_losses["vae"])' in content
+        assert 'kl_errors.add_item(vae_losses["kl"])' in content
+
+        # Verify logged to console
+        assert 'f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"' in content
+
+        # Verify logged to metrics
+        assert 'metrics["vae_loss"] = vae_errors.average' in content
+        assert 'metrics["kl_loss"] = kl_errors.average' in content
+
+    def test_batch_timing_shown(self):
+        """Batch timing should be shown in console output."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify batch time is tracked
+        assert "batch_times = FloatBuffer" in content
+        assert "batch_start_time = time.time()" in content
+        assert "batch_time = time.time() - batch_start_time" in content
+        assert "batch_times.add_item(batch_time)" in content
+
+        # Verify logged to console
+        assert 'f" | {batch_times.average:.2f}s/batch"' in content
+
+    def test_flow_mode_shows_flow_loss(self):
+        """Flow mode (train_diff=true) should show flow loss."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify flow loss is tracked
+        assert "flow_errors.add_item(flow_loss)" in content
+
+        # Verify logged to console
+        assert "if step.train_diff or step.train_diff_full" in content
+        assert 'f" | Flow: {flow_errors.average:.4f}"' in content
+
+        # Verify logged to metrics
+        assert 'metrics["flow_loss"] = flow_errors.average' in content
+
+    def test_logging_conditional_on_buffer_data(self):
+        """Logging should check buffer has data, not just config flags."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify console logging checks buffer length
+        assert "if len(vae_errors._items) > 0:" in content
+        assert "if step.gan_training and len(g_errors._items) > 0:" in content
+        assert "if step.use_lpips and len(lpips_errors._items) > 0:" in content
+        assert "if len(batch_times._items) > 0:" in content
+
+        # Verify metrics logging checks buffer length
+        # (appears twice: once for console, once for metrics dict)
+        assert content.count("if len(vae_errors._items) > 0:") >= 2
