@@ -832,12 +832,12 @@ class TrainingPipelineOrchestrator:
                                 f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"
                             )
                             # Add GAN losses if active
-                            if step.gan_training and g_errors.count > 0:
+                            if step.gan_training and len(g_errors._items) > 0:
                                 log_msg += (
                                     f" | G: {g_errors.average:.4f} | D: {d_errors.average:.4f}"
                                 )
                             # Add LPIPS if active
-                            if step.use_lpips and lpips_errors.count > 0:
+                            if step.use_lpips and len(lpips_errors._items) > 0:
                                 log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
 
                         if step.train_diff or step.train_diff_full:
@@ -851,11 +851,11 @@ class TrainingPipelineOrchestrator:
                             metrics["vae_loss"] = vae_errors.average
                             metrics["kl_loss"] = kl_errors.average
                             # Add GAN metrics
-                            if step.gan_training and g_errors.count > 0:
+                            if step.gan_training and len(g_errors._items) > 0:
                                 metrics["g_loss"] = g_errors.average
                                 metrics["d_loss"] = d_errors.average
                             # Add LPIPS metrics
-                            if step.use_lpips and lpips_errors.count > 0:
+                            if step.use_lpips and len(lpips_errors._items) > 0:
                                 metrics["lpips_loss"] = lpips_errors.average
 
                         if step.train_diff or step.train_diff_full:
