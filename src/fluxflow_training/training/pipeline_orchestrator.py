@@ -7,7 +7,7 @@ loss-threshold transitions, and checkpoint management.
 from typing import Any, Optional
 
 import torch.nn as nn
-from fluxflow.utils import get_logger
+from fluxflow.utils import get_logger, safe_vae_sample, save_sample_images
 
 from .checkpoint_manager import CheckpointManager
 from .pipeline_config import PipelineConfig, PipelineStepConfig
@@ -554,6 +554,71 @@ class TrainingPipelineOrchestrator:
             f"epoch {step_epoch+1}, batch {batch_idx}, global_step {self.global_step}"
         )
 
+    def _generate_samples(
+        self, step, step_idx, epoch, models, tokenizer, args, parsed_sample_sizes
+    ):
+        """
+        Generate sample images for monitoring training progress.
+
+        Args:
+            step: Current pipeline step config
+            step_idx: Current step index
+            epoch: Current epoch within step
+            models: Dictionary of models
+            tokenizer: Tokenizer instance
+            args: Training arguments
+            parsed_sample_sizes: List of sample size tuples
+        """
+        if args.no_samples:
+            return
+
+        diffuser = models.get("diffuser")
+        text_encoder = models.get("text_encoder")
+        if not diffuser:
+            logger.warning("Cannot generate samples: diffuser model not found")
+            return
+
+        # Sample epoch identifier (include step info)
+        sample_epoch = self.global_step  # Use global_step for unique filenames
+
+        logger.info(
+            f"Generating samples for step {step_idx+1}/{len(self.config.steps)}, "
+            f"epoch {epoch+1}, global_step {sample_epoch}"
+        )
+
+        # VAE reconstruction samples (if test images provided)
+        if args.test_image_address and len(args.test_image_address) > 0:
+            for img_addr in args.test_image_address:
+                try:
+                    safe_vae_sample(
+                        diffuser,
+                        img_addr,
+                        args.channels if hasattr(args, "channels") else 3,
+                        args.output_path,
+                        sample_epoch,
+                        self.device,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to generate VAE sample from {img_addr}: {e}")
+
+        # Flow-based text-to-image samples (if flow training active)
+        if (step.train_diff or step.train_diff_full) and text_encoder:
+            if args.sample_captions and len(args.sample_captions) > 0:
+                try:
+                    save_sample_images(
+                        diffuser,
+                        text_encoder,
+                        tokenizer,
+                        args.output_path,
+                        sample_epoch,
+                        self.device,
+                        args.sample_captions,
+                        args.batch_size,
+                        sample_sizes=parsed_sample_sizes,
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to generate flow samples: {e}")
+
     def run(self, models, dataloader, sampler, tokenizer, progress_logger, args, config) -> None:
         """
         Execute the complete training pipeline.
@@ -630,6 +695,13 @@ class TrainingPipelineOrchestrator:
             f"Pipeline has {len(self.config.steps)} steps, starting from step {start_step + 1}"
         )
 
+        # Parse sample sizes for sample generation
+        from ..scripts.train import parse_sample_sizes
+
+        parsed_sample_sizes = parse_sample_sizes(
+            config.get("output", {}).get("sample_sizes", [512])
+        )
+
         # Get dataset size for progress tracking
         if isinstance(dataloader.dataset, torch.utils.data.IterableDataset):
             dataset_size = getattr(dataloader.dataset, "dataset_size", 1000)
@@ -637,6 +709,13 @@ class TrainingPipelineOrchestrator:
             dataset_size = len(dataloader.dataset)
 
         batches_per_epoch = max(1, dataset_size // args.batch_size)
+
+        # Generate initial samples (before training starts)
+        if start_step == 0 and start_epoch == 0:
+            logger.info("Generating initial samples before training...")
+            self._generate_samples(
+                self.config.steps[0], 0, -1, models, tokenizer, args, parsed_sample_sizes
+            )
 
         # Main pipeline loop
         for step_idx in range(start_step, len(self.config.steps)):
@@ -764,6 +843,15 @@ class TrainingPipelineOrchestrator:
                             step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
                         )
 
+                        # Generate samples at checkpoint intervals
+                        if (
+                            hasattr(args, "samples_per_checkpoint")
+                            and args.samples_per_checkpoint > 0
+                        ):
+                            self._generate_samples(
+                                step, step_idx, epoch, models, tokenizer, args, parsed_sample_sizes
+                            )
+
                 # End-of-epoch checkpoint (always save after completing an epoch)
                 epoch_time = time.time() - epoch_start_time
                 print(f"Epoch {epoch+1} completed in {format_duration(epoch_time)}")
@@ -772,6 +860,11 @@ class TrainingPipelineOrchestrator:
                     step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
                 )
                 logger.info(f"End-of-epoch checkpoint saved")
+
+                # Generate samples after epoch completes
+                self._generate_samples(
+                    step, step_idx, epoch, models, tokenizer, args, parsed_sample_sizes
+                )
 
                 # Check transition criteria (after saving checkpoint)
                 should_trans, reason = self.should_transition(step, epoch)
