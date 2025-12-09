@@ -1,7 +1,5 @@
 """Unit tests for pipeline configuration and validation."""
 
-import pytest
-
 from fluxflow_training.training.pipeline_config import (
     OptimizationConfig,
     OptimizerConfig,
