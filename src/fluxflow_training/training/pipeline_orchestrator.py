@@ -731,6 +731,10 @@ class TrainingPipelineOrchestrator:
             # Configure models for this step (freeze/unfreeze)
             self.configure_step_models(step, models)
 
+            # Update progress logger for this step (step-specific files)
+            progress_logger.set_step(step.name)
+            logger.info(f"Progress logging to: {progress_logger.metrics_file}")
+
             # Create optimizers and schedulers for this step
             optimizers = self._create_step_optimizers(step, models, args)
             total_steps = step.n_epochs * batches_per_epoch
@@ -762,6 +766,9 @@ class TrainingPipelineOrchestrator:
                 vae_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 kl_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 flow_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
+                d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
+                lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
 
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader):
                     # Break if max_steps reached (for quick testing)
@@ -786,6 +793,14 @@ class TrainingPipelineOrchestrator:
                             vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
                             vae_errors.add_item(vae_losses["vae"])
                             kl_errors.add_item(vae_losses["kl"])
+
+                            # Track GAN losses if available
+                            if "generator_avg" in vae_losses:
+                                g_errors.add_item(vae_losses["generator_avg"])
+                            if "discriminator_avg" in vae_losses:
+                                d_errors.add_item(vae_losses["discriminator_avg"])
+                            if "lpips_avg" in vae_losses:
+                                lpips_errors.add_item(vae_losses["lpips_avg"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
@@ -816,6 +831,15 @@ class TrainingPipelineOrchestrator:
                             log_msg += (
                                 f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"
                             )
+                            # Add GAN losses if active
+                            if step.gan_training and g_errors.count > 0:
+                                log_msg += (
+                                    f" | G: {g_errors.average:.4f} | D: {d_errors.average:.4f}"
+                                )
+                            # Add LPIPS if active
+                            if step.use_lpips and lpips_errors.count > 0:
+                                log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
+
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
 
@@ -826,6 +850,14 @@ class TrainingPipelineOrchestrator:
                         if step.train_vae:
                             metrics["vae_loss"] = vae_errors.average
                             metrics["kl_loss"] = kl_errors.average
+                            # Add GAN metrics
+                            if step.gan_training and g_errors.count > 0:
+                                metrics["g_loss"] = g_errors.average
+                                metrics["d_loss"] = d_errors.average
+                            # Add LPIPS metrics
+                            if step.use_lpips and lpips_errors.count > 0:
+                                metrics["lpips_loss"] = lpips_errors.average
+
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average
 
