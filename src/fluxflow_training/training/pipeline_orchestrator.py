@@ -351,16 +351,61 @@ class TrainingPipelineOrchestrator:
         print(f"\nTotal epochs: {total_epochs}")
         print("=" * 80 + "\n")
 
-    def run(self, args, config) -> None:
+    def run(self, models, dataloader, tokenizer, args, config) -> None:
         """
         Execute the complete training pipeline.
 
+        This method is the main entry point for pipeline execution. It orchestrates
+        multi-step training by configuring models, creating trainers, and managing
+        the training loop across pipeline steps.
+
         Args:
+            models: Dict of initialized models:
+                - diffuser: FluxPipeline instance
+                - compressor: FluxCompressor instance
+                - expander: FluxExpander instance
+                - flow_processor: FluxFlowProcessor instance
+                - text_encoder: BertTextEncoder instance
+                - D_img: PatchDiscriminator instance (if GAN training)
+            dataloader: Initialized DataLoader for training data
+            tokenizer: Tokenizer for text processing
             args: Parsed command-line arguments
             config: Loaded YAML config dictionary
 
         Raises:
-            NotImplementedError: Pipeline execution is not yet fully implemented
+            NotImplementedError: Full implementation deferred to Phase 3b
+                                See docs/PIPELINE_ARCHITECTURE.md for design
+
+        Architecture Overview:
+            1. Resume from checkpoint (if exists) → get start_step, start_epoch, start_batch
+            2. For each step in pipeline:
+                a. configure_step_models() - freeze/unfreeze per step config
+                b. _create_step_optimizers() - from inline YAML config
+                c. _create_step_schedulers() - from inline YAML config
+                d. _create_step_trainers() - VAETrainer and/or FlowTrainer
+                e. Training loop:
+                   - For each epoch in step:
+                     - For each batch:
+                       - vae_trainer.train_step() if train_vae
+                       - flow_trainer.train_step() if train_flow
+                       - update_metrics()
+                       - log progress
+                       - save checkpoint (with pipeline metadata)
+                     - Check transition_criteria (epoch or loss_threshold)
+                f. Cleanup optimizers/schedulers
+            3. Print final summary
+
+        Next Implementation Steps:
+            1. Extract initialize_models() and initialize_dataloader() helpers from train_legacy()
+            2. Implement _create_step_optimizers() using create_optimizer() factory
+            3. Implement _create_step_schedulers() using create_scheduler() factory
+            4. Implement _create_step_trainers() using VAETrainer/FlowTrainer
+            5. Implement main training loop with transition monitoring
+            6. Implement _save_checkpoint() with pipeline metadata
+            7. Add integration tests
+
+        For detailed architecture and implementation plan:
+            See docs/PIPELINE_ARCHITECTURE.md
         """
         logger.info("Starting training pipeline execution...")
 
@@ -374,21 +419,30 @@ class TrainingPipelineOrchestrator:
             f"Pipeline has {len(self.config.steps)} steps, " f"starting from step {start_step + 1}"
         )
 
-        # TODO: Complete implementation requires:
-        # 1. Initialize models (diffuser, text_encoder, discriminators)
-        # 2. Initialize dataset and dataloader
-        # 3. For each pipeline step:
-        #    a. Apply freeze/unfreeze directives
-        #    b. Create optimizers/schedulers from step config
-        #    c. Create VAETrainer and/or FlowTrainer based on step settings
-        #    d. Run training loop for step duration
-        #    e. Monitor transition criteria (loss threshold)
-        #    f. Save checkpoints with pipeline metadata
-        # 4. Handle resume from checkpoint (restore step, epoch, batch)
-
         raise NotImplementedError(
-            "Full pipeline execution is not yet implemented. "
-            "This requires integration with model initialization, "
-            "dataloader setup, and trainer creation from train.py. "
-            "Current implementation provides validation and planning only."
+            "Pipeline execution implementation deferred to Phase 3b.\n"
+            "\n"
+            "Current Status:\n"
+            "  ✅ Pipeline config parsing and validation\n"
+            "  ✅ train.py integration and dry-run validation  \n"
+            "  ⏸️  Full pipeline execution (architecture documented)\n"
+            "\n"
+            "The architecture is fully designed and documented in:\n"
+            "  docs/PIPELINE_ARCHITECTURE.md\n"
+            "\n"
+            "Implementation requires:\n"
+            "  1. Extract model/dataloader initialization helpers\n"
+            "  2. Implement per-step optimizer/scheduler creation\n"
+            "  3. Implement per-step trainer creation\n"
+            "  4. Implement step-by-step training loop\n"
+            "  5. Integrate loss-threshold monitoring\n"
+            "  6. Add checkpoint saving with pipeline metadata\n"
+            "\n"
+            "Estimated effort: 4-6 hours for experienced developer\n"
+            "\n"
+            "To use pipeline features now:\n"
+            "  - Validation: python train.py --config my_config.yaml --validate-pipeline\n"
+            "  - Planning: Review execution plan before committing to training\n"
+            "\n"
+            "For questions or to contribute: see docs/PIPELINE_ARCHITECTURE.md"
         )
