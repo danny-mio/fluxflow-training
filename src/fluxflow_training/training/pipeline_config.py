@@ -94,6 +94,7 @@ class PipelineStepConfig:
     lr_min: float = 0.1
     use_fp16: bool = False
     initial_clipping_norm: float = 1.0
+    max_steps: Optional[int] = None  # Limit batches per epoch (for testing)
 
     # Loss weights
     kl_beta: float = 0.0001
@@ -215,6 +216,12 @@ class PipelineConfigValidator:
             self.errors.append(
                 f"Step '{step_name}' (step {step_index + 1}): "
                 f"At least one training mode must be enabled"
+            )
+
+        # Validate max_steps
+        if step.max_steps is not None and step.max_steps <= 0:
+            self.errors.append(
+                f"Step '{step_name}' (step {step_index + 1}): max_steps must be > 0 if specified"
             )
 
         # Validate freeze/unfreeze
@@ -430,6 +437,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
     return PipelineStepConfig(
         name=step_dict.get("name", ""),
         n_epochs=step_dict.get("n_epochs", 0) if not is_default else 0,
+        max_steps=step_dict.get("max_steps"),
         description=step_dict.get("description", ""),
         train_vae=step_dict.get("train_vae", False),
         gan_training=step_dict.get("gan_training", False),

@@ -661,6 +661,11 @@ class TrainingPipelineOrchestrator:
                 flow_errors = FloatBuffer(max(args.log_interval * 2, 10))
 
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader):
+                    # Break if max_steps reached (for quick testing)
+                    if step.max_steps is not None and batch_idx >= step.max_steps:
+                        logger.info(f"Reached max_steps={step.max_steps}, ending epoch early")
+                        break
+
                     # Skip batches if resuming mid-epoch
                     if step_idx == start_step and epoch == start_epoch and batch_idx < start_batch:
                         continue

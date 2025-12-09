@@ -26,6 +26,7 @@ training:
       # Step 1: VAE training with SPADE OFF (minimal)
       - name: "vae_test"
         n_epochs: 1  # Just 1 epoch
+        max_steps: 2  # Only 2 batches for quick testing
         train_vae: true
         train_spade: false
         train_diff: false

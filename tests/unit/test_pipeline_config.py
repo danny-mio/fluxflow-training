@@ -3,8 +3,8 @@
 import pytest
 
 from fluxflow_training.training.pipeline_config import (
-    OptimizerConfig,
     OptimizationConfig,
+    OptimizerConfig,
     PipelineConfig,
     PipelineConfigValidator,
     PipelineStepConfig,
@@ -297,6 +297,15 @@ class TestPipelineConfigValidator:
         validator = PipelineConfigValidator(pipeline)
         errors = validator.validate()
         assert any("n_epochs must be > 0" in e for e in errors)
+
+    def test_invalid_max_steps(self):
+        """Test validation fails for max_steps <= 0."""
+        pipeline = PipelineConfig(
+            steps=[PipelineStepConfig(name="test", n_epochs=10, max_steps=0, train_vae=True)]
+        )
+        validator = PipelineConfigValidator(pipeline)
+        errors = validator.validate()
+        assert any("max_steps must be > 0" in e for e in errors)
 
     def test_no_training_modes(self):
         """Test validation fails when no training modes enabled."""

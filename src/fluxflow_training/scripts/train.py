@@ -1229,6 +1229,8 @@ def validate_and_show_plan(config, args):
     for idx, step in enumerate(pipeline_config.steps, 1):
         print(f"\nStep {idx}: {step.name}")
         print(f"  Duration: {step.n_epochs} epochs")
+        if step.max_steps is not None:
+            print(f"  Max steps per epoch: {step.max_steps} (for quick testing)")
 
         # Training modes
         modes = []

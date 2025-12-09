@@ -93,6 +93,7 @@ training:
   #     - name: "vae_spade_off"
   #       description: "Train VAE without SPADE conditioning (hypothesis: learn base reconstruction first)"
   #       duration_epochs: 50
+  #       max_steps: null        # Optional: limit batches per epoch for quick testing (e.g., max_steps: 10)
   #       
   #       # Training modes for this step
   #       train_vae: true
