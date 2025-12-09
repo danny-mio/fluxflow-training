@@ -909,7 +909,8 @@ class TrainingPipelineOrchestrator:
                             f"Batch {batch_idx}/{epoch_total_batches}"
                         )
 
-                        if step.train_vae:
+                        # Console logging (show metrics if VAE trainer ran)
+                        if len(vae_errors._items) > 0:
                             log_msg += (
                                 f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"
                             )
@@ -927,9 +928,9 @@ class TrainingPipelineOrchestrator:
 
                         print(log_msg)
 
-                        # Log to progress logger
+                        # Log to progress logger (include metrics if VAE trainer ran)
                         metrics = {}
-                        if step.train_vae:
+                        if len(vae_errors._items) > 0:
                             metrics["vae_loss"] = vae_errors.average
                             metrics["kl_loss"] = kl_errors.average
                             # Add GAN metrics
