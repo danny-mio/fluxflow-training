@@ -555,7 +555,7 @@ class TrainingPipelineOrchestrator:
         )
 
     def _generate_samples(
-        self, step, step_idx, epoch, models, tokenizer, args, parsed_sample_sizes
+        self, step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
     ):
         """
         Generate sample images for monitoring training progress.
@@ -564,11 +564,15 @@ class TrainingPipelineOrchestrator:
             step: Current pipeline step config
             step_idx: Current step index
             epoch: Current epoch within step
+            batch_idx: Current batch index
             models: Dictionary of models
             tokenizer: Tokenizer instance
             args: Training arguments
             parsed_sample_sizes: List of sample size tuples
         """
+        import glob
+        import os
+
         if args.no_samples:
             return
 
@@ -578,18 +582,23 @@ class TrainingPipelineOrchestrator:
             logger.warning("Cannot generate samples: diffuser model not found")
             return
 
-        # Sample epoch identifier (include step info)
-        sample_epoch = self.global_step  # Use global_step for unique filenames
+        # Sample epoch identifier (use global_step for legacy compatibility)
+        sample_epoch = self.global_step
 
         logger.info(
             f"Generating samples for step {step_idx+1}/{len(self.config.steps)}, "
-            f"epoch {epoch+1}, global_step {sample_epoch}"
+            f"epoch {epoch+1}, batch {batch_idx}, global_step {sample_epoch}"
         )
+
+        # Create prefix for new naming: stepname_epoch_batch (e.g., "gan_warmup_001_003_0000254")
+        step_name_short = step.name[:20]  # Limit step name length
+        sample_prefix = f"{step_name_short}_{step_idx+1:03d}_{epoch+1:03d}_{batch_idx:07d}"
 
         # VAE reconstruction samples (if test images provided)
         if args.test_image_address and len(args.test_image_address) > 0:
             for img_addr in args.test_image_address:
                 try:
+                    # Generate samples with epoch number (legacy naming)
                     safe_vae_sample(
                         diffuser,
                         img_addr,
@@ -598,6 +607,32 @@ class TrainingPipelineOrchestrator:
                         sample_epoch,
                         self.device,
                     )
+
+                    # Rename files to include step/epoch/batch info
+                    # Pattern: <base>_recon_epoch_<N>.<ext> → <prefix>_<hash>-<suffix>.<ext>
+                    base_name = os.path.splitext(os.path.basename(img_addr))[0]
+                    pattern = os.path.join(
+                        args.output_path, f"{base_name}_*_epoch_{sample_epoch}.*"
+                    )
+                    for old_file in glob.glob(pattern):
+                        old_filename = os.path.basename(old_file)
+                        # Extract hash and suffix (e.g., "cd7a10cde99011c1e6cb6770fa3834eb-ctx.webp")
+                        parts = old_filename.split("_epoch_")[0].split("_")
+                        if len(parts) >= 2:
+                            hash_suffix = "_".join(parts[1:])  # Everything after base name
+                        else:
+                            hash_suffix = parts[0] if parts else "unknown"
+
+                        # Get file extension
+                        ext = os.path.splitext(old_file)[1]
+
+                        # New filename: stepname_step_epoch_batch_hash-suffix.ext
+                        new_filename = f"{sample_prefix}_{hash_suffix}{ext}"
+                        new_file = os.path.join(args.output_path, new_filename)
+
+                        os.rename(old_file, new_file)
+                        logger.debug(f"Renamed: {old_filename} → {new_filename}")
+
                 except Exception as e:
                     logger.warning(f"Failed to generate VAE sample from {img_addr}: {e}")
 
@@ -605,6 +640,7 @@ class TrainingPipelineOrchestrator:
         if (step.train_diff or step.train_diff_full) and text_encoder:
             if args.sample_captions and len(args.sample_captions) > 0:
                 try:
+                    # Generate samples with epoch number (legacy naming)
                     save_sample_images(
                         diffuser,
                         text_encoder,
@@ -616,6 +652,25 @@ class TrainingPipelineOrchestrator:
                         args.batch_size,
                         sample_sizes=parsed_sample_sizes,
                     )
+
+                    # Rename files to include step/epoch/batch info
+                    # Pattern: sample_epoch_<N>_<caption_idx>_<size>.png
+                    pattern = os.path.join(args.output_path, f"sample_epoch_{sample_epoch}_*.png")
+                    for old_file in glob.glob(pattern):
+                        old_filename = os.path.basename(old_file)
+                        # Extract caption index and size: "sample_epoch_247_0_512x512.png"
+                        parts = old_filename.replace(f"sample_epoch_{sample_epoch}_", "").replace(
+                            ".png", ""
+                        )
+                        # parts = "0_512x512" or just "0"
+
+                        # New filename: stepname_step_epoch_batch_captionidx_size.png
+                        new_filename = f"{sample_prefix}_{parts}.png"
+                        new_file = os.path.join(args.output_path, new_filename)
+
+                        os.rename(old_file, new_file)
+                        logger.debug(f"Renamed: {old_filename} → {new_filename}")
+
                 except Exception as e:
                     logger.warning(f"Failed to generate flow samples: {e}")
 
@@ -714,7 +769,7 @@ class TrainingPipelineOrchestrator:
         if start_step == 0 and start_epoch == 0:
             logger.info("Generating initial samples before training...")
             self._generate_samples(
-                self.config.steps[0], 0, -1, models, tokenizer, args, parsed_sample_sizes
+                self.config.steps[0], 0, -1, 0, models, tokenizer, args, parsed_sample_sizes
             )
 
         # Main pipeline loop
@@ -892,7 +947,14 @@ class TrainingPipelineOrchestrator:
                             and args.samples_per_checkpoint > 0
                         ):
                             self._generate_samples(
-                                step, step_idx, epoch, models, tokenizer, args, parsed_sample_sizes
+                                step,
+                                step_idx,
+                                epoch,
+                                batch_idx,
+                                models,
+                                tokenizer,
+                                args,
+                                parsed_sample_sizes,
                             )
 
                 # End-of-epoch checkpoint (always save after completing an epoch)
@@ -904,9 +966,9 @@ class TrainingPipelineOrchestrator:
                 )
                 logger.info(f"End-of-epoch checkpoint saved")
 
-                # Generate samples after epoch completes
+                # Generate samples after epoch completes (use last batch_idx)
                 self._generate_samples(
-                    step, step_idx, epoch, models, tokenizer, args, parsed_sample_sizes
+                    step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
                 )
 
                 # Check transition criteria (after saving checkpoint)
