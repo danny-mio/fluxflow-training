@@ -84,18 +84,21 @@ class TestOrchestratorInitialization:
         assert orchestrator.step_metrics == {}
 
     def test_initialization_missing_model(self, simple_pipeline_config, mock_checkpoint_manager):
-        """Test initialization fails with missing model."""
+        """Test initialization warns with missing model (models can be provided to run())."""
         incomplete_models = {"compressor": Mock(), "expander": Mock()}
 
-        with pytest.raises(ValueError, match="Missing required model components"):
-            TrainingPipelineOrchestrator(
-                config=simple_pipeline_config,
-                models=incomplete_models,
-                checkpoint_manager=mock_checkpoint_manager,
-                accelerator=Mock(),
-                dataloader=Mock(),
-                dataset=Mock(),
-            )
+        # Should not raise, just warn (models can be provided to run())
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=incomplete_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+        
+        # Should initialize successfully
+        assert orchestrator is not None
 
 
 class TestModelFreezing:

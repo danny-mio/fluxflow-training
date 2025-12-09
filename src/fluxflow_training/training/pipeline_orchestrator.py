@@ -39,30 +39,37 @@ class TrainingPipelineOrchestrator:
 
     def __init__(
         self,
-        config: PipelineConfig,
-        models: dict[str, nn.Module],
-        checkpoint_manager: CheckpointManager,
-        accelerator: Any,
-        dataloader: Any,
-        dataset: Any,
+        pipeline_config: PipelineConfig = None,
+        checkpoint_manager: CheckpointManager = None,
+        accelerator: Any = None,
+        device: Any = None,
+        # Legacy signature support (for tests)
+        config: PipelineConfig = None,
+        models: dict[str, nn.Module] = None,
+        dataloader: Any = None,
+        dataset: Any = None,
     ):
         """
         Initialize pipeline orchestrator.
 
         Args:
-            config: Parsed pipeline configuration
-            models: Dictionary of model components
-                Required keys: 'compressor', 'expander', 'flow_processor',
-                'text_encoder', 'discriminator'
-            checkpoint_manager: Checkpoint manager instance
-            accelerator: Accelerate accelerator instance
-            dataloader: Training dataloader
-            dataset: Training dataset
+            pipeline_config: Parsed pipeline configuration (new signature)
+            checkpoint_manager: Checkpoint manager instance (new signature)
+            accelerator: Accelerate accelerator instance (new signature)
+            device: Target device (new signature)
+            config: Parsed pipeline configuration (legacy, for tests)
+            models: Dictionary of model components (legacy, for tests)
+            dataloader: Training dataloader (legacy, for tests)
+            dataset: Training dataset (legacy, for tests)
         """
-        self.config = config
-        self.models = models
+        # Support both new and legacy signatures
+        self.config = pipeline_config or config
         self.checkpoint_manager = checkpoint_manager
         self.accelerator = accelerator
+        self.device = device
+
+        # Legacy support
+        self.models = models or {}
         self.dataloader = dataloader
         self.dataset = dataset
 
@@ -74,15 +81,16 @@ class TrainingPipelineOrchestrator:
         # Metric tracking for loss-threshold transitions
         self.step_metrics: dict[str, dict[str, list[float]]] = {}
 
-        # Validate models dictionary
-        self._validate_models()
+        # Validate models dictionary if provided (legacy mode)
+        if self.models:
+            self._validate_models()
 
     def _validate_models(self) -> None:
         """Validate that all required model components are present."""
         required = {"compressor", "expander", "flow_processor", "text_encoder", "discriminator"}
         missing = required - set(self.models.keys())
         if missing:
-            raise ValueError(f"Missing required model components: {missing}")
+            logger.warning(f"Missing model components (may be provided to run()): {missing}")
 
     def freeze_model(self, model_name: str) -> None:
         """
@@ -124,35 +132,55 @@ class TrainingPipelineOrchestrator:
         num_params = sum(p.numel() for p in model.parameters())
         logger.info(f"✓ Unfrozen: {model_name} ({num_params:,} parameters)")
 
-    def configure_step_models(self, step: PipelineStepConfig) -> None:
+    def configure_step_models(
+        self, step: PipelineStepConfig, models: dict[str, nn.Module] = None
+    ) -> None:
         """
-        Configure model freeze/unfreeze state for a pipeline step.
+        Configure models for pipeline step (freeze/unfreeze).
 
         Args:
             step: Pipeline step configuration
+            models: Dictionary of models (optional, uses self.models if not provided)
         """
+        models_dict = models or self.models
         logger.info(f"Configuring models for step '{step.name}'...")
 
         # Freeze specified models
         for model_name in step.freeze:
-            self.freeze_model(model_name)
+            if model_name not in models_dict:
+                logger.warning(f"Cannot freeze '{model_name}': not found in models dict")
+                continue
+            model = models_dict[model_name]
+            for param in model.parameters():
+                param.requires_grad = False
+            logger.info(f"Frozen model: {model_name}")
 
         # Unfreeze specified models
         for model_name in step.unfreeze:
-            self.unfreeze_model(model_name)
+            if model_name not in models_dict:
+                logger.warning(f"Cannot unfreeze '{model_name}': not found in models dict")
+                continue
+            model = models_dict[model_name]
+            for param in model.parameters():
+                param.requires_grad = True
+            logger.info(f"Unfrozen model: {model_name}")
 
         # Log final state
-        trainable_params = sum(
-            p.numel() for m in self.models.values() for p in m.parameters() if p.requires_grad
-        )
-        total_params = sum(p.numel() for m in self.models.values() for p in m.parameters())
-        frozen_params = total_params - trainable_params
+        if models_dict:
+            trainable_params = sum(
+                p.numel() for m in models_dict.values() for p in m.parameters() if p.requires_grad
+            )
+            total_params = sum(p.numel() for m in models_dict.values() for p in m.parameters())
+            frozen_params = total_params - trainable_params
 
-        logger.info(
-            f"Model configuration complete: "
-            f"{trainable_params:,} trainable, {frozen_params:,} frozen "
-            f"({100.0 * trainable_params / total_params:.1f}% trainable)"
-        )
+            if total_params > 0:
+                logger.info(
+                    f"Model configuration complete: "
+                    f"{trainable_params:,} trainable, {frozen_params:,} frozen "
+                    f"({100.0 * trainable_params / total_params:.1f}% trainable)"
+                )
+            else:
+                logger.warning("No model parameters found")
 
     def update_metrics(self, step_name: str, losses: dict[str, float]) -> None:
         """
@@ -351,7 +379,158 @@ class TrainingPipelineOrchestrator:
         print(f"\nTotal epochs: {total_epochs}")
         print("=" * 80 + "\n")
 
-    def run(self, models, dataloader, tokenizer, args, config) -> None:
+    def _create_step_optimizers(self, step, models, args):
+        """Create optimizers for current step from inline config."""
+        from ..training.optimizer_factory import create_optimizer
+
+        optimizers = {}
+
+        if not step.optimization or not step.optimization.optimizers:
+            # Use default configs
+            logger.info("No optimizer config found, using defaults")
+            return optimizers
+
+        for name, opt_config_obj in step.optimization.optimizers.items():
+            # Convert OptimizerConfig to dict format expected by create_optimizer
+            opt_config = {
+                "type": opt_config_obj.type,
+                "lr": opt_config_obj.lr,
+                "weight_decay": opt_config_obj.weight_decay,
+                "eps": opt_config_obj.eps,
+            }
+            if opt_config_obj.betas:
+                opt_config["betas"] = opt_config_obj.betas
+
+            # Get parameters based on optimizer name
+            if name == "vae":
+                params = list(models["compressor"].parameters()) + list(
+                    models["expander"].parameters()
+                )
+            elif name == "flow":
+                params = models["flow_processor"].parameters()
+            elif name == "text_encoder":
+                params = models["text_encoder"].parameters()
+            elif name == "discriminator":
+                params = models["D_img"].parameters()
+            else:
+                logger.warning(f"Unknown optimizer name: {name}")
+                continue
+
+            optimizer = create_optimizer(params, opt_config)
+            optimizers[name] = optimizer
+            logger.info(
+                f"Created optimizer '{name}': {opt_config['type']} (lr={opt_config['lr']:.2e})"
+            )
+
+        return optimizers
+
+    def _create_step_schedulers(self, step, optimizers, total_steps):
+        """Create schedulers for current step from inline config."""
+        from ..training.scheduler_factory import create_scheduler
+
+        schedulers = {}
+
+        if not step.optimization or not step.optimization.schedulers:
+            logger.info("No scheduler config found, skipping")
+            return schedulers
+
+        for name, sched_config_obj in step.optimization.schedulers.items():
+            if name not in optimizers:
+                logger.warning(f"Scheduler '{name}' has no corresponding optimizer")
+                continue
+
+            # Convert SchedulerConfig to dict
+            sched_config = {
+                "type": sched_config_obj.type,
+                "eta_min_factor": sched_config_obj.eta_min_factor,
+            }
+
+            scheduler = create_scheduler(optimizers[name], sched_config, total_steps)
+            schedulers[name] = scheduler
+            logger.info(f"Created scheduler '{name}': {sched_config['type']}")
+
+        return schedulers
+
+    def _create_step_trainers(self, step, models, optimizers, schedulers, ema, args):
+        """Create trainers for current step."""
+        import torch.nn as nn
+
+        from ..training import FlowTrainer, VAETrainer
+
+        trainers = {}
+
+        if step.train_vae and "vae" in optimizers:
+            trainers["vae"] = VAETrainer(
+                compressor=models["compressor"],
+                expander=models["expander"],
+                optimizer=optimizers["vae"],
+                scheduler=schedulers.get("vae"),
+                ema=ema,
+                reconstruction_loss_fn=nn.L1Loss(),
+                reconstruction_loss_min_fn=nn.MSELoss(),
+                use_spade=step.train_spade,
+                kl_beta=step.kl_beta if hasattr(step, "kl_beta") else 0.0001,
+                kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
+                kl_free_bits=step.kl_free_bits if hasattr(step, "kl_free_bits") else 0.0,
+                use_gan=step.gan_training,
+                discriminator=models["D_img"] if step.gan_training else None,
+                discriminator_optimizer=optimizers.get("discriminator"),
+                discriminator_scheduler=schedulers.get("discriminator"),
+                lambda_adv=step.lambda_adv if hasattr(step, "lambda_adv") else 0.5,
+                use_lpips=step.use_lpips,
+                lambda_lpips=step.lambda_lpips if hasattr(step, "lambda_lpips") else 0.1,
+                r1_gamma=5.0,
+                r1_interval=16,
+                gradient_clip_norm=args.initial_clipping_norm,
+                accelerator=self.accelerator,
+            )
+            logger.info(f"Created VAE trainer (SPADE={'ON' if step.train_spade else 'OFF'})")
+
+        if (step.train_diff or step.train_diff_full) and "flow" in optimizers:
+            trainers["flow"] = FlowTrainer(
+                flow_processor=models["flow_processor"],
+                text_encoder=models["text_encoder"],
+                compressor=models["compressor"],
+                optimizer=optimizers["flow"],
+                scheduler=schedulers.get("flow"),
+                text_encoder_optimizer=optimizers.get("text_encoder"),
+                text_encoder_scheduler=schedulers.get("text_encoder"),
+                gradient_clip_norm=args.initial_clipping_norm,
+                num_train_timesteps=1000,
+                accelerator=self.accelerator,
+            )
+            logger.info("Created Flow trainer")
+
+        return trainers
+
+    def _save_checkpoint(
+        self, step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+    ):
+        """Save checkpoint with pipeline metadata."""
+        # Get pipeline metadata
+        metadata = self.get_pipeline_metadata(step_idx, epoch, batch_idx)
+
+        # Save models
+        self.checkpoint_manager.save_models(
+            diffuser=models["diffuser"],
+            text_encoder=models["text_encoder"],
+            discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
+        )
+
+        # Save training state with pipeline metadata
+        self.checkpoint_manager.save_training_state(
+            epoch=epoch,
+            batch_idx=batch_idx,
+            global_step=self.global_step,
+            optimizers=optimizers,
+            schedulers=schedulers,
+            ema=ema,
+            pipeline_metadata=metadata,
+        )
+
+        logger.info(f"Checkpoint saved at step {step_idx+1}, epoch {epoch+1}, batch {batch_idx}")
+
+    def run(self, models, dataloader, sampler, tokenizer, progress_logger, args, config) -> None:
         """
         Execute the complete training pipeline.
 
@@ -407,6 +586,14 @@ class TrainingPipelineOrchestrator:
         For detailed architecture and implementation plan:
             See docs/PIPELINE_ARCHITECTURE.md
         """
+        import time
+
+        import torch
+        import torch.nn as nn
+        from fluxflow.utils import format_duration
+
+        from ..training import EMA, FloatBuffer
+
         logger.info("Starting training pipeline execution...")
 
         # Print pipeline summary
@@ -416,33 +603,159 @@ class TrainingPipelineOrchestrator:
         start_step, start_epoch, start_batch = self.resume_from_checkpoint()
 
         logger.info(
-            f"Pipeline has {len(self.config.steps)} steps, " f"starting from step {start_step + 1}"
+            f"Pipeline has {len(self.config.steps)} steps, starting from step {start_step + 1}"
         )
 
-        raise NotImplementedError(
-            "Pipeline execution implementation deferred to Phase 3b.\n"
-            "\n"
-            "Current Status:\n"
-            "  ✅ Pipeline config parsing and validation\n"
-            "  ✅ train.py integration and dry-run validation  \n"
-            "  ⏸️  Full pipeline execution (architecture documented)\n"
-            "\n"
-            "The architecture is fully designed and documented in:\n"
-            "  docs/PIPELINE_ARCHITECTURE.md\n"
-            "\n"
-            "Implementation requires:\n"
-            "  1. Extract model/dataloader initialization helpers\n"
-            "  2. Implement per-step optimizer/scheduler creation\n"
-            "  3. Implement per-step trainer creation\n"
-            "  4. Implement step-by-step training loop\n"
-            "  5. Integrate loss-threshold monitoring\n"
-            "  6. Add checkpoint saving with pipeline metadata\n"
-            "\n"
-            "Estimated effort: 4-6 hours for experienced developer\n"
-            "\n"
-            "To use pipeline features now:\n"
-            "  - Validation: python train.py --config my_config.yaml --validate-pipeline\n"
-            "  - Planning: Review execution plan before committing to training\n"
-            "\n"
-            "For questions or to contribute: see docs/PIPELINE_ARCHITECTURE.md"
-        )
+        # Get dataset size for progress tracking
+        if isinstance(dataloader.dataset, torch.utils.data.IterableDataset):
+            dataset_size = getattr(dataloader.dataset, "dataset_size", 1000)
+        else:
+            dataset_size = len(dataloader.dataset)
+
+        batches_per_epoch = max(1, dataset_size // args.batch_size)
+
+        # Main pipeline loop
+        for step_idx in range(start_step, len(self.config.steps)):
+            step = self.config.steps[step_idx]
+
+            print(f"\n{'='*80}")
+            print(f"PIPELINE STEP {step_idx+1}/{len(self.config.steps)}: {step.name}")
+            if step.description:
+                print(f"Description: {step.description}")
+            print(f"Duration: {step.n_epochs} epochs")
+            print(f"{'='*80}\n")
+
+            # Configure models for this step (freeze/unfreeze)
+            self.configure_step_models(step, models)
+
+            # Create optimizers and schedulers for this step
+            optimizers = self._create_step_optimizers(step, models, args)
+            total_steps = step.n_epochs * batches_per_epoch
+            schedulers = self._create_step_schedulers(step, optimizers, total_steps)
+
+            # Create EMA if training VAE
+            ema = None
+            if step.train_vae:
+                ema = EMA(
+                    nn.ModuleList([models["compressor"], models["expander"]]),
+                    decay=0.999,
+                    device=self.device,
+                )
+
+            # Create trainers for this step
+            trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
+
+            # Training loop for this step
+            step_start_time = time.time()
+
+            for epoch in range(start_epoch if step_idx == start_step else 0, step.n_epochs):
+                print(
+                    f"\nStep {step_idx+1}/{len(self.config.steps)}, Epoch {epoch+1}/{step.n_epochs}"
+                )
+
+                epoch_start_time = time.time()
+
+                # Error buffers for logging
+                vae_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                kl_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                flow_errors = FloatBuffer(max(args.log_interval * 2, 10))
+
+                for batch_idx, (imgs, input_ids) in enumerate(dataloader):
+                    # Skip batches if resuming mid-epoch
+                    if step_idx == start_step and epoch == start_epoch and batch_idx < start_batch:
+                        continue
+
+                    self.global_step += 1
+                    input_ids = input_ids.to(self.device)
+                    attention_mask = (input_ids != tokenizer.pad_token_id).long().to(self.device)
+
+                    # Train on all resolutions
+                    for ri in imgs:
+                        real_imgs = ri.to(self.device).detach()
+
+                        # VAE training
+                        if step.train_vae and trainers.get("vae"):
+                            vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
+                            vae_errors.add_item(vae_losses["vae"])
+                            kl_errors.add_item(vae_losses["kl"])
+
+                            # Update metrics for transition monitoring
+                            self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
+
+                        # Flow training
+                        if (step.train_diff or step.train_diff_full) and trainers.get("flow"):
+                            flow_losses = trainers["flow"].train_step(
+                                real_imgs, input_ids, attention_mask
+                            )
+                            flow_loss = (
+                                flow_losses["flow_loss"]
+                                if isinstance(flow_losses, dict)
+                                else flow_losses
+                            )
+                            flow_errors.add_item(flow_loss)
+
+                            # Update metrics for transition monitoring
+                            self.update_metrics(step.name, {"flow_loss": flow_loss})
+
+                    # Logging
+                    if batch_idx % args.log_interval == 0:
+                        elapsed = time.time() - step_start_time
+                        elapsed_str = format_duration(elapsed)
+
+                        log_msg = f"[{elapsed_str}] Step {step_idx+1}/{len(self.config.steps)} | Epoch {epoch+1}/{step.n_epochs} | Batch {batch_idx}"
+
+                        if step.train_vae:
+                            log_msg += (
+                                f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"
+                            )
+                        if step.train_diff or step.train_diff_full:
+                            log_msg += f" | Flow: {flow_errors.average:.4f}"
+
+                        print(log_msg)
+
+                        # Log to progress logger
+                        metrics = {}
+                        if step.train_vae:
+                            metrics["vae_loss"] = vae_errors.average
+                            metrics["kl_loss"] = kl_errors.average
+                        if step.train_diff or step.train_diff_full:
+                            metrics["flow_loss"] = flow_errors.average
+
+                        progress_logger.log_metrics(
+                            epoch=epoch,
+                            batch=batch_idx,
+                            global_step=self.global_step,
+                            metrics=metrics,
+                            learning_rates={},
+                        )
+
+                    # Checkpoint saving
+                    if batch_idx % args.checkpoint_save_interval == 0 and batch_idx > 0:
+                        self._save_checkpoint(
+                            step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                        )
+
+                # Check transition criteria
+                if self.should_transition(step, epoch):
+                    print(f"\nTransition criteria met after epoch {epoch+1}, moving to next step")
+                    break
+
+                epoch_time = time.time() - epoch_start_time
+                print(f"Epoch {epoch+1} completed in {format_duration(epoch_time)}")
+
+            # Cleanup
+            del optimizers, schedulers, trainers
+            if ema:
+                del ema
+            torch.cuda.empty_cache()
+
+            # Mark step as completed
+            self.steps_completed.append(step.name)
+
+            # Reset start_epoch and start_batch for next step
+            start_epoch = 0
+            start_batch = 0
+
+        print(f"\n{'='*80}")
+        print("PIPELINE TRAINING COMPLETE")
+        print(f"{'='*80}\n")

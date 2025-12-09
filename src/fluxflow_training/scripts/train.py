@@ -194,6 +194,183 @@ def load_optimizer_scheduler_config(args, lr):
     return optimizer_configs, scheduler_configs
 
 
+def initialize_models(args, config, device, checkpoint_manager):
+    """
+    Initialize FluxFlow models from configuration.
+
+    Args:
+        args: Parsed command-line arguments
+        config: Loaded YAML config dictionary
+        device: Target device (CPU/CUDA/MPS)
+        checkpoint_manager: CheckpointManager instance for loading checkpoints
+
+    Returns:
+        Dict containing initialized models
+    """
+    channels = args.channels
+
+    # Initialize models
+    text_encoder = BertTextEncoder(
+        embed_dim=args.text_embedding_dim, pretrain_model=args.pretrained_bert_model
+    )
+    image_encoder = ImageEncoder(
+        channels,
+        text_embedding_dim=args.text_embedding_dim,
+        feature_maps=args.feature_maps_dim_disc,
+    )
+
+    compressor = FluxCompressor(d_model=args.vae_dim, use_attention=True)
+    expander = FluxExpander(d_model=args.vae_dim)
+    flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
+    diffuser = FluxPipeline(compressor, flow_processor, expander)
+
+    # Discriminators
+    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+
+    # Load checkpoints if resuming
+    if args.model_checkpoint and os.path.exists(args.model_checkpoint):
+        loaded_states = checkpoint_manager.load_models_parallel(
+            checkpoint_path=args.model_checkpoint
+        )
+
+        if loaded_states.get("diffuser.compressor"):
+            compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded compressor checkpoint")
+        if loaded_states.get("diffuser.flow_processor"):
+            flow_processor.load_state_dict(loaded_states["diffuser.flow_processor"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded flow_processor checkpoint")
+        if loaded_states.get("diffuser.expander"):
+            expander.load_state_dict(loaded_states["diffuser.expander"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded expander checkpoint")
+        if loaded_states.get("text_encoder"):
+            text_encoder.load_state_dict(loaded_states["text_encoder"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded text_encoder checkpoint")
+        if loaded_states.get("image_encoder"):
+            image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded image_encoder checkpoint")
+        if loaded_states.get("D_img"):
+            D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded D_img checkpoint")
+
+    # Move to device
+    diffuser.to(device)
+    text_encoder.to(device)
+    image_encoder.to(device)
+    D_img.to(device)
+
+    return {
+        "diffuser": diffuser,
+        "compressor": compressor,
+        "expander": expander,
+        "flow_processor": flow_processor,
+        "text_encoder": text_encoder,
+        "image_encoder": image_encoder,
+        "D_img": D_img,
+    }
+
+
+def initialize_tokenizer(args):
+    """
+    Initialize tokenizer from configuration.
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        Initialized tokenizer
+    """
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_name, cache_dir="./_cache", local_files_only=False
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    return tokenizer
+
+
+def initialize_dataloader(args, accelerator):
+    """
+    Initialize dataset and dataloader from configuration.
+
+    Args:
+        args: Parsed command-line arguments
+        accelerator: Accelerator instance
+
+    Returns:
+        Tuple of (dataloader, sampler, dataset_size)
+    """
+    collate_fn = partial(
+        collate_fn_variable,
+        channels=args.channels,
+        img_size=args.img_size,
+        reduced_min_sizes=args.reduced_min_sizes,
+    )
+
+    if args.use_webdataset:
+        print(f"Using WebDataset streaming from: {args.webdataset_url}")
+        dataset = StreamingWebDataset(
+            tokenizer_name=args.tokenizer_name,
+            token=args.webdataset_token,
+            url_pattern=args.webdataset_url,
+            channels=args.channels,
+            image_key=args.webdataset_image_key,
+            label_key=args.webdataset_label_key,
+            caption_key=args.webdataset_caption_key,
+            dataset_size=args.webdataset_size,
+            samples_per_shard=args.webdataset_samples_per_shard,
+            fixed_prompt_prefix=args.fixed_prompt_prefix,
+        )
+        print(f"  Shards: {dataset.num_shards}, Estimated size: {dataset.dataset_size:,} samples")
+        if args.fixed_prompt_prefix:
+            print(f"  Fixed prompt prefix: '{args.fixed_prompt_prefix}'")
+        sampler = None
+        dataset_size = len(dataset)
+    else:
+        dataset = TextImageDataset(
+            data_path=args.data_path,
+            captions_file=args.captions_file,
+            tokenizer_name=args.tokenizer_name,
+            transform=None,
+            fixed_prompt_prefix=args.fixed_prompt_prefix,
+        )
+        if args.fixed_prompt_prefix:
+            print(f"  Fixed prompt prefix: '{args.fixed_prompt_prefix}'")
+
+        # Build dimension cache
+        dimension_cache = get_or_build_dimension_cache(
+            dataset, cache_dir=args.output_path, multiple=32, rebuild=False
+        )
+
+        # Create sampler
+        sampler = ResumableDimensionSampler(
+            dimension_cache=dimension_cache,
+            batch_size=args.batch_size,
+            seed=42,
+        )
+        dataset_size = len(dataset)
+
+    # Build DataLoader
+    dataloader_kwargs = {
+        "dataset": dataset,
+        "num_workers": args.workers,
+        "pin_memory": (not torch.backends.mps.is_available()),
+        "collate_fn": collate_fn,
+        "worker_init_fn": worker_init_fn,
+        "persistent_workers": args.workers > 0,
+    }
+
+    if sampler is not None:
+        dataloader_kwargs["batch_sampler"] = sampler
+    else:
+        dataloader_kwargs["batch_size"] = args.batch_size
+        dataloader_kwargs["shuffle"] = False
+
+    dataloader = DataLoader(**dataloader_kwargs)
+    dataloader = accelerator.prepare(dataloader)
+
+    return dataloader, sampler, dataset_size
+
+
 def train_pipeline(args, config):
     """
     Pipeline-based training loop for FluxFlow.
@@ -208,6 +385,12 @@ def train_pipeline(args, config):
 
     # Parse pipeline configuration
     pipeline_config = parse_pipeline_config(config["training"]["pipeline"])
+
+    # Set random seed
+    manualSeed = random.randint(1, sys.maxsize)
+    print("Random Seed: ", manualSeed)
+    random.seed(manualSeed)
+    torch.manual_seed(manualSeed)
 
     # Initialize accelerator
     if torch.backends.mps.is_available():
@@ -231,6 +414,18 @@ def train_pipeline(args, config):
         output_dir=args.output_path, generate_diagrams=args.generate_diagrams
     )
 
+    # Initialize tokenizer
+    tokenizer = initialize_tokenizer(args)
+
+    # Initialize models
+    print("\nInitializing models...")
+    models = initialize_models(args, config, device, checkpoint_manager)
+
+    # Initialize dataloader
+    print("\nInitializing dataset and dataloader...")
+    dataloader, sampler, dataset_size = initialize_dataloader(args, accelerator)
+    print(f"Dataset size: {dataset_size:,} samples")
+
     # Initialize pipeline orchestrator
     orchestrator = TrainingPipelineOrchestrator(
         pipeline_config=pipeline_config,
@@ -239,15 +434,18 @@ def train_pipeline(args, config):
         device=device,
     )
 
-    # Check if resuming from checkpoint
-    checkpoint_path = args.model_checkpoint if hasattr(args, "model_checkpoint") else None
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        print(f"Resuming from checkpoint: {checkpoint_path}")
-        orchestrator.resume_from_checkpoint(checkpoint_path)
+    # Initialize progress logger
+    progress_logger = TrainingProgressLogger(args.output_path)
+    print(f"Training progress will be logged to: {progress_logger.get_graph_dir()}")
 
     # Run pipeline
     print("\nStarting pipeline training...")
     orchestrator.run(
+        models=models,
+        dataloader=dataloader,
+        sampler=sampler,
+        tokenizer=tokenizer,
+        progress_logger=progress_logger,
         args=args,
         config=config,
     )
