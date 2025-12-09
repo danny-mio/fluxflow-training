@@ -317,8 +317,8 @@ class TestTrainScriptMain:
             # No --train_vae or --train_diff
         ]
         with patch.object(sys, "argv", ["train.py"] + test_args):
-            # Mock the train function to avoid actually running training
-            with patch.object(train, "train", return_value=None):
+            # Mock the train_legacy function to avoid actually running training
+            with patch.object(train, "train_legacy", return_value=None):
                 train.main()
 
         captured = capsys.readouterr()

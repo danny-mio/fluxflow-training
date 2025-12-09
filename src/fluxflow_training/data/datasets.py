@@ -7,7 +7,7 @@ import random
 import time
 from collections import defaultdict
 from datetime import datetime
-from typing import Callable, Iterator, Optional, Any
+from typing import Any, Callable, Iterator, Optional
 
 import torch
 import webdataset as wds

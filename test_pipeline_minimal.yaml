@@ -1,0 +1,62 @@
+# Minimal pipeline config for testing
+model:
+  vae_dim: 32  # Small for fast testing
+  feature_maps_dim: 32
+  feature_maps_dim_disc: 8
+  text_embedding_dim: 128
+
+data:
+  data_path: "tests/fixtures/test_images"  # Will create dummy data
+  captions_file: "tests/fixtures/test_captions.txt"
+  img_size: 64  # Small for fast testing
+  channels: 3
+  tokenizer_name: "distilbert-base-uncased"
+
+training:
+  n_epochs: 1  # Just 1 epoch for testing
+  batch_size: 2
+  workers: 0  # No workers for testing
+  lr: 0.0001
+  use_fp16: false
+  initial_clipping_norm: 1.0
+  
+  # Pipeline mode
+  pipeline:
+    steps:
+      # Step 1: VAE training with SPADE OFF (minimal)
+      - name: "vae_test"
+        n_epochs: 1  # Just 1 epoch
+        max_steps: 2  # Only 2 batches for quick testing
+        train_vae: true
+        train_spade: false
+        train_diff: false
+        gan_training: false  # No GAN for simplicity
+        use_lpips: false  # No LPIPS for speed
+        
+        freeze: ["flow_processor", "text_encoder"]
+        
+        kl_beta: 0.0001
+        kl_warmup_steps: 100
+        kl_free_bits: 0.0
+        
+        optimization:
+          optimizers:
+            vae:
+              type: "AdamW"
+              lr: 0.0001
+              betas: [0.9, 0.999]
+              weight_decay: 0.01
+          
+          schedulers:
+            vae:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
+
+output:
+  output_path: "outputs/test_pipeline"
+  log_interval: 1
+  checkpoint_save_interval: 10
+  no_samples: true  # Skip sample generation
+  generate_diagrams: false
+  test_image_address: []
+  sample_captions: []

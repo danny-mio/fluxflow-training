@@ -24,26 +24,54 @@ class TrainingProgressLogger:
     - Tracks session metadata
     """
 
-    def __init__(self, output_path: str):
+    def __init__(self, output_path: str, step_name: Optional[str] = None):
         """
         Initialize the progress logger.
 
         Args:
             output_path: Base output path for training artifacts
+            step_name: Optional pipeline step name for file naming
         """
         self.output_path = Path(output_path)
         self.graph_dir = self.output_path / "graph"
         self.graph_dir.mkdir(parents=True, exist_ok=True)
 
-        # File paths
-        self.session_file = self.graph_dir / "session.json"
-        self.metrics_file = self.graph_dir / "training_metrics.jsonl"
+        # Track current step for pipeline mode
+        self.current_step_name = step_name
+
+        # File paths (will be updated if step_name changes)
+        self._update_file_paths()
 
         # Initialize or load session
         self.session_id = self._get_or_create_session()
         self.session_start_time = time.time()
 
         # Track if this is a new session or resumed
+        self.is_resumed = self._check_if_resumed()
+
+    def _update_file_paths(self):
+        """Update file paths based on current step name."""
+        if self.current_step_name:
+            # Step-specific files: session_step1.json, training_metrics_step1.jsonl
+            self.session_file = self.graph_dir / f"session_{self.current_step_name}.json"
+            self.metrics_file = self.graph_dir / f"training_metrics_{self.current_step_name}.jsonl"
+        else:
+            # Default files (legacy/non-pipeline mode)
+            self.session_file = self.graph_dir / "session.json"
+            self.metrics_file = self.graph_dir / "training_metrics.jsonl"
+
+    def set_step(self, step_name: str):
+        """
+        Set the current pipeline step name and update file paths.
+
+        Args:
+            step_name: Pipeline step name (e.g., "gan_warmup", "vae_gan_lpips")
+        """
+        self.current_step_name = step_name
+        self._update_file_paths()
+
+        # Reload session for new step
+        self.session_id = self._get_or_create_session()
         self.is_resumed = self._check_if_resumed()
 
     def _get_or_create_session(self) -> str:

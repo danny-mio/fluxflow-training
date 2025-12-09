@@ -1,0 +1,801 @@
+"""Unit tests for TrainingPipelineOrchestrator."""
+
+from unittest.mock import Mock
+
+import pytest
+import torch.nn as nn
+
+from fluxflow_training.training.checkpoint_manager import CheckpointManager
+from fluxflow_training.training.pipeline_config import (
+    PipelineStepConfig,
+    TransitionCriteria,
+    parse_pipeline_config,
+)
+from fluxflow_training.training.pipeline_orchestrator import TrainingPipelineOrchestrator
+
+
+@pytest.fixture
+def mock_models():
+    """Create mock model dictionary."""
+    models = {}
+    for name in ["compressor", "expander", "flow_processor", "text_encoder", "discriminator"]:
+        model = Mock(spec=nn.Module)
+        model.parameters = Mock(
+            return_value=[Mock(spec=nn.Parameter, numel=Mock(return_value=1000))]
+        )
+        models[name] = model
+    return models
+
+
+@pytest.fixture
+def mock_checkpoint_manager(tmp_path):
+    """Create mock checkpoint manager."""
+    return Mock(spec=CheckpointManager)
+
+
+@pytest.fixture
+def simple_pipeline_config():
+    """Create simple pipeline config for testing."""
+    config_dict = {
+        "steps": [
+            {
+                "name": "step1",
+                "n_epochs": 10,
+                "train_vae": True,
+                "freeze": ["text_encoder"],
+                "transition_on": {"mode": "epoch", "value": 10},
+            },
+            {
+                "name": "step2",
+                "n_epochs": 5,
+                "train_vae": True,
+                "gan_training": True,
+                "transition_on": {
+                    "mode": "loss_threshold",
+                    "metric": "vae_loss",
+                    "threshold": 0.015,
+                    "max_epochs": 10,
+                },
+            },
+        ]
+    }
+    return parse_pipeline_config(config_dict)
+
+
+class TestOrchestratorInitialization:
+    """Test orchestrator initialization."""
+
+    def test_initialization_success(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test successful initialization."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        assert orchestrator.current_step_index == 0
+        assert orchestrator.global_step == 0
+        assert orchestrator.steps_completed == []
+        assert orchestrator.step_metrics == {}
+
+    def test_initialization_missing_model(self, simple_pipeline_config, mock_checkpoint_manager):
+        """Test initialization warns with missing model (models can be provided to run())."""
+        incomplete_models = {"compressor": Mock(), "expander": Mock()}
+
+        # Should not raise, just warn (models can be provided to run())
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=incomplete_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Should initialize successfully
+        assert orchestrator is not None
+
+
+class TestModelFreezing:
+    """Test model freeze/unfreeze functionality."""
+
+    def test_freeze_model(self, simple_pipeline_config, mock_models, mock_checkpoint_manager):
+        """Test freezing a model."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Create real model for testing
+        model = nn.Linear(10, 10)
+        orchestrator.models["test_model"] = model
+
+        # Initially, parameters are trainable
+        assert all(p.requires_grad for p in model.parameters())
+
+        # Freeze the model
+        orchestrator.freeze_model("test_model")
+
+        # After freezing, parameters should not require grad
+        assert all(not p.requires_grad for p in model.parameters())
+
+    def test_unfreeze_model(self, simple_pipeline_config, mock_models, mock_checkpoint_manager):
+        """Test unfreezing a model."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Create real model for testing
+        model = nn.Linear(10, 10)
+        orchestrator.models["test_model"] = model
+
+        # Freeze then unfreeze
+        for param in model.parameters():
+            param.requires_grad = False
+
+        orchestrator.unfreeze_model("test_model")
+
+        # After unfreezing, parameters should require grad
+        assert all(p.requires_grad for p in model.parameters())
+
+    def test_freeze_nonexistent_model(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test freezing nonexistent model logs warning and doesn't crash."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Should not raise, just log warning
+        orchestrator.freeze_model("nonexistent_model")
+
+
+class TestConfigureStepModels:
+    """Test model configuration for pipeline steps."""
+
+    def test_configure_freeze_list(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test configuring models with freeze list."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step = PipelineStepConfig(
+            name="test",
+            n_epochs=10,
+            train_vae=True,
+            freeze=["text_encoder", "discriminator"],
+            transition_on=TransitionCriteria(mode="epoch", value=10),
+        )
+
+        # Add real models for testing
+        for name in ["text_encoder", "discriminator", "compressor"]:
+            orchestrator.models[name] = nn.Linear(10, 10)
+
+        orchestrator.configure_step_models(step)
+
+        # text_encoder and discriminator should be frozen
+        assert all(not p.requires_grad for p in orchestrator.models["text_encoder"].parameters())
+        assert all(not p.requires_grad for p in orchestrator.models["discriminator"].parameters())
+
+        # compressor should still be trainable
+        assert all(p.requires_grad for p in orchestrator.models["compressor"].parameters())
+
+
+class TestMetricTracking:
+    """Test metric tracking for loss-threshold transitions."""
+
+    def test_update_metrics(self, simple_pipeline_config, mock_models, mock_checkpoint_manager):
+        """Test updating metrics."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        losses = {"vae_loss": 0.5, "kl_loss": 2.0}
+        orchestrator.update_metrics("step1", losses)
+
+        assert "step1" in orchestrator.step_metrics
+        assert "vae_loss" in orchestrator.step_metrics["step1"]
+        assert "kl_loss" in orchestrator.step_metrics["step1"]
+        assert orchestrator.step_metrics["step1"]["vae_loss"] == [0.5]
+        assert orchestrator.step_metrics["step1"]["kl_loss"] == [2.0]
+
+    def test_update_metrics_multiple_times(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test multiple metric updates."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        for i in range(5):
+            orchestrator.update_metrics("step1", {"loss": float(i)})
+
+        assert len(orchestrator.step_metrics["step1"]["loss"]) == 5
+        assert orchestrator.step_metrics["step1"]["loss"] == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+    def test_metric_buffer_limit(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test metric buffer maintains max 100 items."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Add 150 metrics
+        for i in range(150):
+            orchestrator.update_metrics("step1", {"loss": float(i)})
+
+        # Should keep only last 100
+        assert len(orchestrator.step_metrics["step1"]["loss"]) == 100
+        assert orchestrator.step_metrics["step1"]["loss"][0] == 50.0  # First 50 removed
+        assert orchestrator.step_metrics["step1"]["loss"][-1] == 149.0
+
+
+class TestSmoothedMetrics:
+    """Test smoothed metric calculation."""
+
+    def test_get_smoothed_metric(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test getting smoothed metric value."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Add 30 metrics with values 0-29
+        for i in range(30):
+            orchestrator.update_metrics("step1", {"loss": float(i)})
+
+        # Get smoothed value over last 20 (window=20)
+        smoothed = orchestrator.get_smoothed_metric("step1", "loss", window=20)
+
+        # Should be average of 10-29 (last 20 values)
+        expected = sum(range(10, 30)) / 20.0
+        assert smoothed == pytest.approx(expected)
+
+    def test_get_smoothed_metric_insufficient_data(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test smoothed metric returns None with insufficient data."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        # Add only 10 metrics
+        for i in range(10):
+            orchestrator.update_metrics("step1", {"loss": float(i)})
+
+        # Request window=20, should return None
+        smoothed = orchestrator.get_smoothed_metric("step1", "loss", window=20)
+        assert smoothed is None
+
+    def test_get_smoothed_metric_nonexistent(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test smoothed metric for nonexistent step/metric."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        smoothed = orchestrator.get_smoothed_metric("nonexistent_step", "loss")
+        assert smoothed is None
+
+
+class TestTransitionCriteria:
+    """Test transition criteria evaluation."""
+
+    def test_should_transition_epoch_mode(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test epoch-based transition."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step = PipelineStepConfig(
+            name="test",
+            n_epochs=10,
+            train_vae=True,
+            transition_on=TransitionCriteria(mode="epoch", value=10),
+        )
+
+        # Before reaching target
+        should_trans, reason = orchestrator.should_transition(step, current_epoch=5)
+        assert should_trans is False
+        assert "5/10" in reason
+
+        # After reaching target
+        should_trans, reason = orchestrator.should_transition(step, current_epoch=10)
+        assert should_trans is True
+        assert "Completed 10 epochs" in reason
+
+    def test_should_transition_loss_threshold_mode(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test loss-threshold-based transition."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step = PipelineStepConfig(
+            name="test",
+            n_epochs=50,
+            train_vae=True,
+            transition_on=TransitionCriteria(
+                mode="loss_threshold", metric="vae_loss", threshold=0.01, max_epochs=50
+            ),
+        )
+
+        # Add metrics above threshold
+        for i in range(30):
+            orchestrator.update_metrics("test", {"vae_loss": 0.02})  # Above 0.01
+
+        should_trans, reason = orchestrator.should_transition(step, current_epoch=10)
+        assert should_trans is False
+        assert "0.0200" in reason  # Shows current value
+
+        # Add metrics below threshold
+        for i in range(30):
+            orchestrator.update_metrics("test", {"vae_loss": 0.005})  # Below 0.01
+
+        should_trans, reason = orchestrator.should_transition(step, current_epoch=15)
+        assert should_trans is True
+        assert "threshold met" in reason.lower()
+
+    def test_should_transition_max_epochs_reached(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test loss-threshold transitions at max_epochs limit."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step = PipelineStepConfig(
+            name="test",
+            n_epochs=50,
+            train_vae=True,
+            transition_on=TransitionCriteria(
+                mode="loss_threshold", metric="vae_loss", threshold=0.001, max_epochs=20
+            ),
+        )
+
+        # Add metrics but threshold not met
+        for i in range(30):
+            orchestrator.update_metrics("test", {"vae_loss": 0.05})  # Well above threshold
+
+        # Should transition due to max_epochs
+        should_trans, reason = orchestrator.should_transition(step, current_epoch=20)
+        assert should_trans is True
+        assert "Max epochs (20) reached" in reason
+
+
+class TestPipelineMetadata:
+    """Test pipeline metadata generation."""
+
+    def test_get_pipeline_metadata(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test generating pipeline metadata."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        orchestrator.steps_completed = ["step1"]
+        metadata = orchestrator.get_pipeline_metadata(step_index=1, step_epoch=3, batch_idx=42)
+
+        assert metadata["current_step_index"] == 1
+        assert metadata["current_step_name"] == "step2"
+        assert metadata["current_step_epoch"] == 3
+        assert metadata["current_batch_idx"] == 42
+        assert metadata["total_steps"] == 2
+        assert metadata["steps_completed"] == ["step1"]
+
+
+class TestResumeFromCheckpoint:
+    """Test resuming from checkpoint."""
+
+    def test_resume_no_checkpoint(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test resume with no checkpoint."""
+        mock_checkpoint_manager.load_training_state.return_value = None
+
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step_idx, epoch, batch_idx = orchestrator.resume_from_checkpoint()
+
+        assert step_idx == 0
+        assert epoch == 0
+        assert batch_idx == 0
+
+    def test_resume_legacy_checkpoint(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test resume from legacy (non-pipeline) checkpoint."""
+        mock_checkpoint_manager.load_training_state.return_value = {
+            "mode": "legacy",
+            "epoch": 10,
+            "batch_idx": 50,
+            "global_step": 1000,
+        }
+
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step_idx, epoch, batch_idx = orchestrator.resume_from_checkpoint()
+
+        # Should start from beginning for legacy checkpoints
+        assert step_idx == 0
+        assert epoch == 0
+        assert batch_idx == 0
+
+    def test_resume_pipeline_checkpoint(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test resume from pipeline checkpoint with new format."""
+        mock_checkpoint_manager.load_training_state.return_value = {
+            "mode": "pipeline",
+            "epoch": 3,  # This is step-local epoch
+            "batch_idx": 75,
+            "global_step": 2500,
+            "pipeline": {
+                "current_step_index": 1,
+                "current_step_name": "step2",
+                "current_step_epoch": 3,  # Explicit step-local epoch
+                "current_batch_idx": 75,
+                "total_steps": 2,
+                "steps_completed": ["step1"],
+            },
+        }
+
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step_idx, step_epoch, batch_idx = orchestrator.resume_from_checkpoint()
+
+        assert step_idx == 1
+        assert step_epoch == 3  # Step-local epoch, not global
+        assert batch_idx == 75
+        assert orchestrator.global_step == 2500
+        assert orchestrator.steps_completed == ["step1"]
+
+    def test_resume_pipeline_checkpoint_backward_compat(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager
+    ):
+        """Test resume from old pipeline checkpoint without step_epoch (backward compatibility)."""
+        mock_checkpoint_manager.load_training_state.return_value = {
+            "mode": "pipeline",
+            "epoch": 5,  # Old format: global epoch
+            "batch_idx": 30,
+            "global_step": 1200,
+            "pipeline": {
+                "current_step_index": 0,
+                "current_step_name": "step1",
+                "total_steps": 2,
+                "steps_completed": [],
+                # No current_step_epoch or current_batch_idx (old format)
+            },
+        }
+
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        step_idx, step_epoch, batch_idx = orchestrator.resume_from_checkpoint()
+
+        # Should fall back to global epoch from training_state
+        assert step_idx == 0
+        assert step_epoch == 5  # Falls back to epoch from training_state
+        assert batch_idx == 30  # Falls back to batch_idx from training_state
+        assert orchestrator.global_step == 1200
+
+
+class TestPrintPipelineSummary:
+    """Test pipeline summary printing."""
+
+    def test_print_pipeline_summary(
+        self, simple_pipeline_config, mock_models, mock_checkpoint_manager, capsys
+    ):
+        """Test printing pipeline summary."""
+        orchestrator = TrainingPipelineOrchestrator(
+            config=simple_pipeline_config,
+            models=mock_models,
+            checkpoint_manager=mock_checkpoint_manager,
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+
+        orchestrator.print_pipeline_summary()
+
+        captured = capsys.readouterr()
+        assert "PIPELINE EXECUTION PLAN" in captured.out
+        assert "Step 1/2: step1" in captured.out
+        assert "Step 2/2: step2" in captured.out
+        assert "Total epochs: 15" in captured.out  # 10 + 5
+
+
+class TestTrainReconstructionParameter:
+    """Test train_reconstruction parameter for GAN-only training."""
+
+    def test_train_reconstruction_in_orchestrator_code(self):
+        """Orchestrator code should pass train_reconstruction to VAETrainer."""
+        # Read orchestrator source to verify the parameter is passed
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Check that train_reconstruction=step.train_vae is in the code
+        assert "train_reconstruction=step.train_vae" in content
+
+    def test_train_reconstruction_in_vae_trainer_signature(self):
+        """VAETrainer source should have train_reconstruction parameter."""
+        from pathlib import Path
+
+        vae_trainer_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "vae_trainer.py"
+        )
+        content = vae_trainer_path.read_text()
+
+        # Check parameter is in __init__ signature
+        assert "train_reconstruction: bool = True" in content
+        # Check it's stored as instance variable
+        assert "self.train_reconstruction = train_reconstruction" in content
+
+
+class TestLoggingOutput:
+    """Test console and metrics logging for different config combinations."""
+
+    def test_gan_only_mode_shows_gan_losses(self):
+        """GAN-only mode (train_vae=false, gan_training=true) should show G and D losses."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify GAN losses are tracked from correct keys
+        assert '"generator" in vae_losses' in content
+        assert '"discriminator" in vae_losses' in content
+        assert 'g_errors.add_item(vae_losses["generator"])' in content
+        assert 'd_errors.add_item(vae_losses["discriminator"])' in content
+
+        # Verify GAN losses are logged to console
+        assert "step.gan_training and len(g_errors._items) > 0" in content
+        assert 'f" | G: {g_errors.average:.4f} | D: {d_errors.average:.4f}"' in content
+
+        # Verify GAN losses are logged to metrics
+        assert 'metrics["g_loss"] = g_errors.average' in content
+        assert 'metrics["d_loss"] = d_errors.average' in content
+
+    def test_lpips_mode_shows_lpips_loss(self):
+        """LPIPS mode (use_lpips=true) should show LPIPS loss."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify LPIPS loss is tracked from correct key
+        assert '"lpips" in vae_losses' in content
+        assert 'lpips_errors.add_item(vae_losses["lpips"])' in content
+
+        # Verify LPIPS loss is logged to console
+        assert "step.use_lpips and len(lpips_errors._items) > 0" in content
+        assert 'f" | LPIPS: {lpips_errors.average:.4f}"' in content
+
+        # Verify LPIPS loss is logged to metrics
+        assert 'metrics["lpips_loss"] = lpips_errors.average' in content
+
+    def test_vae_mode_shows_vae_and_kl(self):
+        """VAE mode should show VAE and KL losses."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify VAE and KL are always tracked when VAE trainer runs
+        assert 'vae_errors.add_item(vae_losses["vae"])' in content
+        assert 'kl_errors.add_item(vae_losses["kl"])' in content
+
+        # Verify logged to console
+        assert 'f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"' in content
+
+        # Verify logged to metrics
+        assert 'metrics["vae_loss"] = vae_errors.average' in content
+        assert 'metrics["kl_loss"] = kl_errors.average' in content
+
+    def test_batch_timing_shown(self):
+        """Batch timing should be shown in console output."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify batch time is tracked
+        assert "batch_times = FloatBuffer" in content
+        assert "batch_start_time = time.time()" in content
+        assert "batch_time = time.time() - batch_start_time" in content
+        assert "batch_times.add_item(batch_time)" in content
+
+        # Verify logged to console
+        assert 'f" | {batch_times.average:.2f}s/batch"' in content
+
+    def test_flow_mode_shows_flow_loss(self):
+        """Flow mode (train_diff=true) should show flow loss."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify flow loss is tracked
+        assert "flow_errors.add_item(flow_loss)" in content
+
+        # Verify logged to console
+        assert "if step.train_diff or step.train_diff_full" in content
+        assert 'f" | Flow: {flow_errors.average:.4f}"' in content
+
+        # Verify logged to metrics
+        assert 'metrics["flow_loss"] = flow_errors.average' in content
+
+    def test_logging_conditional_on_buffer_data(self):
+        """Logging should check buffer has data, not just config flags."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Verify console logging checks buffer length
+        assert "if len(vae_errors._items) > 0:" in content
+        assert "if step.gan_training and len(g_errors._items) > 0:" in content
+        assert "if step.use_lpips and len(lpips_errors._items) > 0:" in content
+        assert "if len(batch_times._items) > 0:" in content
+
+        # Verify metrics logging checks buffer length
+        # (appears twice: once for console, once for metrics dict)
+        assert content.count("if len(vae_errors._items) > 0:") >= 2

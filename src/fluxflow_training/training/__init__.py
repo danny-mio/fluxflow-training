@@ -9,6 +9,17 @@ from .losses import (
     kl_standard_normal,
     r1_penalty,
 )
+from .pipeline_config import (
+    OptimizationConfig,
+    OptimizerConfig,
+    PipelineConfig,
+    PipelineConfigValidator,
+    PipelineStepConfig,
+    SchedulerConfig,
+    TransitionCriteria,
+    parse_pipeline_config,
+)
+from .pipeline_orchestrator import TrainingPipelineOrchestrator
 from .progress_logger import TrainingProgressLogger
 from .schedulers import (
     cosine_anneal_beta,
@@ -51,4 +62,15 @@ __all__ = [
     # Trainers
     "VAETrainer",
     "FlowTrainer",
+    # Pipeline configuration
+    "PipelineConfig",
+    "PipelineStepConfig",
+    "PipelineConfigValidator",
+    "TransitionCriteria",
+    "OptimizerConfig",
+    "SchedulerConfig",
+    "OptimizationConfig",
+    "parse_pipeline_config",
+    # Pipeline orchestration
+    "TrainingPipelineOrchestrator",
 ]

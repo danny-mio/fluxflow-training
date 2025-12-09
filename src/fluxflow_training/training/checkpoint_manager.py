@@ -196,6 +196,7 @@ class CheckpointManager:
         kl_beta_current: float = 0.0,
         kl_warmup_steps: int = 0,
         kl_max_beta: float = 0.0,
+        pipeline_metadata: Optional[dict] = None,
     ) -> None:
         """
         Save complete training state for resume.
@@ -211,6 +212,7 @@ class CheckpointManager:
             kl_beta_current: Current KL divergence beta value
             kl_warmup_steps: Total KL warmup steps
             kl_max_beta: Maximum KL beta value
+            pipeline_metadata: Optional pipeline metadata (for multi-step training)
         """
         logger.info(f"Saving training state at epoch {epoch}, batch {batch_idx}")
 
@@ -219,9 +221,14 @@ class CheckpointManager:
         with open(self.lr_save_path, "w") as f:
             json.dump(lr_dict, f)
 
+        # Determine version and mode
+        version = "2.0" if pipeline_metadata else "1.0"
+        mode = "pipeline" if pipeline_metadata else "legacy"
+
         # Save training state metadata
         training_state = {
-            "version": "1.0",
+            "version": version,
+            "mode": mode,
             "timestamp": datetime.now().isoformat(),
             "epoch": epoch,
             "batch_idx": batch_idx,
@@ -239,6 +246,10 @@ class CheckpointManager:
             "learning_rates": lr_dict,
         }
 
+        # Add pipeline metadata if provided
+        if pipeline_metadata:
+            training_state["pipeline"] = pipeline_metadata
+
         with open(self.training_state_path, "w") as f:
             json.dump(training_state, f, indent=2)
 
@@ -253,8 +264,11 @@ class CheckpointManager:
         consolidated_state = {
             "optimizers": {name: opt.state_dict() for name, opt in optimizers.items()},
             "schedulers": {name: sched.state_dict() for name, sched in schedulers.items()},
-            "ema": ema.state_dict(),
         }
+
+        # Only save EMA if it exists (not all steps use EMA)
+        if ema is not None:
+            consolidated_state["ema"] = ema.state_dict()
         # Move all tensors to CPU before saving to avoid CUDA issues
         consolidated_state = _move_to_cpu(consolidated_state)
         torch.save(consolidated_state, self.training_states_path)

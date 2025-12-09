@@ -47,10 +47,12 @@ from fluxflow_training.training import (
     FloatBuffer,
     FlowTrainer,
     RobustDataLoaderIterator,
+    TrainingPipelineOrchestrator,
     TrainingProgressLogger,
     VAETrainer,
     cosine_anneal_beta,
     current_lr,
+    parse_pipeline_config,
     worker_init_fn,
 )
 from fluxflow_training.training.optimizer_factory import (
@@ -192,8 +194,272 @@ def load_optimizer_scheduler_config(args, lr):
     return optimizer_configs, scheduler_configs
 
 
-def train(args):
-    """Main training loop for FluxFlow."""
+def initialize_models(args, config, device, checkpoint_manager):
+    """
+    Initialize FluxFlow models from configuration.
+
+    Args:
+        args: Parsed command-line arguments
+        config: Loaded YAML config dictionary
+        device: Target device (CPU/CUDA/MPS)
+        checkpoint_manager: CheckpointManager instance for loading checkpoints
+
+    Returns:
+        Dict containing initialized models
+    """
+    channels = args.channels
+
+    # Initialize models
+    text_encoder = BertTextEncoder(
+        embed_dim=args.text_embedding_dim, pretrain_model=args.pretrained_bert_model
+    )
+    image_encoder = ImageEncoder(
+        channels,
+        text_embedding_dim=args.text_embedding_dim,
+        feature_maps=args.feature_maps_dim_disc,
+    )
+
+    compressor = FluxCompressor(d_model=args.vae_dim, use_attention=True)
+    expander = FluxExpander(d_model=args.vae_dim)
+    flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
+    diffuser = FluxPipeline(compressor, flow_processor, expander)
+
+    # Discriminators
+    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+
+    # Load checkpoints if resuming
+    if args.model_checkpoint and os.path.exists(args.model_checkpoint):
+        loaded_states = checkpoint_manager.load_models_parallel(
+            checkpoint_path=args.model_checkpoint
+        )
+
+        if loaded_states.get("diffuser.compressor"):
+            compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded compressor checkpoint")
+        if loaded_states.get("diffuser.flow_processor"):
+            flow_processor.load_state_dict(loaded_states["diffuser.flow_processor"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded flow_processor checkpoint")
+        if loaded_states.get("diffuser.expander"):
+            expander.load_state_dict(loaded_states["diffuser.expander"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded expander checkpoint")
+        if loaded_states.get("text_encoder"):
+            text_encoder.load_state_dict(loaded_states["text_encoder"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded text_encoder checkpoint")
+        if loaded_states.get("image_encoder"):
+            image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded image_encoder checkpoint")
+        if loaded_states.get("D_img"):
+            D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
+            print("✓ Loaded D_img checkpoint")
+
+    # Move to device
+    diffuser.to(device)
+    text_encoder.to(device)
+    image_encoder.to(device)
+    D_img.to(device)
+
+    return {
+        "diffuser": diffuser,
+        "compressor": compressor,
+        "expander": expander,
+        "flow_processor": flow_processor,
+        "text_encoder": text_encoder,
+        "image_encoder": image_encoder,
+        "D_img": D_img,
+    }
+
+
+def initialize_tokenizer(args):
+    """
+    Initialize tokenizer from configuration.
+
+    Args:
+        args: Parsed command-line arguments
+
+    Returns:
+        Initialized tokenizer
+    """
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.tokenizer_name, cache_dir="./_cache", local_files_only=False
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    return tokenizer
+
+
+def initialize_dataloader(args, accelerator):
+    """
+    Initialize dataset and dataloader from configuration.
+
+    Args:
+        args: Parsed command-line arguments
+        accelerator: Accelerator instance
+
+    Returns:
+        Tuple of (dataloader, sampler, dataset_size)
+    """
+    collate_fn = partial(
+        collate_fn_variable,
+        channels=args.channels,
+        img_size=args.img_size,
+        reduced_min_sizes=args.reduced_min_sizes,
+    )
+
+    if args.use_webdataset:
+        print(f"Using WebDataset streaming from: {args.webdataset_url}")
+        dataset = StreamingWebDataset(
+            tokenizer_name=args.tokenizer_name,
+            token=args.webdataset_token,
+            url_pattern=args.webdataset_url,
+            channels=args.channels,
+            image_key=args.webdataset_image_key,
+            label_key=args.webdataset_label_key,
+            caption_key=args.webdataset_caption_key,
+            dataset_size=args.webdataset_size,
+            samples_per_shard=args.webdataset_samples_per_shard,
+            fixed_prompt_prefix=args.fixed_prompt_prefix,
+        )
+        print(f"  Shards: {dataset.num_shards}, Estimated size: {dataset.dataset_size:,} samples")
+        if args.fixed_prompt_prefix:
+            print(f"  Fixed prompt prefix: '{args.fixed_prompt_prefix}'")
+        sampler = None
+        dataset_size = len(dataset)
+    else:
+        dataset = TextImageDataset(
+            data_path=args.data_path,
+            captions_file=args.captions_file,
+            tokenizer_name=args.tokenizer_name,
+            transform=None,
+            fixed_prompt_prefix=args.fixed_prompt_prefix,
+        )
+        if args.fixed_prompt_prefix:
+            print(f"  Fixed prompt prefix: '{args.fixed_prompt_prefix}'")
+
+        # Build dimension cache
+        dimension_cache = get_or_build_dimension_cache(
+            dataset, cache_dir=args.output_path, multiple=32, rebuild=False
+        )
+
+        # Create sampler
+        sampler = ResumableDimensionSampler(
+            dimension_cache=dimension_cache,
+            batch_size=args.batch_size,
+            seed=42,
+        )
+        dataset_size = len(dataset)
+
+    # Build DataLoader
+    dataloader_kwargs = {
+        "dataset": dataset,
+        "num_workers": args.workers,
+        "pin_memory": (not torch.backends.mps.is_available()),
+        "collate_fn": collate_fn,
+        "worker_init_fn": worker_init_fn,
+        "persistent_workers": args.workers > 0,
+    }
+
+    if sampler is not None:
+        dataloader_kwargs["batch_sampler"] = sampler
+    else:
+        dataloader_kwargs["batch_size"] = args.batch_size
+        dataloader_kwargs["shuffle"] = False
+
+    dataloader = DataLoader(**dataloader_kwargs)
+    dataloader = accelerator.prepare(dataloader)
+
+    return dataloader, sampler, dataset_size
+
+
+def train_pipeline(args, config):
+    """
+    Pipeline-based training loop for FluxFlow.
+
+    Args:
+        args: Parsed command-line arguments
+        config: Loaded YAML config dictionary
+    """
+    print("\n" + "=" * 80)
+    print("PIPELINE MODE - Multi-step training enabled")
+    print("=" * 80 + "\n")
+
+    # Parse pipeline configuration
+    pipeline_config = parse_pipeline_config(config["training"]["pipeline"])
+
+    # Set random seed
+    manualSeed = random.randint(1, sys.maxsize)
+    print("Random Seed: ", manualSeed)
+    random.seed(manualSeed)
+    torch.manual_seed(manualSeed)
+
+    # Initialize accelerator
+    if torch.backends.mps.is_available():
+        print("Using MPS backend.")
+        accelerator = Accelerator(cpu=False, device_placement=True)
+    elif torch.cuda.is_available():
+        print("Using CUDA backend.")
+        accelerator = Accelerator(
+            cpu=False,
+            device_placement=True,
+            mixed_precision="fp16" if args.use_fp16 else "no",
+        )
+    else:
+        print("Using CPU")
+        accelerator = Accelerator(cpu=True, mixed_precision="fp16" if args.use_fp16 else "no")
+
+    device = accelerator.device
+
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        output_dir=args.output_path, generate_diagrams=args.generate_diagrams
+    )
+
+    # Initialize tokenizer
+    tokenizer = initialize_tokenizer(args)
+
+    # Initialize models
+    print("\nInitializing models...")
+    models = initialize_models(args, config, device, checkpoint_manager)
+
+    # Initialize dataloader
+    print("\nInitializing dataset and dataloader...")
+    dataloader, sampler, dataset_size = initialize_dataloader(args, accelerator)
+    print(f"Dataset size: {dataset_size:,} samples")
+
+    # Initialize pipeline orchestrator
+    orchestrator = TrainingPipelineOrchestrator(
+        pipeline_config=pipeline_config,
+        checkpoint_manager=checkpoint_manager,
+        accelerator=accelerator,
+        device=device,
+    )
+
+    # Initialize progress logger
+    progress_logger = TrainingProgressLogger(args.output_path)
+    print(f"Training progress will be logged to: {progress_logger.get_graph_dir()}")
+
+    # Run pipeline
+    print("\nStarting pipeline training...")
+    orchestrator.run(
+        models=models,
+        dataloader=dataloader,
+        sampler=sampler,
+        tokenizer=tokenizer,
+        progress_logger=progress_logger,
+        args=args,
+        config=config,
+    )
+
+    print("\n" + "=" * 80)
+    print("Pipeline training complete!")
+    print("=" * 80 + "\n")
+
+
+def train_legacy(args):
+    """Legacy single-mode training loop for FluxFlow (backward compatibility)."""
+    print("\n" + "=" * 80)
+    print("LEGACY MODE - Single-step training (consider migrating to pipeline mode)")
+    print("=" * 80 + "\n")
     # Load/save learning rates and global step
     LR_SAVE_FILE = os.path.join(args.output_path, "lr_sav.json")
     TRAINING_STATE_FILE = os.path.join(args.output_path, "training_state.json")
@@ -920,11 +1186,109 @@ def train(args):
     print("\nTraining complete!")
 
 
+def detect_config_mode(config):
+    """
+    Detect whether config uses pipeline mode or legacy mode.
+
+    Args:
+        config: Loaded YAML config dictionary
+
+    Returns:
+        str: "pipeline" if config has training.pipeline, "legacy" otherwise
+    """
+    if config and "training" in config and "pipeline" in config["training"]:
+        return "pipeline"
+    return "legacy"
+
+
+def validate_and_show_plan(config, args):
+    """
+    Validate pipeline configuration and show execution plan (dry-run).
+
+    Args:
+        config: Loaded YAML config dictionary
+        args: Parsed command-line arguments
+
+    Raises:
+        ValueError: If pipeline configuration is invalid
+    """
+    print("\n" + "=" * 80)
+    print("PIPELINE VALIDATION - DRY RUN MODE")
+    print("=" * 80)
+
+    # Parse and validate pipeline config
+    pipeline_config = parse_pipeline_config(config["training"]["pipeline"])
+
+    print(f"\n✓ Pipeline configuration is valid")
+    print(f"  Total steps: {len(pipeline_config.steps)}")
+
+    print("\n" + "-" * 80)
+    print("EXECUTION PLAN")
+    print("-" * 80)
+
+    for idx, step in enumerate(pipeline_config.steps, 1):
+        print(f"\nStep {idx}: {step.name}")
+        print(f"  Duration: {step.n_epochs} epochs")
+        if step.max_steps is not None:
+            print(f"  Max steps per epoch: {step.max_steps} (for quick testing)")
+
+        # Training modes
+        modes = []
+        if step.train_vae:
+            modes.append(f"VAE (SPADE={'ON' if step.train_spade else 'OFF'})")
+        if step.train_diff or step.train_diff_full:
+            modes.append("Flow")
+        print(f"  Training: {', '.join(modes) if modes else 'None'}")
+
+        # Frozen/unfrozen modules
+        frozen = step.freeze
+        unfrozen = step.unfreeze
+
+        if frozen:
+            print(f"  Frozen: {', '.join(frozen)}")
+        if unfrozen:
+            print(f"  Active: {', '.join(unfrozen)}")
+
+        # Optimizers
+        if step.optimization and step.optimization.optimizers:
+            print(f"  Optimizers:")
+            for name, opt_cfg in step.optimization.optimizers.items():
+                print(f"    - {name}: {opt_cfg.type} (lr={opt_cfg.lr})")
+
+        # Schedulers
+        if step.optimization and step.optimization.schedulers:
+            print(f"  Schedulers:")
+            for name, sched_cfg in step.optimization.schedulers.items():
+                print(f"    - {name}: {sched_cfg.type}")
+
+        # Transition criteria
+        if step.transition_on and step.transition_on.mode != "epoch":
+            tc = step.transition_on
+            criteria = []
+            if tc.metric:
+                criteria.append(f"metric={tc.metric}")
+            if tc.threshold is not None:
+                criteria.append(f"threshold<{tc.threshold}")
+            if tc.max_epochs is not None:
+                criteria.append(f"max_epochs={tc.max_epochs}")
+            if criteria:
+                print(f"  Transition: {', '.join(criteria)}")
+
+    print("\n" + "=" * 80)
+    print("Validation complete. No training will be performed.")
+    print("=" * 80 + "\n")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train FluxFlow text-to-image model")
 
     # Config file
     parser.add_argument("--config", type=str, help="Path to YAML config file (overrides CLI args)")
+    parser.add_argument(
+        "--validate-pipeline",
+        action="store_true",
+        help="Validate pipeline configuration and show execution plan (dry-run mode)",
+    )
 
     # Data
     parser.add_argument("--data_path", type=str, help="Path to training images")
@@ -1300,6 +1664,33 @@ def main():
     """Main entry point for the training script."""
     args = parse_args()
 
+    # Load config if provided
+    config = None
+    if args.config:
+        import yaml
+
+        with open(args.config, "r") as f:
+            config = yaml.safe_load(f)
+
+    # Handle --validate-pipeline flag
+    if args.validate_pipeline:
+        if not config:
+            print("Error: --validate-pipeline requires --config <path/to/config.yaml>")
+            sys.exit(1)
+        if detect_config_mode(config) != "pipeline":
+            print("Error: Config file does not contain training.pipeline section")
+            sys.exit(1)
+
+        try:
+            validate_and_show_plan(config, args)
+            sys.exit(0)
+        except Exception as e:
+            print(f"\n✗ Pipeline validation failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            sys.exit(1)
+
     # Handle backward compatibility for legacy tt2m arguments
     if args.use_tt2m and not args.use_webdataset:
         args.use_webdataset = True
@@ -1317,12 +1708,17 @@ def main():
         )
         sys.exit(1)
 
-    if not (args.train_vae or args.train_diff or args.train_diff_full):
-        print(
-            "Warning: No training mode enabled. Use --train_vae, --train_diff, or --train_diff_full"
-        )
-
-    train(args)
+    # Detect training mode
+    if config and detect_config_mode(config) == "pipeline":
+        # Pipeline mode
+        train_pipeline(args, config)
+    else:
+        # Legacy mode
+        if not (args.train_vae or args.train_diff or args.train_diff_full):
+            print(
+                "Warning: No training mode enabled. Use --train_vae, --train_diff, or --train_diff_full"
+            )
+        train_legacy(args)
 
 
 if __name__ == "__main__":

@@ -185,6 +185,151 @@ pytest tests/unit/test_your_feature.py -v
 pytest tests/unit/test_your_feature.py::test_function_name -v
 ```
 
+### Testing Pipeline Mode
+
+**Pipeline mode requires special testing** since it involves multi-step orchestration:
+
+#### Quick Pipeline Test (Recommended)
+
+Use `max_steps` to run a few batches per step:
+
+```yaml
+# test_pipeline.yaml
+data:
+  data_path: "tests/fixtures/images"
+  captions_file: "tests/fixtures/captions.txt"
+
+training:
+  batch_size: 1
+  output_path: "tests/output/pipeline_test"
+  
+  pipeline:
+    steps:
+      - name: "step1"
+        n_epochs: 1
+        max_steps: 5  # Only run 5 batches
+        train_vae: true
+        
+      - name: "step2"
+        n_epochs: 1
+        max_steps: 5
+        train_vae: true
+        gan_training: true
+```
+
+**Run:**
+```bash
+fluxflow-train --config tests/test_pipeline.yaml
+```
+
+**Expected:** Training completes in ~30 seconds, creates step-specific checkpoints.
+
+#### Testing Checklist for Pipeline Changes
+
+When modifying pipeline orchestration code:
+
+- [ ] Test with minimal config (1 epoch, max_steps=5)
+- [ ] Test step transitions (verify step 2 loads step 1 checkpoint)
+- [ ] Test resume (interrupt training, restart, verify continues from correct step)
+- [ ] Test freeze flags (`freeze_vae`, `freeze_flow`, `freeze_text_encoder`)
+- [ ] Test loss-based stop conditions (if applicable)
+- [ ] Test step-specific metrics files created
+- [ ] Test diagram generation for each step
+- [ ] Verify all unit tests pass: `pytest tests/unit/ -v`
+
+#### Example Test Script
+
+```bash
+#!/bin/bash
+# test_pipeline_quick.sh - Quick pipeline smoke test
+
+set -e
+
+# Cleanup
+rm -rf tests/output/pipeline_test
+
+# Run pipeline
+fluxflow-train --config tests/fixtures/pipeline_minimal.yaml
+
+# Verify outputs
+test -f tests/output/pipeline_test/flxflow_step_step1_final.safetensors || exit 1
+test -f tests/output/pipeline_test/flxflow_step_step2_final.safetensors || exit 1
+test -f tests/output/pipeline_test/graph/training_metrics_step1.jsonl || exit 1
+test -f tests/output/pipeline_test/graph/training_metrics_step2.jsonl || exit 1
+
+echo "✅ Pipeline smoke test passed"
+```
+
+#### Testing GAN-Only Mode
+
+When testing `train_reconstruction` parameter:
+
+```yaml
+# test_gan_only.yaml
+training:
+  pipeline:
+    steps:
+      - name: "gan_only"
+        n_epochs: 1
+        max_steps: 10
+        train_vae: true
+        gan_training: true
+        train_spade: true
+        train_reconstruction: false  # GAN-only mode
+```
+
+**Verify:**
+- No reconstruction loss logged (`loss_recon` should be absent)
+- GAN losses present (`loss_gen`, `loss_disc`)
+- Encoder gradients flow (check with gradient inspection if needed)
+
+#### Integration Test Example
+
+For new pipeline features, add integration tests:
+
+```python
+# tests/integration/test_pipeline_orchestration.py
+"""Integration tests for pipeline orchestration."""
+
+import pytest
+import yaml
+from pathlib import Path
+
+
+def test_two_step_pipeline(tmp_path):
+    """Test basic two-step pipeline completes."""
+    config = {
+        "data": {
+            "data_path": "tests/fixtures/images",
+            "captions_file": "tests/fixtures/captions.txt",
+        },
+        "training": {
+            "batch_size": 1,
+            "output_path": str(tmp_path),
+            "pipeline": {
+                "steps": [
+                    {"name": "step1", "n_epochs": 1, "max_steps": 3, "train_vae": True},
+                    {"name": "step2", "n_epochs": 1, "max_steps": 3, "train_vae": True, "gan_training": True},
+                ]
+            }
+        }
+    }
+    
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config, f)
+    
+    # Run training
+    from fluxflow_training.scripts.train import main
+    main(["--config", str(config_path)])
+    
+    # Verify outputs
+    assert (tmp_path / "flxflow_step_step1_final.safetensors").exists()
+    assert (tmp_path / "flxflow_step_step2_final.safetensors").exists()
+    assert (tmp_path / "graph" / "training_metrics_step1.jsonl").exists()
+    assert (tmp_path / "graph" / "training_metrics_step2.jsonl").exists()
+```
+
 ## Project Structure
 
 ```
