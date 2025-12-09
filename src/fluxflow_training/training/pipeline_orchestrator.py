@@ -608,9 +608,9 @@ class TrainingPipelineOrchestrator:
             f"epoch {epoch+1}, batch {batch_idx}, global_step {sample_epoch}"
         )
 
-        # Create prefix for new naming: stepname_epoch_batch (e.g., "gan_warmup_001_003_0000254")
+        # Create prefix for new naming: stepname_step_epoch (e.g., "gan_warmup_001_003")
         step_name_short = step.name[:20]  # Limit step name length
-        sample_prefix = f"{step_name_short}_{step_idx+1:03d}_{epoch+1:03d}_{batch_idx:07d}"
+        sample_prefix = f"{step_name_short}_{step_idx+1:03d}_{epoch+1:03d}"
 
         # VAE reconstruction samples (if test images provided)
         if args.test_image_address and len(args.test_image_address) > 0:
