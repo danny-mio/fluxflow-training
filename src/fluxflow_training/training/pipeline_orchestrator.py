@@ -484,6 +484,7 @@ class TrainingPipelineOrchestrator:
                 reconstruction_loss_fn=nn.L1Loss(),
                 reconstruction_loss_min_fn=nn.MSELoss(),
                 use_spade=step.train_spade,
+                train_reconstruction=step.train_vae,  # Only compute recon loss if train_vae=True
                 kl_beta=step.kl_beta if hasattr(step, "kl_beta") else 0.0001,
                 kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
                 kl_free_bits=step.kl_free_bits if hasattr(step, "kl_free_bits") else 0.0,

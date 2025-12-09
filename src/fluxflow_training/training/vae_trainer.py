@@ -83,6 +83,7 @@ class VAETrainer:
         reconstruction_loss_fn: nn.Module,
         reconstruction_loss_min_fn: nn.Module,
         use_spade: bool = True,
+        train_reconstruction: bool = True,  # NEW: Control reconstruction loss
         kl_beta: float = 0.0001,
         kl_warmup_steps: int = 5000,
         kl_free_bits: float = 0.0,
@@ -115,6 +116,8 @@ class VAETrainer:
             reconstruction_loss_fn: L1 loss
             reconstruction_loss_min_fn: MSE loss
             use_spade: Use SPADE conditioning in decoder
+            train_reconstruction: Compute reconstruction loss (L1+MSE+LPIPS). Set to False for
+                GAN-only or SPADE-only training without VAE reconstruction (default: True)
             kl_beta: Final KL divergence weight
             kl_warmup_steps: Steps to warmup KL beta
             kl_free_bits: Free bits for KL divergence
@@ -139,6 +142,7 @@ class VAETrainer:
         self.reconstruction_loss_fn = reconstruction_loss_fn
         self.reconstruction_loss_min_fn = reconstruction_loss_min_fn
         self.use_spade = use_spade
+        self.train_reconstruction = train_reconstruction
 
         # KL settings
         self.kl_beta = kl_beta
@@ -412,19 +416,23 @@ class VAETrainer:
         packed_rec, mu, logvar = self.compressor(real_imgs, training=True)
         out_imgs_rec = self.expander(packed_rec, use_context=self.use_spade)
 
-        # Reconstruction loss with frequency-aware weighting
-        recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=1.0)
-        recon_mse = self.reconstruction_loss_min_fn(out_imgs_rec, real_imgs)
-        recon_loss = recon_l1 + self.mse_weight * recon_mse
-
-        # LPIPS perceptual loss
+        # Reconstruction loss (skip if train_reconstruction=False)
+        recon_loss = torch.tensor(0.0, device=real_imgs.device)
         perceptual_loss = torch.tensor(0.0, device=real_imgs.device)
-        if self.use_lpips and self.lpips_fn is not None:
-            # Compute LPIPS WITH gradients so it actually trains the VAE
-            perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
-            recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
-        # KL divergence with beta annealing
+        if self.train_reconstruction:
+            # Reconstruction loss with frequency-aware weighting
+            recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=1.0)
+            recon_mse = self.reconstruction_loss_min_fn(out_imgs_rec, real_imgs)
+            recon_loss = recon_l1 + self.mse_weight * recon_mse
+
+            # LPIPS perceptual loss
+            if self.use_lpips and self.lpips_fn is not None:
+                # Compute LPIPS WITH gradients so it actually trains the VAE
+                perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
+                recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
+
+        # KL divergence with beta annealing (still compute even if not training reconstruction)
         beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
         kl = kl_standard_normal(mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean")
 
@@ -441,18 +449,21 @@ class VAETrainer:
             G_img_loss = self.lambda_adv * g_hinge_loss(g_real_logits)
 
         # Update loss history for adaptive weighting
-        self.loss_history["recon"].add_item(float(recon_loss.item()))
+        if self.train_reconstruction:
+            self.loss_history["recon"].add_item(float(recon_loss.item()))
         self.loss_history["kl"].add_item(float(kl.item()))
         if self.use_gan:
             self.loss_history["gan"].add_item(float(G_img_loss.item()))
 
         # Compute adaptive weights
-        w_recon = self._compute_adaptive_weight("recon")
+        w_recon = self._compute_adaptive_weight("recon") if self.train_reconstruction else 0.0
         w_kl = self._compute_adaptive_weight("kl")
         w_gan = self._compute_adaptive_weight("gan") if self.use_gan else 0.0
 
         # Total loss with adaptive weighting
-        total_loss = w_recon * recon_loss + w_kl * beta * kl
+        total_loss = w_kl * beta * kl
+        if self.train_reconstruction:
+            total_loss = total_loss + w_recon * recon_loss
         if self.use_gan:
             total_loss = total_loss + w_gan * G_img_loss
 
