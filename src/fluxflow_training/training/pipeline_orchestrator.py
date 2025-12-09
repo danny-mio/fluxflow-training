@@ -756,8 +756,15 @@ class TrainingPipelineOrchestrator:
             step_start_time = time.time()
 
             for epoch in range(start_epoch if step_idx == start_step else 0, step.n_epochs):
+                # Calculate total batches for this epoch (considering max_steps)
+                epoch_total_batches = (
+                    min(batches_per_epoch, step.max_steps) if step.max_steps else batches_per_epoch
+                )
+
                 print(
-                    f"\nStep {step_idx+1}/{len(self.config.steps)}, Epoch {epoch+1}/{step.n_epochs}"
+                    f"\nStep {step.name} ({step_idx+1}/{len(self.config.steps)}), "
+                    f"Epoch {epoch+1}/{step.n_epochs}, "
+                    f"Batches 0/{epoch_total_batches}"
                 )
 
                 epoch_start_time = time.time()
@@ -825,7 +832,11 @@ class TrainingPipelineOrchestrator:
                         elapsed = time.time() - step_start_time
                         elapsed_str = format_duration(elapsed)
 
-                        log_msg = f"[{elapsed_str}] Step {step_idx+1}/{len(self.config.steps)} | Epoch {epoch+1}/{step.n_epochs} | Batch {batch_idx}"
+                        log_msg = (
+                            f"[{elapsed_str}] Step {step.name} ({step_idx+1}/{len(self.config.steps)}) | "
+                            f"Epoch {epoch+1}/{step.n_epochs} | "
+                            f"Batch {batch_idx}/{epoch_total_batches}"
+                        )
 
                         if step.train_vae:
                             log_msg += (
