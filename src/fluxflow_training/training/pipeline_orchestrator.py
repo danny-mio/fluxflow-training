@@ -468,7 +468,13 @@ class TrainingPipelineOrchestrator:
 
         trainers = {}
 
-        if step.train_vae and "vae" in optimizers:
+        # Create VAE trainer if training VAE, GAN, SPADE, or LPIPS
+        # (these all require the VAE trainer even if train_vae=false)
+        needs_vae_trainer = (
+            step.train_vae or step.gan_training or step.train_spade or step.use_lpips
+        )
+
+        if needs_vae_trainer and "vae" in optimizers:
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
                 expander=models["expander"],
@@ -493,7 +499,19 @@ class TrainingPipelineOrchestrator:
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
             )
-            logger.info(f"Created VAE trainer (SPADE={'ON' if step.train_spade else 'OFF'})")
+
+            # Build descriptive message about what's being trained
+            modes = []
+            if step.train_vae:
+                modes.append("VAE")
+            if step.train_spade:
+                modes.append("SPADE")
+            if step.gan_training:
+                modes.append("GAN")
+            if step.use_lpips:
+                modes.append("LPIPS")
+
+            logger.info(f"Created VAE trainer ({', '.join(modes)})")
 
         if (step.train_diff or step.train_diff_full) and "flow" in optimizers:
             trainers["flow"] = FlowTrainer(

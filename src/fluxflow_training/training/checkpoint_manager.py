@@ -264,8 +264,11 @@ class CheckpointManager:
         consolidated_state = {
             "optimizers": {name: opt.state_dict() for name, opt in optimizers.items()},
             "schedulers": {name: sched.state_dict() for name, sched in schedulers.items()},
-            "ema": ema.state_dict(),
         }
+
+        # Only save EMA if it exists (not all steps use EMA)
+        if ema is not None:
+            consolidated_state["ema"] = ema.state_dict()
         # Move all tensors to CPU before saving to avoid CUDA issues
         consolidated_state = _move_to_cpu(consolidated_state)
         torch.save(consolidated_state, self.training_states_path)
