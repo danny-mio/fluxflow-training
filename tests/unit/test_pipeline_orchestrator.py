@@ -615,3 +615,42 @@ class TestPrintPipelineSummary:
         assert "Step 1/2: step1" in captured.out
         assert "Step 2/2: step2" in captured.out
         assert "Total epochs: 15" in captured.out  # 10 + 5
+
+
+class TestTrainReconstructionParameter:
+    """Test train_reconstruction parameter for GAN-only training."""
+
+    def test_train_reconstruction_in_orchestrator_code(self):
+        """Orchestrator code should pass train_reconstruction to VAETrainer."""
+        # Read orchestrator source to verify the parameter is passed
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Check that train_reconstruction=step.train_vae is in the code
+        assert "train_reconstruction=step.train_vae" in content
+
+    def test_train_reconstruction_in_vae_trainer_signature(self):
+        """VAETrainer source should have train_reconstruction parameter."""
+        from pathlib import Path
+
+        vae_trainer_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "vae_trainer.py"
+        )
+        content = vae_trainer_path.read_text()
+
+        # Check parameter is in __init__ signature
+        assert "train_reconstruction: bool = True" in content
+        # Check it's stored as instance variable
+        assert "self.train_reconstruction = train_reconstruction" in content
