@@ -847,8 +847,10 @@ class TrainingPipelineOrchestrator:
                 g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
                 d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
                 lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
+                batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader):
+                    batch_start_time = time.time()
                     # Break if max_steps reached (for quick testing)
                     if step.max_steps is not None and batch_idx >= step.max_steps:
                         logger.info(f"Reached max_steps={step.max_steps}, ending epoch early")
@@ -873,12 +875,12 @@ class TrainingPipelineOrchestrator:
                             kl_errors.add_item(vae_losses["kl"])
 
                             # Track GAN losses if available
-                            if "generator_avg" in vae_losses:
-                                g_errors.add_item(vae_losses["generator_avg"])
-                            if "discriminator_avg" in vae_losses:
-                                d_errors.add_item(vae_losses["discriminator_avg"])
-                            if "lpips_avg" in vae_losses:
-                                lpips_errors.add_item(vae_losses["lpips_avg"])
+                            if "generator" in vae_losses:
+                                g_errors.add_item(vae_losses["generator"])
+                            if "discriminator" in vae_losses:
+                                d_errors.add_item(vae_losses["discriminator"])
+                            if "lpips" in vae_losses:
+                                lpips_errors.add_item(vae_losses["lpips"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
@@ -897,6 +899,10 @@ class TrainingPipelineOrchestrator:
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"flow_loss": flow_loss})
+
+                    # Track batch time
+                    batch_time = time.time() - batch_start_time
+                    batch_times.add_item(batch_time)
 
                     # Logging
                     if batch_idx % args.log_interval == 0:
@@ -925,6 +931,10 @@ class TrainingPipelineOrchestrator:
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
+
+                        # Add average batch time
+                        if len(batch_times._items) > 0:
+                            log_msg += f" | {batch_times.average:.2f}s/batch"
 
                         print(log_msg)
 
