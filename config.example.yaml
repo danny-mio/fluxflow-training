@@ -47,7 +47,7 @@ data:
   reduced_min_sizes: null  # e.g., [128, 256, 512]
 
 training:
-  # Basic training settings
+  # Basic training settings (legacy mode)
   n_epochs: 100
   batch_size: 1
   workers: 8
@@ -58,7 +58,7 @@ training:
   initial_clipping_norm: 1.0
   preserve_lr: true
 
-  # Training modes (enable at least one)
+  # Training modes (enable at least one) - LEGACY MODE ONLY
   train_vae: true
   gan_training: true
   use_lpips: true  # Enable LPIPS perceptual loss (improves visual quality, reduces blur)
@@ -78,6 +78,150 @@ training:
   # Lower weight = sharper outputs (prioritizes pixel accuracy)
   # Higher weight = smoother outputs (prioritizes perceptual similarity)
   lambda_lpips: 0.1  # Recommended: 0.05-0.2 range
+
+  # ============================================================================
+  # PIPELINE MODE (Optional - enables multi-step training)
+  # ============================================================================
+  # Uncomment this section to enable pipeline mode.
+  # When 'pipeline' is present, legacy training modes above are ignored.
+  
+  # pipeline:
+  #   mode: "sequential"  # Currently only 'sequential' is supported
+  #   
+  #   steps:
+  #     # Step 1: VAE training with SPADE OFF
+  #     - name: "vae_spade_off"
+  #       description: "Train VAE without SPADE conditioning (hypothesis: learn base reconstruction first)"
+  #       duration_epochs: 50
+  #       
+  #       # Training modes for this step
+  #       train_vae: true
+  #       train_spade: false  # SPADE OFF
+  #       train_flow: false
+  #       gan_training: true
+  #       use_lpips: true
+  #       
+  #       # Freeze/unfreeze modules (optional)
+  #       freeze_modules:
+  #         flow_processor: true   # Freeze flow during VAE training
+  #         compressor: false
+  #         expander: false
+  #         text_encoder: true     # Freeze text encoder during VAE
+  #         discriminator: false
+  #       
+  #       # Inline optimizer configs (no external JSON needed)
+  #       optimizers:
+  #         vae:
+  #           optimizer_type: "AdamW"
+  #           lr: 0.0001
+  #           betas: [0.9, 0.999]
+  #           weight_decay: 0.01
+  #           eps: 1e-8
+  #         discriminator:
+  #           optimizer_type: "AdamW"
+  #           lr: 0.0001
+  #           betas: [0.9, 0.999]
+  #           weight_decay: 0.01
+  #       
+  #       # Inline scheduler configs
+  #       schedulers:
+  #         vae:
+  #           scheduler_type: "CosineAnnealingLR"
+  #           eta_min_factor: 0.01
+  #         discriminator:
+  #           scheduler_type: "CosineAnnealingLR"
+  #           eta_min_factor: 0.01
+  #       
+  #       # Transition criteria (optional - enables early exit)
+  #       transition_criteria:
+  #         min_epochs: 20          # Run at least 20 epochs
+  #         max_epochs: 50          # Hard limit
+  #         loss_threshold: 0.05    # Move to next step if loss < 0.05
+  #         metric_name: "vae_loss" # Which metric to monitor
+  #         patience: 5             # Wait 5 epochs before transitioning
+  #     
+  #     # Step 2: VAE training with SPADE ON
+  #     - name: "vae_spade_on"
+  #       description: "Enable SPADE conditioning (hypothesis: refine with spatial conditioning)"
+  #       duration_epochs: 50
+  #       
+  #       train_vae: true
+  #       train_spade: true   # SPADE ON
+  #       train_flow: false
+  #       gan_training: true
+  #       use_lpips: true
+  #       
+  #       freeze_modules:
+  #         flow_processor: true
+  #         compressor: false
+  #         expander: false
+  #         text_encoder: true
+  #         discriminator: false
+  #       
+  #       optimizers:
+  #         vae:
+  #           optimizer_type: "AdamW"
+  #           lr: 0.00005  # Lower LR for refinement
+  #           betas: [0.9, 0.999]
+  #           weight_decay: 0.01
+  #         discriminator:
+  #           optimizer_type: "AdamW"
+  #           lr: 0.00005
+  #           betas: [0.9, 0.999]
+  #           weight_decay: 0.01
+  #       
+  #       schedulers:
+  #         vae:
+  #           scheduler_type: "CosineAnnealingLR"
+  #           eta_min_factor: 0.01
+  #         discriminator:
+  #           scheduler_type: "CosineAnnealingLR"
+  #           eta_min_factor: 0.01
+  #       
+  #       transition_criteria:
+  #         min_epochs: 20
+  #         max_epochs: 50
+  #         loss_threshold: 0.03
+  #         metric_name: "vae_loss"
+  #         patience: 5
+  #     
+  #     # Step 3: Flow training with frozen VAE
+  #     - name: "flow_frozen_vae"
+  #       description: "Train flow processor with frozen VAE"
+  #       duration_epochs: 100
+  #       
+  #       train_vae: false
+  #       train_spade: false
+  #       train_flow: true
+  #       gan_training: false
+  #       use_lpips: false
+  #       
+  #       freeze_modules:
+  #         flow_processor: false
+  #         compressor: true    # Freeze VAE
+  #         expander: true      # Freeze VAE
+  #         text_encoder: false # Train text encoder with flow
+  #         discriminator: true
+  #       
+  #       optimizers:
+  #         flow:
+  #           optimizer_type: "AdamW"
+  #           lr: 0.00001
+  #           betas: [0.9, 0.999]
+  #           weight_decay: 0.01
+  #         text_encoder:
+  #           optimizer_type: "AdamW"
+  #           lr: 0.000001  # Lower LR for text encoder
+  #           betas: [0.9, 0.999]
+  #           weight_decay: 0.01
+  #       
+  #       schedulers:
+  #         flow:
+  #           scheduler_type: "CosineAnnealingLR"
+  #           eta_min_factor: 0.01
+  #         text_encoder:
+  #           scheduler_type: "CosineAnnealingLR"
+  #           eta_min_factor: 0.01
 
 optimization:
   # Path to JSON file with detailed optimizer/scheduler configs (optional)

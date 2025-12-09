@@ -351,12 +351,16 @@ class TrainingPipelineOrchestrator:
         print(f"\nTotal epochs: {total_epochs}")
         print("=" * 80 + "\n")
 
-    def run(self) -> None:
+    def run(self, args, config) -> None:
         """
         Execute the complete training pipeline.
 
-        This is the main entry point that will be implemented in Phase 2.
-        For now, this is a placeholder that prints the pipeline summary.
+        Args:
+            args: Parsed command-line arguments
+            config: Loaded YAML config dictionary
+
+        Raises:
+            NotImplementedError: Pipeline execution is not yet fully implemented
         """
         logger.info("Starting training pipeline execution...")
 
@@ -370,11 +374,21 @@ class TrainingPipelineOrchestrator:
             f"Pipeline has {len(self.config.steps)} steps, " f"starting from step {start_step + 1}"
         )
 
-        # TODO: Implement full pipeline execution in next iteration
-        # This will include:
-        # - Step-by-step training loop
-        # - Trainer creation per step
-        # - Loss-threshold monitoring
-        # - Checkpoint saving with pipeline metadata
+        # TODO: Complete implementation requires:
+        # 1. Initialize models (diffuser, text_encoder, discriminators)
+        # 2. Initialize dataset and dataloader
+        # 3. For each pipeline step:
+        #    a. Apply freeze/unfreeze directives
+        #    b. Create optimizers/schedulers from step config
+        #    c. Create VAETrainer and/or FlowTrainer based on step settings
+        #    d. Run training loop for step duration
+        #    e. Monitor transition criteria (loss threshold)
+        #    f. Save checkpoints with pipeline metadata
+        # 4. Handle resume from checkpoint (restore step, epoch, batch)
 
-        logger.info("Pipeline orchestrator initialized (full execution not yet implemented)")
+        raise NotImplementedError(
+            "Full pipeline execution is not yet implemented. "
+            "This requires integration with model initialization, "
+            "dataloader setup, and trainer creation from train.py. "
+            "Current implementation provides validation and planning only."
+        )

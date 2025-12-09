@@ -377,22 +377,22 @@ class TestPipelineConfigValidator:
         errors = validator.validate()
         assert any("unknown scheduler type" in e.lower() for e in errors)
 
-    def test_epoch_transition_missing_value(self):
-        """Test validation fails for epoch transition without value."""
+    def test_epoch_transition_valid(self):
+        """Test that epoch transition without explicit value is valid (uses n_epochs)."""
         pipeline = PipelineConfig(
             steps=[
                 PipelineStepConfig(
                     name="test",
                     n_epochs=10,
                     train_vae=True,
-                    transition_on=TransitionCriteria(mode="epoch"),  # Missing value
+                    transition_on=TransitionCriteria(mode="epoch"),  # Uses n_epochs from step
                 )
             ]
         )
 
         validator = PipelineConfigValidator(pipeline)
         errors = validator.validate()
-        assert any("epoch-based transition requires 'value'" in e.lower() for e in errors)
+        assert len(errors) == 0, f"Expected no errors, got: {errors}"
 
     def test_loss_threshold_missing_metric(self):
         """Test validation fails for loss-threshold without metric."""

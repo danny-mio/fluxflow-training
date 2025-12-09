@@ -47,10 +47,12 @@ from fluxflow_training.training import (
     FloatBuffer,
     FlowTrainer,
     RobustDataLoaderIterator,
+    TrainingPipelineOrchestrator,
     TrainingProgressLogger,
     VAETrainer,
     cosine_anneal_beta,
     current_lr,
+    parse_pipeline_config,
     worker_init_fn,
 )
 from fluxflow_training.training.optimizer_factory import (
@@ -192,8 +194,74 @@ def load_optimizer_scheduler_config(args, lr):
     return optimizer_configs, scheduler_configs
 
 
-def train(args):
-    """Main training loop for FluxFlow."""
+def train_pipeline(args, config):
+    """
+    Pipeline-based training loop for FluxFlow.
+
+    Args:
+        args: Parsed command-line arguments
+        config: Loaded YAML config dictionary
+    """
+    print("\n" + "=" * 80)
+    print("PIPELINE MODE - Multi-step training enabled")
+    print("=" * 80 + "\n")
+
+    # Parse pipeline configuration
+    pipeline_config = parse_pipeline_config(config["training"]["pipeline"])
+
+    # Initialize accelerator
+    if torch.backends.mps.is_available():
+        print("Using MPS backend.")
+        accelerator = Accelerator(cpu=False, device_placement=True)
+    elif torch.cuda.is_available():
+        print("Using CUDA backend.")
+        accelerator = Accelerator(
+            cpu=False,
+            device_placement=True,
+            mixed_precision="fp16" if args.use_fp16 else "no",
+        )
+    else:
+        print("Using CPU")
+        accelerator = Accelerator(cpu=True, mixed_precision="fp16" if args.use_fp16 else "no")
+
+    device = accelerator.device
+
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(
+        output_dir=args.output_path, generate_diagrams=args.generate_diagrams
+    )
+
+    # Initialize pipeline orchestrator
+    orchestrator = TrainingPipelineOrchestrator(
+        pipeline_config=pipeline_config,
+        checkpoint_manager=checkpoint_manager,
+        accelerator=accelerator,
+        device=device,
+    )
+
+    # Check if resuming from checkpoint
+    checkpoint_path = args.model_checkpoint if hasattr(args, "model_checkpoint") else None
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        orchestrator.resume_from_checkpoint(checkpoint_path)
+
+    # Run pipeline
+    print("\nStarting pipeline training...")
+    orchestrator.run(
+        args=args,
+        config=config,
+    )
+
+    print("\n" + "=" * 80)
+    print("Pipeline training complete!")
+    print("=" * 80 + "\n")
+
+
+def train_legacy(args):
+    """Legacy single-mode training loop for FluxFlow (backward compatibility)."""
+    print("\n" + "=" * 80)
+    print("LEGACY MODE - Single-step training (consider migrating to pipeline mode)")
+    print("=" * 80 + "\n")
     # Load/save learning rates and global step
     LR_SAVE_FILE = os.path.join(args.output_path, "lr_sav.json")
     TRAINING_STATE_FILE = os.path.join(args.output_path, "training_state.json")
@@ -920,11 +988,107 @@ def train(args):
     print("\nTraining complete!")
 
 
+def detect_config_mode(config):
+    """
+    Detect whether config uses pipeline mode or legacy mode.
+
+    Args:
+        config: Loaded YAML config dictionary
+
+    Returns:
+        str: "pipeline" if config has training.pipeline, "legacy" otherwise
+    """
+    if config and "training" in config and "pipeline" in config["training"]:
+        return "pipeline"
+    return "legacy"
+
+
+def validate_and_show_plan(config, args):
+    """
+    Validate pipeline configuration and show execution plan (dry-run).
+
+    Args:
+        config: Loaded YAML config dictionary
+        args: Parsed command-line arguments
+
+    Raises:
+        ValueError: If pipeline configuration is invalid
+    """
+    print("\n" + "=" * 80)
+    print("PIPELINE VALIDATION - DRY RUN MODE")
+    print("=" * 80)
+
+    # Parse and validate pipeline config
+    pipeline_config = parse_pipeline_config(config["training"]["pipeline"])
+
+    print(f"\n✓ Pipeline configuration is valid")
+    print(f"  Total steps: {len(pipeline_config.steps)}")
+
+    print("\n" + "-" * 80)
+    print("EXECUTION PLAN")
+    print("-" * 80)
+
+    for idx, step in enumerate(pipeline_config.steps, 1):
+        print(f"\nStep {idx}: {step.name}")
+        print(f"  Duration: {step.n_epochs} epochs")
+
+        # Training modes
+        modes = []
+        if step.train_vae:
+            modes.append(f"VAE (SPADE={'ON' if step.train_spade else 'OFF'})")
+        if step.train_diff or step.train_diff_full:
+            modes.append("Flow")
+        print(f"  Training: {', '.join(modes) if modes else 'None'}")
+
+        # Frozen/unfrozen modules
+        frozen = step.freeze
+        unfrozen = step.unfreeze
+
+        if frozen:
+            print(f"  Frozen: {', '.join(frozen)}")
+        if unfrozen:
+            print(f"  Active: {', '.join(unfrozen)}")
+
+        # Optimizers
+        if step.optimization and step.optimization.optimizers:
+            print(f"  Optimizers:")
+            for name, opt_cfg in step.optimization.optimizers.items():
+                print(f"    - {name}: {opt_cfg.type} (lr={opt_cfg.lr})")
+
+        # Schedulers
+        if step.optimization and step.optimization.schedulers:
+            print(f"  Schedulers:")
+            for name, sched_cfg in step.optimization.schedulers.items():
+                print(f"    - {name}: {sched_cfg.type}")
+
+        # Transition criteria
+        if step.transition_on and step.transition_on.mode != "epoch":
+            tc = step.transition_on
+            criteria = []
+            if tc.metric:
+                criteria.append(f"metric={tc.metric}")
+            if tc.threshold is not None:
+                criteria.append(f"threshold<{tc.threshold}")
+            if tc.max_epochs is not None:
+                criteria.append(f"max_epochs={tc.max_epochs}")
+            if criteria:
+                print(f"  Transition: {', '.join(criteria)}")
+
+    print("\n" + "=" * 80)
+    print("Validation complete. No training will be performed.")
+    print("=" * 80 + "\n")
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train FluxFlow text-to-image model")
 
     # Config file
     parser.add_argument("--config", type=str, help="Path to YAML config file (overrides CLI args)")
+    parser.add_argument(
+        "--validate-pipeline",
+        action="store_true",
+        help="Validate pipeline configuration and show execution plan (dry-run mode)",
+    )
 
     # Data
     parser.add_argument("--data_path", type=str, help="Path to training images")
@@ -1300,6 +1464,33 @@ def main():
     """Main entry point for the training script."""
     args = parse_args()
 
+    # Load config if provided
+    config = None
+    if args.config:
+        import yaml
+
+        with open(args.config, "r") as f:
+            config = yaml.safe_load(f)
+
+    # Handle --validate-pipeline flag
+    if args.validate_pipeline:
+        if not config:
+            print("Error: --validate-pipeline requires --config <path/to/config.yaml>")
+            sys.exit(1)
+        if detect_config_mode(config) != "pipeline":
+            print("Error: Config file does not contain training.pipeline section")
+            sys.exit(1)
+
+        try:
+            validate_and_show_plan(config, args)
+            sys.exit(0)
+        except Exception as e:
+            print(f"\n✗ Pipeline validation failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+            sys.exit(1)
+
     # Handle backward compatibility for legacy tt2m arguments
     if args.use_tt2m and not args.use_webdataset:
         args.use_webdataset = True
@@ -1317,12 +1508,17 @@ def main():
         )
         sys.exit(1)
 
-    if not (args.train_vae or args.train_diff or args.train_diff_full):
-        print(
-            "Warning: No training mode enabled. Use --train_vae, --train_diff, or --train_diff_full"
-        )
-
-    train(args)
+    # Detect training mode
+    if config and detect_config_mode(config) == "pipeline":
+        # Pipeline mode
+        train_pipeline(args, config)
+    else:
+        # Legacy mode
+        if not (args.train_vae or args.train_diff or args.train_diff_full):
+            print(
+                "Warning: No training mode enabled. Use --train_vae, --train_diff, or --train_diff_full"
+            )
+        train_legacy(args)
 
 
 if __name__ == "__main__":

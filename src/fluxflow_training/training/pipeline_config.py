@@ -290,12 +290,7 @@ class PipelineConfigValidator:
                     f"Valid types: {', '.join(sorted(self.VALID_OPTIMIZER_TYPES))}"
                 )
 
-            # Validate optimizer-specific parameters
-            if opt.type in ["Adam", "AdamW"] and opt.betas is None:
-                self.errors.append(
-                    f"Step '{step_name}' (step {step_index + 1}): "
-                    f"Optimizer '{name}' ({opt.type}) requires 'betas' parameter"
-                )
+            # Validate optimizer-specific parameters (betas has default value, no validation needed)
 
         # Validate scheduler types
         for name, sched in opt_config.schedulers.items():
@@ -311,11 +306,8 @@ class PipelineConfigValidator:
     ) -> None:
         """Validate transition criteria."""
         if criteria.mode == "epoch":
-            if criteria.value is None or criteria.value <= 0:
-                self.errors.append(
-                    f"Step '{step_name}' (step {step_index + 1}): "
-                    f"Epoch-based transition requires 'value' > 0"
-                )
+            # Epoch mode transitions use n_epochs from the step, no separate value needed
+            pass
 
         elif criteria.mode == "loss_threshold":
             if criteria.metric is None:
@@ -352,6 +344,9 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
 
     Returns:
         PipelineConfig instance
+
+    Raises:
+        ValueError: If pipeline configuration is invalid
     """
     # Parse defaults if provided
     defaults_dict = config_dict.get("defaults", {})
@@ -365,7 +360,19 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
         step = _parse_step_config(merged_dict, is_default=False)
         steps.append(step)
 
-    return PipelineConfig(steps=steps, defaults=defaults)
+    config = PipelineConfig(steps=steps, defaults=defaults)
+
+    # Validate configuration
+    validator = PipelineConfigValidator(config)
+    errors = validator.validate()
+
+    if errors:
+        error_msg = "Pipeline configuration validation failed:\n" + "\n".join(
+            f"  - {err}" for err in errors
+        )
+        raise ValueError(error_msg)
+
+    return config
 
 
 def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
