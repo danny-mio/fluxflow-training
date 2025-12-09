@@ -10,8 +10,8 @@ from .losses import (
     r1_penalty,
 )
 from .pipeline_config import (
-    OptimizerConfig,
     OptimizationConfig,
+    OptimizerConfig,
     PipelineConfig,
     PipelineConfigValidator,
     PipelineStepConfig,

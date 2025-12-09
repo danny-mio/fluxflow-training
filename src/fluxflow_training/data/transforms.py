@@ -1,14 +1,13 @@
 """Image preprocessing and collate functions for FluxFlow."""
 
 import math
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import torch
 from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
 from torchvision import transforms
-from typing import Any
 
 try:
     resample_filter: Any = Image.Resampling.LANCZOS  # type: ignore[attr-defined]

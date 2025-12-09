@@ -6,7 +6,7 @@ and transition criteria.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Literal, Optional
 
 from fluxflow.utils import get_logger
 
@@ -200,9 +200,7 @@ class PipelineConfigValidator:
         """Validate a single pipeline step."""
         # Check epoch count
         if step.n_epochs <= 0:
-            self.errors.append(
-                f"Step '{step_name}' (step {step_index + 1}): n_epochs must be > 0"
-            )
+            self.errors.append(f"Step '{step_name}' (step {step_index + 1}): n_epochs must be > 0")
 
         # Check training modes
         training_modes = {
