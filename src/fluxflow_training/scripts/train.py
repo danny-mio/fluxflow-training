@@ -357,7 +357,8 @@ def initialize_dataloader(args, accelerator):
         "collate_fn": collate_fn,
         "worker_init_fn": worker_init_fn,
         "persistent_workers": args.workers > 0,
-        "prefetch_factor": 2 if args.workers > 0 else None,  # Prefetch 2 batches per worker
+        # prefetch_factor removed - with pin_memory=True, prefetching uses GPU-pinned memory
+        # which caused OOM with large batches (user reported 47GB usage vs 48GB capacity)
     }
 
     if sampler is not None:
@@ -660,7 +661,8 @@ def train_legacy(args):
         "collate_fn": collate_fn,
         "worker_init_fn": worker_init_fn,
         "persistent_workers": True,
-        "prefetch_factor": 2 if args.workers > 0 else None,  # Prefetch 2 batches per worker
+        # prefetch_factor removed - with pin_memory=True, prefetching uses GPU-pinned memory
+        # which caused OOM with large batches (user reported 47GB usage vs 48GB capacity)
     }
 
     if sampler is not None:
