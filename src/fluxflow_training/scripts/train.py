@@ -357,6 +357,7 @@ def initialize_dataloader(args, accelerator):
         "collate_fn": collate_fn,
         "worker_init_fn": worker_init_fn,
         "persistent_workers": args.workers > 0,
+        "prefetch_factor": 2 if args.workers > 0 else None,  # Prefetch 2 batches per worker
     }
 
     if sampler is not None:
@@ -659,6 +660,7 @@ def train_legacy(args):
         "collate_fn": collate_fn,
         "worker_init_fn": worker_init_fn,
         "persistent_workers": True,
+        "prefetch_factor": 2 if args.workers > 0 else None,  # Prefetch 2 batches per worker
     }
 
     if sampler is not None:
@@ -944,8 +946,6 @@ def train_legacy(args):
 
                 # Training steps
                 for _ in trn_steps:
-                    global_step += 1
-
                     # Train on all resolutions
                     for ri in imgs:
                         real_imgs = ri.to(device).detach()
@@ -978,6 +978,9 @@ def train_legacy(args):
                             avg_diff_loss += diff_loss / resolutions
                             diff_errors.add_item(diff_loss)
 
+                # Increment global step once per batch (after all training steps)
+                global_step += 1
+
                 # Logging
                 if i % args.log_interval == 0:
                     elapsed = time.time() - start_time
@@ -996,7 +999,20 @@ def train_legacy(args):
                     else:
                         eta_str = "calculating..."
 
-                    log_msg = f"[{elapsed_str}] Epoch {epoch}/{args.n_epochs} | Batch {i}/{dt_items} | {batch_time:.2f}s/batch | ETA: {eta_str}"
+                    # Add memory monitoring
+                    mem_str = ""
+                    if torch.cuda.is_available():
+                        mem_allocated_gb = torch.cuda.memory_allocated() / 1e9
+                        mem_reserved_gb = torch.cuda.memory_reserved() / 1e9
+                        mem_str = f" | GPU: {mem_allocated_gb:.1f}GB"
+                        
+                        # Warn if approaching memory limit
+                        if i % (args.log_interval * 10) == 0:
+                            max_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                            if mem_allocated_gb > max_memory_gb * 0.85:
+                                print(f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB (85%+ used)")
+                    
+                    log_msg = f"[{elapsed_str}] Epoch {epoch}/{args.n_epochs} | Batch {i}/{dt_items} | {batch_time:.2f}s/batch{mem_str} | ETA: {eta_str}"
 
                     # Store current beta for logging
                     current_beta = 0.0
@@ -1102,6 +1118,10 @@ def train_legacy(args):
                     )
 
                     checkpoint_count += 1
+
+                    # Clear CUDA cache to prevent memory fragmentation
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                     # Generate samples every N checkpoint saves
                     if not args.no_samples and checkpoint_count % args.samples_per_checkpoint == 0:
