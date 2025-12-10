@@ -1005,13 +1005,15 @@ def train_legacy(args):
                         mem_allocated_gb = torch.cuda.memory_allocated() / 1e9
                         mem_reserved_gb = torch.cuda.memory_reserved() / 1e9
                         mem_str = f" | GPU: {mem_allocated_gb:.1f}GB"
-                        
+
                         # Warn if approaching memory limit
                         if i % (args.log_interval * 10) == 0:
                             max_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
                             if mem_allocated_gb > max_memory_gb * 0.85:
-                                print(f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB (85%+ used)")
-                    
+                                print(
+                                    f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB (85%+ used)"
+                                )
+
                     log_msg = f"[{elapsed_str}] Epoch {epoch}/{args.n_epochs} | Batch {i}/{dt_items} | {batch_time:.2f}s/batch{mem_str} | ETA: {eta_str}"
 
                     # Store current beta for logging

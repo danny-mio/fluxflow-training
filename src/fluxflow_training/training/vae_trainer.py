@@ -432,19 +432,19 @@ class VAETrainer:
                 # Compute LPIPS WITH gradients so it actually trains the VAE
                 # Use gradient checkpointing to save memory during LPIPS forward pass
                 from torch.utils.checkpoint import checkpoint
-                
+
                 # Only use checkpointing on CUDA (not supported well on MPS/CPU)
                 if torch.cuda.is_available() and out_imgs_rec.is_cuda:
                     perceptual_loss = checkpoint(
                         lambda x, y: self.lpips_fn(x, y).mean(),
                         out_imgs_rec,
                         real_imgs,
-                        use_reentrant=False
+                        use_reentrant=False,
                     )
                 else:
                     # Standard computation for MPS/CPU
                     perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
-                
+
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
         # KL divergence with beta annealing (still compute even if not training reconstruction)
