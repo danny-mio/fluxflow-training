@@ -118,6 +118,7 @@ def generate(args):
             if args.use_cfg and args.guidance_scale != 1.0:
                 # Use CFG-guided generation
                 from fluxflow_training.training.cfg_inference import generate_with_cfg
+
                 decoded_images = generate_with_cfg(
                     diffuser=diffuser,
                     text_embeddings=text_embeddings,
