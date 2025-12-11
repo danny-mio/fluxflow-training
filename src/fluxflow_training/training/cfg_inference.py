@@ -22,7 +22,7 @@ def generate_with_cfg(
 ) -> torch.Tensor:
     """
     Generate images using classifier-free guidance.
-    
+
     Args:
         diffuser: FluxPipeline model with compressor, flow_processor, expander
         text_embeddings: Text conditioning [B, D_text]
@@ -35,24 +35,24 @@ def generate_with_cfg(
         batch_size: Batch size (default: 1)
         device: Device (default: "cuda")
         use_batched_cfg: Use memory-efficient batched CFG (default: True)
-    
+
     Returns:
         Generated images [B, 3, img_size, img_size]
-    
+
     Example:
         >>> from fluxflow.models import FluxPipeline
         >>> from transformers import AutoTokenizer, AutoModel
-        >>> 
+        >>>
         >>> # Load models
         >>> diffuser = FluxPipeline(...)
         >>> tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
         >>> text_encoder = AutoModel.from_pretrained("distilbert-base-uncased")
-        >>> 
+        >>>
         >>> # Encode prompt
         >>> prompt = "a beautiful sunset over mountains"
         >>> inputs = tokenizer(prompt, return_tensors="pt")
         >>> text_emb = text_encoder(**inputs).last_hidden_state.mean(dim=1)
-        >>> 
+        >>>
         >>> # Generate with CFG
         >>> images = generate_with_cfg(
         ...     diffuser,
@@ -62,16 +62,16 @@ def generate_with_cfg(
         ... )
     """
     from .cfg_utils import cfg_guided_prediction, cfg_guided_prediction_batched
-    
+
     # Initialize latent from random noise
     z_img = (torch.rand((batch_size, 3, img_size, img_size), device=device) * 2) - 1
     latent_z = diffuser.compressor(z_img)
-    
+
     img_seq = latent_z[:, :-1, :].contiguous()
     hw_vec = latent_z[:, -1:, :].contiguous()
-    
+
     noise_img = torch.randn_like(img_seq)
-    
+
     # Setup scheduler
     scheduler = DPMSolverMultistepScheduler(
         num_train_timesteps=1000,
@@ -82,21 +82,21 @@ def generate_with_cfg(
         timestep_spacing="trailing",
     )
     scheduler.set_timesteps(num_steps, device=device)  # type: ignore[arg-type]
-    
+
     # Start from full noise
     timesteps_list = scheduler.timesteps  # type: ignore[attr-defined]
     latent = torch.cat([noise_img, hw_vec], dim=1)
-    
+
     # Denoise with CFG
     logger.info(f"Generating with CFG (guidance_scale={guidance_scale}, steps={num_steps})")
-    
+
     cfg_fn = cfg_guided_prediction_batched if use_batched_cfg else cfg_guided_prediction
-    
+
     for i, t in enumerate(timesteps_list):
         # Normalize timestep to [0, 1] range expected by flow model
         t_normalized = t.float() / 1000.0
         t_batch = t_normalized.unsqueeze(0).expand(batch_size).to(device)
-        
+
         # CFG prediction
         with torch.no_grad():
             pred = cfg_fn(
@@ -106,17 +106,17 @@ def generate_with_cfg(
                 timesteps=t_batch,
                 guidance_scale=guidance_scale,
             )
-        
+
         # Scheduler step (v-prediction)
         # Note: This is simplified - production code should use scheduler.step()
         latent = scheduler.step(pred, t, latent).prev_sample  # type: ignore[attr-defined]
-        
+
         if (i + 1) % 10 == 0:
             logger.debug(f"Denoising step {i+1}/{num_steps}")
-    
+
     # Decode to images
     decoded_images = diffuser.expander(latent)
-    
+
     return decoded_images
 
 
@@ -130,9 +130,9 @@ def generate_comparison(
 ) -> dict[float, torch.Tensor]:
     """
     Generate images with multiple guidance scales for comparison.
-    
+
     Useful for visualizing CFG impact and finding optimal guidance scale.
-    
+
     Args:
         diffuser: FluxPipeline model
         text_embeddings: Text conditioning [1, D_text]
@@ -140,10 +140,10 @@ def generate_comparison(
         img_size: Image resolution
         num_steps: Denoising steps
         device: Device
-    
+
     Returns:
         Dictionary mapping guidance_scale -> generated image [1, 3, H, W]
-    
+
     Example:
         >>> results = generate_comparison(
         ...     diffuser,
@@ -151,14 +151,14 @@ def generate_comparison(
         ...     guidance_scales=[1.0, 3.0, 5.0, 7.0],
         ...     num_steps=30
         ... )
-        >>> 
+        >>>
         >>> # Save comparison
         >>> from torchvision.utils import save_image
         >>> for scale, img in results.items():
         ...     save_image(img, f"output_cfg{scale}.png")
     """
     results = {}
-    
+
     for scale in guidance_scales:
         logger.info(f"Generating with guidance_scale={scale}")
         img = generate_with_cfg(
@@ -171,7 +171,7 @@ def generate_comparison(
             device=device,
         )
         results[scale] = img
-    
+
     return results
 
 
@@ -187,7 +187,7 @@ def generate_interpolation(
 ) -> list[torch.Tensor]:
     """
     Generate smooth interpolation between two text prompts using CFG.
-    
+
     Args:
         diffuser: FluxPipeline model
         text_embeddings_start: Starting prompt embeddings [1, D]
@@ -197,35 +197,35 @@ def generate_interpolation(
         img_size: Image resolution
         num_steps: Denoising steps
         device: Device
-    
+
     Returns:
         List of generated images (length = num_frames)
-    
+
     Example:
         >>> # Encode prompts
         >>> prompt_a = "sunny beach"
         >>> prompt_b = "snowy mountain"
         >>> emb_a = encode_prompt(prompt_a, text_encoder, tokenizer)
         >>> emb_b = encode_prompt(prompt_b, text_encoder, tokenizer)
-        >>> 
+        >>>
         >>> # Generate interpolation
         >>> frames = generate_interpolation(
         ...     diffuser, emb_a, emb_b,
         ...     num_frames=20,
         ...     guidance_scale=5.0
         ... )
-        >>> 
+        >>>
         >>> # Save as video
         >>> import imageio
         >>> imageio.mimsave("interpolation.mp4", [img.cpu() for img in frames], fps=10)
     """
     frames = []
-    
+
     for i in range(num_frames):
         # Linear interpolation in embedding space
         alpha = i / (num_frames - 1)
         text_emb = (1 - alpha) * text_embeddings_start + alpha * text_embeddings_end
-        
+
         logger.info(f"Generating frame {i+1}/{num_frames} (alpha={alpha:.2f})")
         img = generate_with_cfg(
             diffuser,
@@ -237,5 +237,5 @@ def generate_interpolation(
             device=device,
         )
         frames.append(img)
-    
+
     return frames

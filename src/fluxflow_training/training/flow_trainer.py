@@ -142,10 +142,11 @@ class FlowTrainer:
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
-        
+
         # Apply classifier-free guidance dropout
         if self.cfg_dropout_prob > 0.0:
             from .cfg_utils import apply_cfg_dropout
+
             text_embeddings = apply_cfg_dropout(text_embeddings, p_uncond=self.cfg_dropout_prob)
 
         # Encode image to latent (frozen VAE)

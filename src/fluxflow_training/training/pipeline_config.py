@@ -83,7 +83,7 @@ class PipelineStepConfig:
     train_diff: bool = False
     train_diff_full: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
-    
+
     # Classifier-Free Guidance (CFG) for text-conditioned flow training
     cfg_dropout_prob: float = 0.0  # Probability of null conditioning (0.0=disabled, 0.10=standard)
 
