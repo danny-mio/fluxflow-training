@@ -907,7 +907,7 @@ class TrainingPipelineOrchestrator:
                     # Track batch time
                     batch_time = time.time() - batch_start_time
                     batch_times.add_item(batch_time)
-                    
+
                     # Periodic CUDA cache clearing to prevent fragmentation (every 10 batches)
                     if batch_idx % 10 == 0:
                         torch.cuda.empty_cache()
@@ -975,7 +975,7 @@ class TrainingPipelineOrchestrator:
                         self._save_checkpoint(
                             step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
                         )
-                        
+
                         # Clear CUDA cache after checkpoint save to prevent fragmentation
                         torch.cuda.empty_cache()
 
