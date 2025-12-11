@@ -813,9 +813,7 @@ class TrainingPipelineOrchestrator:
 
             # Create EMA if training VAE
             # Create EMA if we need VAE trainer (for VAE, GAN, SPADE, or LPIPS)
-            needs_vae_trainer = (
-                step.train_vae or step.train_spade or step.use_lpips
-            )
+            needs_vae_trainer = step.train_vae or step.train_spade or step.use_lpips
             ema = None
             if needs_vae_trainer and step.use_ema:
                 ema = EMA(

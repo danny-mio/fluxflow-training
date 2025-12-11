@@ -219,8 +219,14 @@ def initialize_models(args, config, device, checkpoint_manager):
         feature_maps=args.feature_maps_dim_disc,
     )
 
-    compressor = FluxCompressor(d_model=args.vae_dim, use_attention=True, use_gradient_checkpointing=args.use_gradient_checkpointing)
-    expander = FluxExpander(d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing)
+    compressor = FluxCompressor(
+        d_model=args.vae_dim,
+        use_attention=True,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
+    )
+    expander = FluxExpander(
+        d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing
+    )
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
@@ -550,8 +556,14 @@ def train_legacy(args):
         feature_maps=args.feature_maps_dim_disc,
     )
 
-    compressor = FluxCompressor(d_model=args.vae_dim, use_attention=True, use_gradient_checkpointing=args.use_gradient_checkpointing)
-    expander = FluxExpander(d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing)
+    compressor = FluxCompressor(
+        d_model=args.vae_dim,
+        use_attention=True,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
+    )
+    expander = FluxExpander(
+        d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing
+    )
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
@@ -1534,7 +1546,10 @@ def parse_args():
                 args.feature_maps_dim_disc = config["model"]["feature_maps_dim_disc"]
             if "text_embedding_dim" in config["model"] and "text_embedding_dim" not in cli_provided:
                 args.text_embedding_dim = config["model"]["text_embedding_dim"]
-            if "use_gradient_checkpointing" in config["model"] and "use_gradient_checkpointing" not in cli_provided:
+            if (
+                "use_gradient_checkpointing" in config["model"]
+                and "use_gradient_checkpointing" not in cli_provided
+            ):
                 args.use_gradient_checkpointing = config["model"]["use_gradient_checkpointing"]
             if (
                 "pretrained_bert_model" in config["model"]
