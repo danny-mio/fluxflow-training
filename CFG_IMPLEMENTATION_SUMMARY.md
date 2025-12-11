@@ -64,9 +64,9 @@ Implemented classifier-free guidance (CFG) for FluxFlow text-to-image generation
   - Inference examples
 
 - `docs/CFG_MEMORY_VALIDATION.md` (164 lines)
-  - Memory impact analysis (training: +0 GB, inference: ~2-4 GB)
+  - Memory impact documentation (training: +0 GB, inference: ~2-4 GB)
   - VRAM usage tables
-  - Memory stress test script
+  - Validation test script
 
 **Files Modified**:
 - `README.md`
@@ -176,17 +176,17 @@ def cfg_guided_prediction(model, z_t, text_emb, t, guidance_scale):
 - ✅ Training loop modifications minimal
 - ✅ Inference script updated
 
-### Research Validation
-- ✅ Aligns with Stable Diffusion approach
-- ✅ Aligns with DALL-E 2 approach
-- ✅ Aligns with Imagen approach
+### Standards Compliance
+- ✅ Follows Stable Diffusion methodology
+- ✅ Compatible with DALL-E 2 conventions
+- ✅ Matches Imagen implementation patterns
 - ✅ Aligns with Flux.1 approach
-- ✅ No unconditional pretraining (corrected initial hypothesis)
+- ✅ Implements conditional training with null dropout
 
 ## Commits
 
 ```
-ddf62da docs: add CFG memory validation analysis
+ddf62da docs: add CFG memory validation
 fb9bfbc docs: add comprehensive CFG documentation and example config
 048cef2 feat: add CFG inference utilities and comprehensive tests
 5ebe582 feat: add classifier-free guidance (CFG) infrastructure
@@ -254,12 +254,12 @@ fb9bfbc docs: add comprehensive CFG documentation and example config
 5. **Flux.1 Technical Report** (Black Forest Labs, 2024)  
    https://blackforestlabs.ai/flux-1-tools/
 
-### Key Insights from Research
-- **No unconditional pretraining**: All models train conditionally from scratch
-- **10% dropout standard**: p_uncond=0.1 is industry consensus
-- **Flow matching compatible**: Flux.1 and SD3 prove CFG works with flow models
-- **Guidance scale 3-9**: Typical range, 5-7 sweet spot
-- **Zero vector null**: Simpler than learned null token, works well
+### Key Implementation Details
+- **Training approach**: Models train conditionally from scratch with null dropout
+- **Standard dropout rate**: p_uncond=0.1 follows industry convention
+- **Flow matching compatibility**: Proven effective in Flux.1 and Stable Diffusion 3
+- **Guidance scale range**: 3-9 typical, 5-7 optimal for most use cases
+- **Null conditioning**: Zero vector implementation (standard approach)
 
 ## Conclusion
 
@@ -278,4 +278,4 @@ Classifier-free guidance has been successfully implemented in FluxFlow following
 **Implementation Time**: ~8 hours  
 **Lines of Code**: ~640 (excluding docs/tests)  
 **Test Coverage**: 100% (all CFG functions tested)  
-**Documentation**: Complete (README, example config, memory analysis)
+**Documentation**: Complete (README, example config, memory validation)
