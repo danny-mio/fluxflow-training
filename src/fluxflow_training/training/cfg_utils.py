@@ -35,12 +35,12 @@ def apply_cfg_dropout(
         >>> text_emb_dropped = apply_cfg_dropout(text_emb, p_uncond=0.1)
         >>> # ~10% of batch now has zero embeddings
     """
-    if p_uncond <= 0.0:
+    if p_uncond < 0.0 or p_uncond > 1.0:
+        raise ValueError(f"p_uncond must be in [0, 1], got {p_uncond}")
+    
+    if p_uncond == 0.0:
         # CFG disabled, return original embeddings
         return text_embeddings
-    
-    if p_uncond > 1.0:
-        raise ValueError(f"p_uncond must be in [0, 1], got {p_uncond}")
     
     batch_size = text_embeddings.size(0)
     device = text_embeddings.device

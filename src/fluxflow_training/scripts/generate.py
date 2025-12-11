@@ -114,17 +114,32 @@ def generate(args):
             noised_img = scheduler.add_noise(img_seq, noise_img, t)  # type: ignore
             noised_latent = torch.cat([noised_img, hw_vec], dim=1)
 
-            # Denoise
-            denoised_latent = generate_latent_images(
-                batch_z=noised_latent,
-                text_embeddings=text_embeddings,
-                diffuser=diffuser,
-                steps=args.ddim_steps,
-                prediction_type="v_prediction",
-            )
+            # Denoise (with optional CFG)
+            if args.use_cfg and args.guidance_scale != 1.0:
+                # Use CFG-guided generation
+                from fluxflow_training.training.cfg_inference import generate_with_cfg
+                decoded_images = generate_with_cfg(
+                    diffuser=diffuser,
+                    text_embeddings=text_embeddings,
+                    guidance_scale=args.guidance_scale,
+                    img_size=size,
+                    num_steps=args.ddim_steps,
+                    batch_size=B,
+                    device=device,
+                )
+            else:
+                # Standard generation (no CFG)
+                denoised_latent = generate_latent_images(
+                    batch_z=noised_latent,
+                    text_embeddings=text_embeddings,
+                    diffuser=diffuser,
+                    steps=args.ddim_steps,
+                    prediction_type="v_prediction",
+                )
+                # Decode and save
+                decoded_images = diffuser.expander(denoised_latent)
 
-            # Decode and save
-            decoded_images = diffuser.expander(denoised_latent)
+            # Save generated images
             for idx, image in enumerate(decoded_images):
                 file_name = os.path.splitext(file_names[idx])[0]
                 save_path = os.path.join(args.output_path, f"{file_name}_gen.webp")
@@ -173,6 +188,17 @@ def parse_args():
         type=int,
         default=128,
         help="Flow processor feature dimension",
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=1.0,
+        help="Classifier-free guidance scale (1.0=no guidance, 3-9=typical range)",
+    )
+    parser.add_argument(
+        "--use_cfg",
+        action="store_true",
+        help="Enable classifier-free guidance (requires model trained with CFG)",
     )
     return parser.parse_args()
 
