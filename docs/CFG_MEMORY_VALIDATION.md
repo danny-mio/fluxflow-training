@@ -2,8 +2,8 @@
 
 ## Summary
 
-Classifier-Free Guidance (CFG) adds **minimal memory overhead** during training:
-- **Training**: No additional VRAM (just random masking)
+Classifier-Free Guidance (CFG) adds **negligible memory overhead** during training:
+- **Training**: Negligible VRAM overhead (in-place modification + boolean masking)
 - **Inference**: 2× compute per step (conditional + unconditional forward passes)
 
 ## Training Memory Impact
@@ -15,9 +15,9 @@ Classifier-Free Guidance (CFG) adds **minimal memory overhead** during training:
 text_emb_dropped = apply_cfg_dropout(text_emb, p_uncond=0.1)
 ```
 
-**Memory overhead**: **~0 MB**
-- Only creates a boolean mask (batch_size × 1 bit)
-- Replaces ~10% of embeddings with zeros (no additional memory)
+**Memory overhead**: **Negligible (<1 MB)**
+- Creates boolean mask (batch_size × 1 byte, ~4-16 bytes typical)
+- Modifies text embeddings in-place (zero copy overhead)
 - No extra model copies, no gradient accumulation
 
 ### Expected VRAM Usage (Stage 3: Flow Training)
@@ -26,10 +26,10 @@ From empirical measurements (TRAINING_GUIDE.md):
 
 | Configuration | VRAM without CFG | VRAM with CFG | Difference |
 |---------------|------------------|---------------|------------|
-| **Flow + EMA disabled** | 44.9 GB | 44.9 GB | **+0 GB** ✅ |
-| **Flow + EMA enabled** | 59.3 GB | 59.3 GB | **+0 GB** ✅ |
+| **Flow + EMA disabled** | ~45 GB | ~45 GB | **<1 MB** ✅ |
+| **Flow + EMA enabled** | ~59 GB | ~59 GB | **<1 MB** ✅ |
 
-**Conclusion**: CFG dropout has **zero measurable memory impact** during training.
+**Conclusion**: CFG dropout has **negligible memory impact** during training (< 0.01% overhead).
 
 ## Inference Memory Impact
 

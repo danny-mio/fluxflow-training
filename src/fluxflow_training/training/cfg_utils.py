@@ -29,6 +29,8 @@ def apply_cfg_dropout(
     
     Returns:
         Text embeddings with CFG dropout applied [same shape as input]
+        NOTE: Modifies input tensor in-place for zero memory overhead.
+              If you need to preserve the original, clone before calling.
     
     Example:
         >>> text_emb = text_encoder(input_ids)  # [B, 1024]
@@ -64,11 +66,9 @@ def apply_cfg_dropout(
     # Create dropout mask [B]
     dropout_mask = torch.rand(batch_size, device=device) < p_uncond
     
-    # Clone to avoid in-place modification
-    text_emb_dropped = text_embeddings.clone()
-    
-    # Replace with null embedding where mask is True
-    text_emb_dropped[dropout_mask] = null_emb
+    # Apply null conditioning in-place (zero memory overhead)
+    # Note: Modifies input tensor. If you need original, call .clone() before this function.
+    text_embeddings[dropout_mask] = null_emb
     
     # Log statistics (only occasionally to avoid spam)
     if torch.rand(1).item() < 0.01:  # 1% of batches
@@ -78,7 +78,7 @@ def apply_cfg_dropout(
             f"({100.0 * num_null / batch_size:.1f}%) set to null conditioning"
         )
     
-    return text_emb_dropped
+    return text_embeddings
 
 
 def cfg_guided_prediction(

@@ -246,7 +246,7 @@ training:
       - name: "flow_cfg"
         n_epochs: 100
         train_diff: true
-        cfg_dropout_prob: 0.10  # 10% null conditioning (industry standard)
+        cfg_dropout_prob: 0.10  # 10% null conditioning (common setting)
         use_ema: true
         
         freeze:
@@ -264,9 +264,9 @@ fluxflow-generate \
     --guidance_scale 5.0  # Range: 1.0 (no guidance) to 9.0 (strong)
 ```
 
-**Guidance scale recommendations**:
+**Guidance scale examples** (tune for your model):
 - `1.0`: Standard conditional (no guidance)
-- `3.0-5.0`: Balanced quality/diversity **(recommended)**
+- `3.0-5.0`: Moderate guidance
 - `7.0-9.0`: Strong prompt adherence (may oversaturate)
 
 See [config.cfg.example.yaml](config.cfg.example.yaml) for complete CFG training example.

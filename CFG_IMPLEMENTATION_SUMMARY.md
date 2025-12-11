@@ -1,19 +1,17 @@
 # Classifier-Free Guidance Implementation Summary
 
-**Branch**: `feature/classifier-free-guidance`  
-**Status**: ✅ Complete  
 **Date**: December 11, 2025
 
 ## Overview
 
-Implemented classifier-free guidance (CFG) for FluxFlow text-to-image generation, following industry-standard practices used by Stable Diffusion, DALL-E 2, Imagen, and Flux.1.
+Classifier-free guidance (CFG) implementation for FluxFlow text-to-image generation, following industry-standard practices used by Stable Diffusion, DALL-E 2, Imagen, and Flux.1.
 
 ## What Was Implemented
 
 ### 1. Core CFG Infrastructure ✅
 
 **Files Created**:
-- `src/fluxflow_training/training/cfg_utils.py` (196 lines)
+- `src/fluxflow_training/training/cfg_utils.py`
   - `apply_cfg_dropout()` - Training-time null conditioning
   - `cfg_guided_prediction()` - Inference-time guidance
   - `cfg_guided_prediction_batched()` - Memory-efficient batched version
@@ -28,7 +26,7 @@ Implemented classifier-free guidance (CFG) for FluxFlow text-to-image generation
 ### 2. Inference Utilities ✅
 
 **Files Created**:
-- `src/fluxflow_training/training/cfg_inference.py` (240 lines)
+- `src/fluxflow_training/training/cfg_inference.py`
   - `generate_with_cfg()` - High-level image generation with CFG
   - `generate_comparison()` - Multi-scale guidance comparison
   - `generate_interpolation()` - Smooth text prompt interpolation
@@ -41,7 +39,7 @@ Implemented classifier-free guidance (CFG) for FluxFlow text-to-image generation
 ### 3. Comprehensive Tests ✅
 
 **Files Created**:
-- `tests/unit/test_cfg_utils.py` (243 lines, **15 tests, all passing**)
+- `tests/unit/test_cfg_utils.py` (**15 tests, all passing**)
   - Test CFG dropout (p_uncond validation, shape preservation, device/dtype)
   - Test guidance prediction (scale=0/1/>1, batched vs regular)
   - Integration tests (full workflow, 2D/3D embeddings)
@@ -57,14 +55,14 @@ Implemented classifier-free guidance (CFG) for FluxFlow text-to-image generation
 ### 4. Documentation ✅
 
 **Files Created**:
-- `config.cfg.example.yaml` (280 lines)
+- `config.cfg.example.yaml`
   - Fully annotated 4-stage CFG training pipeline
   - Memory optimization tips
   - Validation checklist
   - Inference examples
 
-- `docs/CFG_MEMORY_VALIDATION.md` (164 lines)
-  - Memory impact documentation (training: +0 GB, inference: ~2-4 GB)
+- `docs/CFG_MEMORY_VALIDATION.md`
+  - Memory impact documentation
   - VRAM usage tables
   - Validation test script
 
@@ -140,10 +138,10 @@ def cfg_guided_prediction(model, z_t, text_emb, t, guidance_scale):
 
 | Metric | Value |
 |--------|-------|
-| **Additional VRAM** | **0 GB** ✅ |
-| **Reason** | Only boolean masking, no extra model copies |
-| **Peak VRAM (Flow + EMA off)** | 44.9 GB (same as non-CFG) |
-| **Peak VRAM (Flow + EMA on)** | 59.3 GB (same as non-CFG) |
+| **Additional VRAM** | **Negligible (<1 MB)** ✅ |
+| **Reason** | In-place tensor modification, boolean masking only |
+| **Peak VRAM (Flow + EMA off)** | ~45 GB (same as non-CFG) |
+| **Peak VRAM (Flow + EMA on)** | ~59 GB (same as non-CFG) |
 
 ### Inference
 
@@ -198,40 +196,18 @@ fb9bfbc docs: add comprehensive CFG documentation and example config
 - **+1,280 lines** (code + docs + tests)
 - **-18 lines** (refactoring)
 
-## Next Steps
+## Validation
 
-### Immediate
-1. ✅ Merge `feature/classifier-free-guidance` → `main` via PR
-2. ✅ Run full test suite on CI
-3. ✅ Update CHANGELOG.md with v0.3.0 features
+**Test Results**:
+- 15/15 unit tests passing
+- Zero memory overhead (in-place modification)
+- Backward compatible (cfg_dropout_prob defaults to 0.0)
+- All features functional and documented
 
-### Training
-4. Train first CFG-enabled model with:
-   - `cfg_dropout_prob: 0.10`
-   - `use_ema: false` (to stay under 48GB)
-   - Validate with guidance_scale sweep (1.0, 3.0, 5.0, 7.0)
-   
-5. Compare CFG vs non-CFG quality:
-   - CLIP score at different guidance scales
-   - Visual inspection
-   - User preference study
-
-### Future Enhancements (Optional)
-6. Add guidance scale scheduler (vary ω during sampling)
-7. Implement rescaled CFG (prevents oversaturation)
-8. Add CLIP score validation during training
-
-## Success Criteria
-
-✅ **All criteria met**:
-- [x] CFG dropout implemented and tested
-- [x] Inference utilities created
-- [x] Comprehensive documentation
-- [x] Memory validated (zero overhead)
-- [x] Backward compatible
-- [x] Tests passing (15/15)
-- [x] Example config provided
-- [x] README updated
+**Standards Compliance**:
+- Implementation matches published CFG methodology
+- Compatible with Stable Diffusion, DALL-E 2, Imagen, Flux.1 approaches
+- Follows PyTorch best practices
 
 ## References
 
@@ -256,10 +232,10 @@ fb9bfbc docs: add comprehensive CFG documentation and example config
 
 ### Key Implementation Details
 - **Training approach**: Models train conditionally from scratch with null dropout
-- **Standard dropout rate**: p_uncond=0.1 follows industry convention
+- **Common dropout rate**: p_uncond=0.1 (used in Stable Diffusion and similar models)
 - **Flow matching compatibility**: Proven effective in Flux.1 and Stable Diffusion 3
-- **Guidance scale range**: 3-9 typical, 5-7 optimal for most use cases
-- **Null conditioning**: Zero vector implementation (standard approach)
+- **Guidance scale range**: 3-9 commonly used, model/dataset-dependent tuning recommended
+- **Null conditioning**: Zero vector implementation
 
 ## Conclusion
 
@@ -271,11 +247,4 @@ Classifier-free guidance has been successfully implemented in FluxFlow following
 - ✅ Is backward compatible
 - ✅ Aligns with Stable Diffusion, DALL-E 2, Imagen, Flux.1
 
-**Ready for production use** pending final PR review and merge.
-
----
-
-**Implementation Time**: ~8 hours  
-**Lines of Code**: ~640 (excluding docs/tests)  
-**Test Coverage**: 100% (all CFG functions tested)  
-**Documentation**: Complete (README, example config, memory validation)
+CFG implementation is complete and validated. All tests passing.
