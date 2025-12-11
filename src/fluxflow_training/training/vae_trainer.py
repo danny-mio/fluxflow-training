@@ -430,6 +430,8 @@ class VAETrainer:
             # LPIPS perceptual loss
             if self.use_lpips and self.lpips_fn is not None:
                 # Compute LPIPS WITH gradients so it actually trains the VAE
+                # NOTE: Gradient checkpointing removed - causes recursive checkpointing
+                # with VAE decoder, leading to OOM instead of saving memory
                 perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
@@ -484,6 +486,10 @@ class VAETrainer:
                 "lpips": 0.0,
                 "recon": 0.0,
             }
+
+        # CRITICAL: Clear CUDA cache before backward to prevent OOM
+        # Gradient checkpointing in VAE causes memory spikes during backward pass
+        torch.cuda.empty_cache()
 
         self.accelerator.backward(total_loss)
 

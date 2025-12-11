@@ -75,3 +75,5 @@ temp/
 _cache/
 .cache/
 .mypy_cache/
+AUDIT_RESPONSE.md
+CRITICAL_FIX.md

@@ -73,7 +73,6 @@ def r1_penalty(real_imgs: torch.Tensor, d_out: torch.Tensor) -> torch.Tensor:
         outputs=d_out.sum(),
         inputs=real_imgs,
         create_graph=True,
-        retain_graph=True,
         only_inputs=True,
     )[0]
     return grad_real.pow(2).reshape(grad_real.size(0), -1).sum(1).mean()

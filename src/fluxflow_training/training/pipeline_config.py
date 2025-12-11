@@ -82,6 +82,7 @@ class PipelineStepConfig:
     train_spade: bool = False
     train_diff: bool = False
     train_diff_full: bool = False
+    use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
 
     # Model freeze/unfreeze
     freeze: list[str] = field(default_factory=list)

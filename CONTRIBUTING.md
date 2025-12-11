@@ -416,3 +416,50 @@ By contributing, you agree that your contributions will be licensed under the MI
 ---
 
 **Thank you for contributing to FluxFlow!** 🎉
+
+## Testing Memory-Intensive Features
+
+When contributing optimizations or features that affect memory usage:
+
+### Memory Testing Checklist
+
+- [ ] Test on target GPU (e.g., A6000 48GB)
+- [ ] Monitor VRAM with `nvidia-smi -l 1` during training
+- [ ] Record peak VRAM usage for documentation
+- [ ] Test with full config (GAN+LPIPS+SPADE) if applicable
+- [ ] Verify no OOM on 48GB GPU with batch_size=4
+- [ ] Document memory savings if optimization
+- [ ] Update TRAINING_GUIDE.md "Memory Requirements" section
+
+### Example Memory Test Script
+
+```bash
+# test_memory.sh
+nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -l 1 > memory_log.txt &
+NVIDIA_PID=$!
+
+fluxflow-train --config test_config.yaml
+
+kill $NVIDIA_PID
+echo "Peak VRAM: $(sort -n memory_log.txt | tail -1) MB"
+```
+
+### Reporting Memory Issues
+
+When reporting OOM or memory issues, include:
+1. GPU model and VRAM size
+2. Full config file
+3. Exact command run
+4. Peak VRAM usage (from `nvidia-smi`)
+5. FluxFlow version (`pip show fluxflow-training`)
+6. CUDA version (`nvcc --version` or `nvidia-smi`)
+
+Example:
+```
+GPU: NVIDIA A6000 (48GB)
+Peak VRAM: 47.4GB (triggered OOM)
+Config: batch_size=4, vae_dim=128, gan_training=true, use_lpips=true, train_spade=true
+Version: fluxflow-training 0.2.1
+CUDA: 12.1
+```
+

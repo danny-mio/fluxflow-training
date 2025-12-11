@@ -219,8 +219,14 @@ def initialize_models(args, config, device, checkpoint_manager):
         feature_maps=args.feature_maps_dim_disc,
     )
 
-    compressor = FluxCompressor(d_model=args.vae_dim, use_attention=True)
-    expander = FluxExpander(d_model=args.vae_dim)
+    compressor = FluxCompressor(
+        d_model=args.vae_dim,
+        use_attention=True,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
+    )
+    expander = FluxExpander(
+        d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing
+    )
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
@@ -357,6 +363,8 @@ def initialize_dataloader(args, accelerator):
         "collate_fn": collate_fn,
         "worker_init_fn": worker_init_fn,
         "persistent_workers": args.workers > 0,
+        # prefetch_factor removed - with pin_memory=True, prefetching uses GPU-pinned memory
+        # which caused OOM with large batches (user reported 47GB usage vs 48GB capacity)
     }
 
     if sampler is not None:
@@ -548,8 +556,14 @@ def train_legacy(args):
         feature_maps=args.feature_maps_dim_disc,
     )
 
-    compressor = FluxCompressor(d_model=args.vae_dim, use_attention=True)
-    expander = FluxExpander(d_model=args.vae_dim)
+    compressor = FluxCompressor(
+        d_model=args.vae_dim,
+        use_attention=True,
+        use_gradient_checkpointing=args.use_gradient_checkpointing,
+    )
+    expander = FluxExpander(
+        d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing
+    )
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
@@ -659,6 +673,8 @@ def train_legacy(args):
         "collate_fn": collate_fn,
         "worker_init_fn": worker_init_fn,
         "persistent_workers": True,
+        # prefetch_factor removed - with pin_memory=True, prefetching uses GPU-pinned memory
+        # which caused OOM with large batches (user reported 47GB usage vs 48GB capacity)
     }
 
     if sampler is not None:
@@ -944,8 +960,6 @@ def train_legacy(args):
 
                 # Training steps
                 for _ in trn_steps:
-                    global_step += 1
-
                     # Train on all resolutions
                     for ri in imgs:
                         real_imgs = ri.to(device).detach()
@@ -978,6 +992,9 @@ def train_legacy(args):
                             avg_diff_loss += diff_loss / resolutions
                             diff_errors.add_item(diff_loss)
 
+                # Increment global step once per batch (after all training steps)
+                global_step += 1
+
                 # Logging
                 if i % args.log_interval == 0:
                     elapsed = time.time() - start_time
@@ -996,7 +1013,22 @@ def train_legacy(args):
                     else:
                         eta_str = "calculating..."
 
-                    log_msg = f"[{elapsed_str}] Epoch {epoch}/{args.n_epochs} | Batch {i}/{dt_items} | {batch_time:.2f}s/batch | ETA: {eta_str}"
+                    # Add memory monitoring
+                    mem_str = ""
+                    if torch.cuda.is_available():
+                        mem_allocated_gb = torch.cuda.memory_allocated() / 1e9
+                        mem_reserved_gb = torch.cuda.memory_reserved() / 1e9
+                        mem_str = f" | GPU: {mem_allocated_gb:.1f}GB"
+
+                        # Warn if approaching memory limit
+                        if i % (args.log_interval * 10) == 0:
+                            max_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+                            if mem_allocated_gb > max_memory_gb * 0.85:
+                                print(
+                                    f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB (85%+ used)"
+                                )
+
+                    log_msg = f"[{elapsed_str}] Epoch {epoch}/{args.n_epochs} | Batch {i}/{dt_items} | {batch_time:.2f}s/batch{mem_str} | ETA: {eta_str}"
 
                     # Store current beta for logging
                     current_beta = 0.0
@@ -1102,6 +1134,10 @@ def train_legacy(args):
                     )
 
                     checkpoint_count += 1
+
+                    # Clear CUDA cache to prevent memory fragmentation
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                     # Generate samples every N checkpoint saves
                     if not args.no_samples and checkpoint_count % args.samples_per_checkpoint == 0:
@@ -1350,6 +1386,12 @@ def parse_args():
         default=None,
         help="Pretrained BERT checkpoint",
     )
+    parser.add_argument(
+        "--use_gradient_checkpointing",
+        action="store_true",
+        default=True,
+        help="Use gradient checkpointing in VAE (saves VRAM during forward, costs VRAM during backward)",
+    )
 
     # Training
     parser.add_argument("--n_epochs", type=int, default=1, help="Number of epochs")
@@ -1504,6 +1546,11 @@ def parse_args():
                 args.feature_maps_dim_disc = config["model"]["feature_maps_dim_disc"]
             if "text_embedding_dim" in config["model"] and "text_embedding_dim" not in cli_provided:
                 args.text_embedding_dim = config["model"]["text_embedding_dim"]
+            if (
+                "use_gradient_checkpointing" in config["model"]
+                and "use_gradient_checkpointing" not in cli_provided
+            ):
+                args.use_gradient_checkpointing = config["model"]["use_gradient_checkpointing"]
             if (
                 "pretrained_bert_model" in config["model"]
                 and "pretrained_bert_model" not in cli_provided

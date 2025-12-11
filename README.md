@@ -53,10 +53,24 @@ pip install -e ".[dev]"
 - Local: 1× RTX 4090 (24GB) or 2× RTX 3090 (24GB each)
 - Cloud: AWS p3.2xlarge (V100 16GB), GCP A100 (40GB)
 
-**Minimum Requirements**:
-- 16GB VRAM for VAE training (batch size 2-4)
-- 24GB VRAM for Flow training (batch size 1-2)
-- 48GB VRAM enables larger batches (batch size 8+)
+**Memory Requirements by Training Mode** (empirical measurements, Dec 2025):
+- **VAE Training** (batch_size=4, vae_dim=128, img_size=1024):
+  - **Without GAN**: ~18-22GB VRAM
+  - **With GAN + LPIPS**: ~28-35GB VRAM
+  - **With GAN + LPIPS + SPADE**: ~35-42GB VRAM
+  - **Peak observed**: 47.4GB on A6000 48GB (triggered OOM, requires optimization)
+- **Flow Training** (batch_size=1, feature_maps_dim=128):
+  - ~24-30GB VRAM
+- **Minimum viable** (reduced dimensions, smaller images):
+  - 16GB VRAM for VAE (batch_size=2, vae_dim=64, img_size=512)
+  - 24GB VRAM for Flow (batch_size=1, feature_maps_dim=64)
+
+**OOM Prevention** (if you hit 47GB+ on 48GB GPU):
+- Reduce batch size: `batch_size: 2` or `1`
+- Disable LPIPS: `use_lpips: false` (saves ~6-8GB)
+- Reduce image size: `img_size: 512` (saves ~10-15GB)
+- Use FP16 (if supported): `use_fp16: true` (saves ~20-30%)
+- See [TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) "Limited VRAM Strategy"
 
 **Cost Comparison**:
 | Platform | GPU | $/hr | Est. Total (500 hrs) |
@@ -82,21 +96,23 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
 
 ### Core Training Capabilities
 
-- **🎯 Pipeline Training Mode** (NEW in v0.2.0)
+- **🎯 Pipeline Training Mode** (v0.2.0+, **FULLY IMPLEMENTED**)
   - Multi-step sequential training with independent configs per step
   - Per-step freeze/unfreeze of model components
   - Loss-threshold transitions with early stopping
   - Full checkpoint resume from any step/epoch/batch
+  - 1035 lines in `pipeline_orchestrator.py`
   - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md)
 
-- **🎨 GAN-Only Training Mode** (NEW in v0.2.0)
+- **🎨 GAN-Only Training Mode** (v0.2.0+, **FULLY IMPLEMENTED**)
   - Train encoder/decoder with adversarial loss only (no reconstruction)
   - Spatial conditioning (SPADE) without pixel-perfect reconstruction
   - Faster training with focused gradient flow
+  - Example config: see PIPELINE_ARCHITECTURE.md "GAN-Only Mode" section
 
 - **VAE Training**
   - Variational autoencoders with GAN losses
-  - LPIPS perceptual loss support
+  - LPIPS perceptual loss support (adds ~6-8GB VRAM)
   - SPADE spatial conditioning
   - KL divergence with beta warmup and free bits
 
@@ -143,7 +159,7 @@ fluxflow-train --config config.yaml
 fluxflow-train --config config.yaml --generate_diagrams
 ```
 
-### Pipeline Training (NEW)
+### Pipeline Training (NEW in v0.2.0)
 
 Multi-step training for hypothesis testing and staged optimization:
 
@@ -186,7 +202,7 @@ fluxflow-train --config pipeline_config.yaml --validate-pipeline
 
 See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) for complete documentation.
 
-### GAN-Only Training (NEW)
+### GAN-Only Training (NEW in v0.2.0)
 
 Train with adversarial loss only (no pixel-level reconstruction):
 
@@ -206,6 +222,7 @@ training:
 - Spatial structure learning without pixel constraints
 - Faster training (no reconstruction computation)
 - SPADE conditioning experiments
+- Saves ~8-12GB VRAM by skipping reconstruction loss computation
 
 ### Generating Images
 
@@ -290,7 +307,7 @@ vae_warmup_001_005_abc123-original.webp
 ## Package Contents
 
 - `fluxflow_training.training` - Training logic and trainers
-  - `pipeline_orchestrator.py` - Multi-step pipeline execution
+  - `pipeline_orchestrator.py` - Multi-step pipeline execution (1035 lines)
   - `pipeline_config.py` - Pipeline configuration and validation
   - `vae_trainer.py` - VAE/GAN training logic
   - `flow_trainer.py` - Flow model training
@@ -371,11 +388,13 @@ training:
   - Checkpoint format
   - Sample naming conventions
   - Troubleshooting
+  - **Status**: ✅ FULLY IMPLEMENTED (1035 lines in pipeline_orchestrator.py)
 
 - **[TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md)** - Complete training guide
   - Detailed configuration options
   - Dataset preparation
   - Training strategies
+  - Memory optimization strategies
   - Best practices
 
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guide
@@ -390,9 +409,17 @@ training:
 - `test_pipeline_minimal.yaml` - Minimal working pipeline example
 - `config.example.sh` - Environment setup script
 
-## What's New in v0.2.0
+## What's New in v0.2.1
 
-### Major Features
+### Critical Optimizations (Dec 2025)
+
+- **Memory optimizations** to prevent OOM on 48GB GPUs
+  - Removed LPIPS gradient checkpointing (caused OOM at 47.4GB)
+  - Removed dataloader prefetch_factor (caused memory spikes)
+  - CUDA cache clearing between batches
+  - See CHANGELOG.md for full details
+
+### Major Features (v0.2.0)
 
 - **Pipeline Training Mode** - Multi-step sequential training with per-step configs
 - **GAN-Only Mode** - Train with adversarial loss only (no reconstruction)
@@ -406,6 +433,7 @@ training:
 - Fixed EMA creation for GAN-only mode
 - Fixed metrics logging to respect training modes
 - Fixed sample generation to prevent overwrites
+- Fixed R1 penalty gradient computation
 
 ### Breaking Changes
 
