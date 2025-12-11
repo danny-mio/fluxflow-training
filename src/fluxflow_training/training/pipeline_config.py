@@ -83,6 +83,9 @@ class PipelineStepConfig:
     train_diff: bool = False
     train_diff_full: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
+    
+    # Classifier-Free Guidance (CFG) for text-conditioned flow training
+    cfg_dropout_prob: float = 0.0  # Probability of null conditioning (0.0=disabled, 0.10=standard)
 
     # Model freeze/unfreeze
     freeze: list[str] = field(default_factory=list)
@@ -446,6 +449,8 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         train_spade=step_dict.get("train_spade", False),
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
+        use_ema=step_dict.get("use_ema", True),
+        cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
         freeze=step_dict.get("freeze", []),
         unfreeze=step_dict.get("unfreeze", []),
         batch_size=step_dict.get("batch_size", 2),
