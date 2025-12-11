@@ -487,6 +487,10 @@ class VAETrainer:
                 "recon": 0.0,
             }
 
+        # CRITICAL: Clear CUDA cache before backward to prevent OOM
+        # Gradient checkpointing in VAE causes memory spikes during backward pass
+        torch.cuda.empty_cache()
+        
         self.accelerator.backward(total_loss)
 
         # Check gradients for NaN/Inf after backward
