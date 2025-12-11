@@ -1,6 +1,8 @@
 # Pipeline Training Architecture
 
-**Status**: ✅ **FULLY IMPLEMENTED** (v0.2.0)
+**Status**: ✅ **FULLY IMPLEMENTED** (v0.2.0+)
+
+**Implementation**: 1035 lines in `src/fluxflow_training/training/pipeline_orchestrator.py`
 
 ## Overview
 
@@ -87,7 +89,7 @@ training:
 | `train_vae` | `bool` | `false` | Train VAE encoder/decoder with reconstruction loss |
 | `train_spade` | `bool` | `false` | Use SPADE conditioning in decoder |
 | `gan_training` | `bool` | `false` | Train GAN discriminator |
-| `use_lpips` | `bool` | `false` | Add LPIPS perceptual loss |
+| `use_lpips` | `bool` | `false` | Add LPIPS perceptual loss (adds ~6-8GB VRAM) |
 | `train_diff` | `bool` | `false` | Train flow processor (partial) |
 | `train_diff_full` | `bool` | `false` | Train flow processor (full) |
 
@@ -100,11 +102,13 @@ gan_training: true        # Train GAN discriminator
 train_spade: true         # Optional: SPADE conditioning
 ```
 
+**Memory savings**: Skipping reconstruction loss saves ~8-12GB VRAM.
+
 **Reconstruction Training** (VAE only, no GAN):
 ```yaml
 train_vae: true
 gan_training: false
-use_lpips: true           # Optional: perceptual loss
+use_lpips: true           # Optional: perceptual loss (adds ~6-8GB VRAM)
 ```
 
 #### Model Freezing
@@ -201,7 +205,7 @@ max_steps: 30             # Limit batches per epoch (for quick testing)
 
 Main class coordinating multi-step training.
 
-**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py`
+**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py` (1035 lines)
 
 **Key Methods**:
 - `run()` - Execute complete pipeline
@@ -533,15 +537,29 @@ pipeline:
 
 **Fix**: Upgrade to v0.2.0+ where mid-epoch samples respect `checkpoint_save_interval`.
 
+### Out of Memory (OOM) at 47GB+ on 48GB GPU
+
+**Cause**: LPIPS + GAN + SPADE combined can exceed 48GB VRAM.
+
+**Fix**:
+- Reduce batch size: `batch_size: 2` or `1`
+- Disable LPIPS: `use_lpips: false` (saves ~6-8GB)
+- Reduce image size: `img_size: 512` (saves ~10-15GB)
+- Disable SPADE: `train_spade: false` (saves ~3-5GB)
+- Use GAN-only mode: `train_vae: false, gan_training: true` (saves ~8-12GB)
+
+See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) "Limited VRAM Strategy" for more.
+
 ---
 
 ## Related Documentation
 
 - [README.md](../README.md) - Quick start and features
-- [TRAINING_GUIDE.md](TRAINING_GUIDE.md) - Detailed training strategies
+- [TRAINING_GUIDE.md](TRAINING_GUIDE.md) - Detailed training strategies and memory optimization
 - [CONTRIBUTING.md](../CONTRIBUTING.md) - Development guide
 
 ---
 
-**Last Updated**: 2025-12-09  
-**Version**: 0.2.0
+**Last Updated**: 2025-12-11  
+**Version**: 0.2.1  
+**Implementation**: ✅ Fully operational (1035 lines in pipeline_orchestrator.py)

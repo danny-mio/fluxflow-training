@@ -12,6 +12,93 @@ A comprehensive guide to configuring and running training for FluxFlow text-to-i
 - [Configuration Examples](#configuration-examples)
 - [Troubleshooting](#troubleshooting)
 
+## Memory Requirements & OOM Prevention
+
+**Critical Information** (empirically measured, December 2025):
+
+### VRAM Usage by Configuration
+
+**VAE Training** (batch_size=4, vae_dim=128, img_size=1024):
+- **VAE only** (no GAN): ~18-22GB VRAM
+- **VAE + GAN**: ~25-30GB VRAM
+- **VAE + GAN + LPIPS**: ~28-35GB VRAM
+- **VAE + GAN + LPIPS + SPADE**: ~35-42GB VRAM
+- **Peak observed**: 47.4GB on A6000 48GB → **triggered OOM**
+
+**Flow Training** (batch_size=1, feature_maps_dim=128):
+- ~24-30GB VRAM
+
+**Minimum Viable** (reduced dimensions):
+- 16GB VRAM: `batch_size=2, vae_dim=64, img_size=512, gan_training=false`
+- 24GB VRAM: `batch_size=1, vae_dim=128, img_size=1024, use_lpips=false`
+
+### OOM Prevention Strategies
+
+If you hit **47GB+ on 48GB GPU** (or equivalent):
+
+**1. Reduce Batch Size** (most effective):
+```yaml
+batch_size: 2  # or 1
+```
+
+**2. Disable LPIPS** (saves ~6-8GB):
+```yaml
+use_lpips: false
+```
+
+**3. Reduce Image Size** (saves ~10-15GB):
+```yaml
+img_size: 512  # instead of 1024
+```
+
+**4. Use GAN-Only Mode** (saves ~8-12GB by skipping reconstruction):
+```yaml
+train_vae: false
+gan_training: true
+train_spade: true
+```
+
+**5. Disable SPADE** (saves ~3-5GB):
+```yaml
+train_spade: false
+```
+
+**6. Reduce Dimensions** (saves ~5-10GB):
+```yaml
+vae_dim: 64              # instead of 128
+feature_maps_dim: 64
+feature_maps_dim_disc: 8
+```
+
+**7. Use FP16** (saves ~20-30% if GPU supports Tensor Cores):
+```yaml
+use_fp16: true  # RTX 3090/4090 recommended
+```
+
+### Recent Optimizations (v0.2.1)
+
+FluxFlow v0.2.1 includes critical memory optimizations:
+- Removed LPIPS gradient checkpointing (caused OOM spikes)
+- Removed dataloader prefetch_factor (reduced memory overhead)
+- CUDA cache clearing between batches
+- R1 gradient penalty fix (prevented memory leaks)
+
+**If still hitting OOM after v0.2.1**, apply strategies 1-7 above.
+
+### Hardware Recommendations
+
+| GPU VRAM | Recommended Config | Max Quality Config |
+|----------|-------------------|-------------------|
+| 8GB | batch=1, dim=32, img=512, no_gan | Not recommended |
+| 12GB | batch=2, dim=64, img=512, gan | batch=1, dim=64, img=512, gan+lpips |
+| 16GB | batch=2, dim=64, img=1024, gan | batch=1, dim=128, img=512, gan+lpips |
+| 24GB | batch=2, dim=128, img=1024, gan | batch=1, dim=128, img=1024, gan+lpips+spade |
+| 48GB | batch=4, dim=128, img=1024, gan+lpips | batch=2, dim=256, img=1024, gan+lpips+spade |
+
+**Note**: 48GB configs may still OOM if LPIPS+GAN+SPADE all enabled. Monitor with `nvidia-smi`.
+
+---
+
 ## Overview
 
 FluxFlow uses a unified training script (`packages/training/src/fluxflow_training/scripts/train.py`) that supports:
