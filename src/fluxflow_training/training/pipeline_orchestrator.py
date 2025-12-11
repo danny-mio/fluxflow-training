@@ -814,15 +814,18 @@ class TrainingPipelineOrchestrator:
             # Create EMA if training VAE
             # Create EMA if we need VAE trainer (for VAE, GAN, SPADE, or LPIPS)
             needs_vae_trainer = (
-                step.train_vae or step.gan_training or step.train_spade or step.use_lpips
+                step.train_vae or step.train_spade or step.use_lpips
             )
             ema = None
-            if needs_vae_trainer:
+            if needs_vae_trainer and step.use_ema:
                 ema = EMA(
                     nn.ModuleList([models["compressor"], models["expander"]]),
                     decay=0.999,
                     device=self.device,
                 )
+                logger.info("✓ EMA enabled (adds 2x model VRAM)")
+            elif needs_vae_trainer and not step.use_ema:
+                logger.info("⚠ EMA disabled to save VRAM (~14GB for vae_dim=128)")
 
             # Create trainers for this step
             trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
