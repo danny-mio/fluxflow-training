@@ -4,6 +4,7 @@ Manages sequential execution of training pipeline steps with model freezing,
 loss-threshold transitions, and checkpoint management.
 """
 
+from dataclasses import asdict
 from typing import Any, Optional
 
 import torch.nn as nn
@@ -459,11 +460,11 @@ class TrainingPipelineOrchestrator:
 
         # Explicit optimizer config provided - rest of method unchanged
         for name, opt_config_obj in step.optimization.optimizers.items():
-            opt_config = (
-                opt_config_obj.model_dump()
-                if hasattr(opt_config_obj, "model_dump")
-                else opt_config_obj
-            )
+            # Convert dataclass to dict, filtering out None values
+            if hasattr(opt_config_obj, "__dataclass_fields__"):
+                opt_config = {k: v for k, v in asdict(opt_config_obj).items() if v is not None}
+            else:
+                opt_config = opt_config_obj
 
             # Determine which parameters to optimize
             if name == "vae":
@@ -500,11 +501,11 @@ class TrainingPipelineOrchestrator:
                 logger.warning(f"Scheduler '{name}' has no corresponding optimizer")
                 continue
 
-            # Convert SchedulerConfig to dict
-            sched_config = {
-                "type": sched_config_obj.type,
-                "eta_min_factor": sched_config_obj.eta_min_factor,
-            }
+            # Convert SchedulerConfig dataclass to dict, filtering out None values
+            if hasattr(sched_config_obj, "__dataclass_fields__"):
+                sched_config = {k: v for k, v in asdict(sched_config_obj).items() if v is not None}
+            else:
+                sched_config = sched_config_obj
 
             scheduler = create_scheduler(optimizers[name], sched_config, total_steps)
             schedulers[name] = scheduler
