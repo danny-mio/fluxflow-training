@@ -118,8 +118,16 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
 
 - **Flow Training**
   - Flow-based diffusion transformers
-  - Text-to-image generation
-  - Conditional and unconditional modes
+  - Text-to-image generation with classifier-free guidance (CFG)
+  - Industry-standard training approach (same as Stable Diffusion, Flux.1)
+
+- **✨ Classifier-Free Guidance (CFG)** (v0.3.0+)
+  - Train models to generate with or without text conditioning
+  - Single model learns both conditional p(x|text) and unconditional p(x)
+  - Inference-time guidance scale control (1.0-9.0)
+  - Enables quality/diversity trade-off without retraining
+  - Proven approach: Stable Diffusion, DALL-E 2, Imagen, Flux.1
+  - See [config.cfg.example.yaml](config.cfg.example.yaml) for setup
 
 ### Training Infrastructure
 
@@ -224,6 +232,45 @@ training:
 - SPADE conditioning experiments
 - Saves ~8-12GB VRAM by skipping reconstruction loss computation
 
+### Classifier-Free Guidance Training (NEW in v0.3.0)
+
+Train text-to-image models with CFG for superior prompt adherence:
+
+```yaml
+training:
+  pipeline:
+    steps:
+      # Stage 1-2: VAE training (see config.cfg.example.yaml)
+      
+      # Stage 3: Flow with CFG ✨
+      - name: "flow_cfg"
+        n_epochs: 100
+        train_diff: true
+        cfg_dropout_prob: 0.10  # 10% null conditioning (common setting)
+        use_ema: true
+        
+        freeze:
+          - compressor  # Freeze VAE
+          - expander
+```
+
+**Generate with CFG**:
+```bash
+fluxflow-generate \
+    --model_checkpoint outputs/flux_cfg/final.safetensors \
+    --text_prompts_path prompts/ \
+    --output_path outputs/ \
+    --use_cfg \
+    --guidance_scale 5.0  # Range: 1.0 (no guidance) to 9.0 (strong)
+```
+
+**Guidance scale examples** (tune for your model):
+- `1.0`: Standard conditional (no guidance)
+- `3.0-5.0`: Moderate guidance
+- `7.0-9.0`: Strong prompt adherence (may oversaturate)
+
+See [config.cfg.example.yaml](config.cfg.example.yaml) for complete CFG training example.
+
 ### Generating Images
 
 ```bash
@@ -231,11 +278,19 @@ training:
 mkdir prompts
 echo "a beautiful sunset over mountains" > prompts/sunset.txt
 
-# Generate images
+# Generate images (standard)
 fluxflow-generate \
     --model_checkpoint path/to/checkpoint.safetensors \
     --text_prompts_path prompts/ \
     --output_path outputs/
+
+# Generate with CFG (if model trained with cfg_dropout_prob > 0)
+fluxflow-generate \
+    --model_checkpoint path/to/checkpoint.safetensors \
+    --text_prompts_path prompts/ \
+    --output_path outputs/ \
+    --use_cfg \
+    --guidance_scale 5.0
 ```
 
 ### Visualizing Training Progress

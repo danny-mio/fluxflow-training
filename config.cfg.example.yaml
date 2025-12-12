@@ -1,0 +1,246 @@
+# FluxFlow Configuration Example with Classifier-Free Guidance (CFG)
+# This config demonstrates how to train a text-conditioned flow model with CFG enabled
+#
+# CRITICAL: Classifier-Free Guidance requires text captions in your dataset!
+# Ensure you have either:
+#   1. A captions file (data.captions_file)
+#   2. OR a WebDataset with caption metadata (webdataset_caption_key)
+
+model:
+  vae_dim: 128  # VAE latent dimension
+  feature_maps_dim: 128  # Flow processor feature dimension (must match d_model in FluxFlowProcessor)
+  feature_maps_dim_disc: 8  # Discriminator feature dimension
+  text_embedding_dim: 1024  # Text encoder output dimension
+  pretrained_bert_model: null  # Optional pretrained BERT checkpoint
+
+data:
+  # REQUIRED: Dataset with text captions
+  data_path: "/path/to/your/images"
+  captions_file: "/path/to/your/captions.txt"  # Format: image_name<tab>caption
+  
+  # OR use WebDataset with captions
+  # use_webdataset: true
+  # webdataset_url: "hf://datasets/your-dataset/*.tar"
+  # webdataset_caption_key: "prompt"  # Key for caption in JSON metadata
+  
+  img_size: 1024
+  channels: 3
+  tokenizer_name: "distilbert-base-uncased"
+
+training:
+  # ===========================================================================
+  # CLASSIFIER-FREE GUIDANCE PIPELINE (4-STAGE TRAINING)
+  # ===========================================================================
+  # Stage 1: VAE (no SPADE) - Learn base reconstruction
+  # Stage 2: VAE + SPADE + GAN + LPIPS - Adversarial refinement
+  # Stage 3: Text-conditioned flow with CFG - Learn flow matching + unconditional
+  # Stage 4: Optional text encoder fine-tuning
+  
+  pipeline:
+    steps:
+      # ====================================================================
+      # STAGE 1: VAE Training (No SPADE)
+      # ====================================================================
+      - name: "vae_no_spade"
+        description: "Train VAE encoder/decoder without SPADE (pure reconstruction)"
+        n_epochs: 50
+        
+        # Training modes
+        train_vae: true
+        train_spade: false  # SPADE disabled
+        train_diff: false
+        gan_training: true
+        use_lpips: true
+        use_ema: false  # Disable EMA to save ~14GB VRAM (optional, but recommended)
+        
+        # Hyperparameters
+        batch_size: 2
+        workers: 1  # Reduced from 4 to save memory
+        lr: 0.0001
+        lr_min: 0.01
+        use_fp16: false
+        initial_clipping_norm: 1.0
+        
+        # Loss weights
+        kl_beta: 0.0001
+        lambda_adv: 0.5
+        lambda_lpips: 0.1
+      
+      # ====================================================================
+      # STAGE 2: VAE + SPADE + GAN + LPIPS
+      # ====================================================================
+      - name: "vae_spade_lpips"
+        description: "Enable SPADE conditioning + GAN + LPIPS for adversarial refinement"
+        n_epochs: 50
+        
+        train_vae: true
+        train_spade: true  # SPADE enabled
+        train_diff: false
+        gan_training: true
+        use_lpips: true
+        use_ema: false
+        
+        batch_size: 2
+        workers: 1
+        lr: 0.00005  # Lower LR for refinement
+        lr_min: 0.01
+      
+      # ====================================================================
+      # STAGE 3: Text-Conditioned Flow with CLASSIFIER-FREE GUIDANCE ✨
+      # ====================================================================
+      - name: "flow_cfg"
+        description: "Train flow model with CFG (learns both conditional and unconditional)"
+        n_epochs: 100
+        
+        train_vae: false  # Freeze VAE
+        train_spade: false
+        train_diff: true  # Enable flow training
+        gan_training: false
+        use_lpips: false
+        use_ema: true  # Enable EMA for stable inference (recommended for flow)
+        
+        # ⭐ CLASSIFIER-FREE GUIDANCE SETTINGS ⭐
+        cfg_dropout_prob: 0.10  # 10% null conditioning (commonly used in Stable Diffusion)
+                                # - Enables model to learn both p(x|text) and p(x)
+                                # - Set to 0.0 to disable CFG (standard conditional training)
+                                # - Typical values: 0.05-0.20
+        
+        batch_size: 2
+        workers: 1
+        lr: 0.0001
+        lr_min: 0.01
+        
+        # Freeze VAE components (only train flow + text encoder)
+        freeze:
+          - compressor
+          - expander
+          - discriminator
+      
+      # ====================================================================
+      # STAGE 4: Optional Text Encoder Fine-Tuning (OPTIONAL)
+      # ====================================================================
+      # Uncomment this stage if Stage 3 results show poor text alignment
+      # Usually NOT needed if cfg_dropout_prob is set correctly
+      
+      # - name: "flow_text_finetune"
+      #   description: "Fine-tune text encoder with very low LR (optional refinement)"
+      #   n_epochs: 20
+      #   
+      #   train_vae: false
+      #   train_spade: false
+      #   train_diff: true
+      #   gan_training: false
+      #   use_lpips: false
+      #   use_ema: true
+      #   cfg_dropout_prob: 0.10  # Continue CFG training
+      #   
+      #   batch_size: 2
+      #   workers: 1
+      #   lr: 0.00001  # Very low LR for flow
+      #   
+      #   # Use per-component optimizers for different learning rates
+      #   optimization:
+      #     optimizers:
+      #       flow_processor:
+      #         type: "AdamW"
+      #         lr: 0.00001  # Normal LR for flow
+      #         betas: [0.9, 0.999]
+      #         weight_decay: 0.01
+      #       text_encoder:
+      #         type: "AdamW"
+      #         lr: 0.0000001  # 10x lower LR for text encoder (1e-7)
+      #         betas: [0.9, 0.999]
+      #         weight_decay: 0.0
+      #     schedulers:
+      #       flow_processor:
+      #         type: "CosineAnnealingLR"
+      #         eta_min_factor: 0.1
+      #       text_encoder:
+      #         type: "ConstantLR"  # Keep text encoder LR constant
+      #   
+      #   freeze:
+      #     - compressor
+      #     - expander
+      #     - discriminator
+
+output:
+  output_path: "outputs/flux_cfg"
+  log_interval: 10
+  checkpoint_save_interval: 50
+  samples_per_checkpoint: 1
+  no_samples: false
+  
+  # Sample captions for validation (test CFG effectiveness)
+  sample_captions:
+    - "a beautiful sunset over mountains"
+    - "photo of a cute cat sleeping on a couch"
+    - "digital art of a futuristic cityscape at night"
+    - "illustration of a forest in autumn with golden leaves"
+    - "abstract painting with vibrant colors and geometric shapes"
+  
+  # Generate samples at multiple guidance scales to compare
+  # Recommended: Use guidance_scale 5.0-7.0 during inference
+  sample_sizes:
+    - 256
+    - 512
+    - 1024
+  
+  log_level: "INFO"
+  log_file: "outputs/flux_cfg/training.log"
+
+# Optional: Resume from checkpoint
+model_checkpoint: null  # "outputs/flux_cfg/checkpoint_epoch_50.safetensors"
+
+# ==============================================================================
+# INFERENCE WITH CFG
+# ==============================================================================
+# After training with cfg_dropout_prob > 0, use the generate.py script:
+#
+# python -m fluxflow_training.scripts.generate \
+#   --model_checkpoint outputs/flux_cfg/final_model.safetensors \
+#   --text_prompts_path prompts/ \
+#   --output_path outputs/generated/ \
+#   --use_cfg \
+#   --guidance_scale 5.0 \
+#   --ddim_steps 30
+#
+# Guidance scale recommendations:
+#   - 1.0: Standard conditional (no guidance)
+#   - 3.0: Light guidance (more diverse)
+#   - 5.0: Moderate guidance (RECOMMENDED)
+#   - 7.0: Strong guidance (high prompt adherence)
+#   - 9.0+: Very strong (may oversaturate)
+
+# ==============================================================================
+# MEMORY OPTIMIZATION TIPS
+# ==============================================================================
+# If you hit OOM (Out of Memory) errors:
+#
+# 1. Disable EMA: set use_ema: false (saves ~14GB VRAM)
+# 2. Reduce batch_size to 1
+# 3. Reduce workers to 1
+# 4. Use gradient checkpointing:
+#      model:
+#        use_gradient_checkpointing: true
+# 5. Reduce image size:
+#      data:
+#        img_size: 512  # Instead of 1024
+# 6. Reduce VAE dimension:
+#      model:
+#        vae_dim: 64  # Instead of 128
+#
+# Empirical VRAM usage (from TRAINING_GUIDE.md):
+#   - Stage 1 (VAE no SPADE): 18.2 GB
+#   - Stage 2 (VAE + SPADE + GAN): 27.5 GB
+#   - Stage 3 (Flow + CFG, EMA disabled): 44.9 GB
+#   - Stage 3 (Flow + CFG, EMA enabled): 59.3 GB  ⚠️ May OOM on 48GB GPU
+
+# ==============================================================================
+# VALIDATION CHECKLIST
+# ==============================================================================
+# Before starting training, verify:
+# ✅ Dataset has text captions (captions_file or webdataset_caption_key)
+# ✅ cfg_dropout_prob is set (0.10 recommended)
+# ✅ Peak VRAM will not exceed your GPU memory (see TRAINING_GUIDE.md)
+# ✅ All paths (data_path, captions_file, output_path) are valid
+# ✅ Tokenizer downloads successfully (or is cached)

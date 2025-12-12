@@ -63,6 +63,7 @@ class FlowTrainer:
         num_train_timesteps: int = 1000,
         ema_decay: float = 0.9999,
         lambda_align: float = 0.0,
+        cfg_dropout_prob: float = 0.0,
         accelerator=None,
     ):
         """
@@ -80,6 +81,8 @@ class FlowTrainer:
             num_train_timesteps: Number of diffusion timesteps
             ema_decay: EMA decay rate for model parameters (default: 0.9999)
             lambda_align: Text-image alignment loss weight (default: 0.1)
+            cfg_dropout_prob: Classifier-free guidance dropout probability (default: 0.0)
+                              Set to 0.10 for standard CFG training
             accelerator: Accelerate accelerator instance
         """
         self.flow_processor = flow_processor
@@ -91,6 +94,7 @@ class FlowTrainer:
         self.text_encoder_scheduler = text_encoder_scheduler
         self.gradient_clip_norm = gradient_clip_norm
         self.lambda_align = lambda_align
+        self.cfg_dropout_prob = cfg_dropout_prob
         self.accelerator = accelerator
 
         # Setup EMA for flow processor and text encoder
@@ -138,6 +142,12 @@ class FlowTrainer:
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
+
+        # Apply classifier-free guidance dropout
+        if self.cfg_dropout_prob > 0.0:
+            from .cfg_utils import apply_cfg_dropout
+
+            text_embeddings = apply_cfg_dropout(text_embeddings, p_uncond=self.cfg_dropout_prob)
 
         # Encode image to latent (frozen VAE)
         with torch.no_grad():
