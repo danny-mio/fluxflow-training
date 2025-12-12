@@ -389,47 +389,99 @@ class TrainingPipelineOrchestrator:
         print("=" * 80 + "\n")
 
     def _create_step_optimizers(self, step, models, args):
-        """Create optimizers for current step from inline config."""
+        """Create optimizers for current step from inline config or defaults."""
         from ..training.optimizer_factory import create_optimizer
 
         optimizers = {}
 
         if not step.optimization or not step.optimization.optimizers:
-            # Use default configs
-            logger.info("No optimizer config found, using defaults")
+            # Create default optimizers based on training modes
+            logger.info("No optimizer config found, creating defaults based on training modes")
+
+            # Default optimizer config
+            default_opt_config = {
+                "type": "AdamW",
+                "lr": (
+                    step.lr
+                    if hasattr(step, "lr") and step.lr
+                    else (args.lr if hasattr(args, "lr") else 0.0001)
+                ),
+                "weight_decay": 0.01,
+                "eps": 1e-8,
+                "betas": (0.9, 0.999),
+            }
+
+            # Create VAE optimizer if training VAE/GAN/SPADE/LPIPS
+            needs_vae_trainer = (
+                step.train_vae or step.gan_training or step.train_spade or step.use_lpips
+            )
+            if needs_vae_trainer:
+                vae_params = list(models["compressor"].parameters()) + list(
+                    models["expander"].parameters()
+                )
+                optimizers["vae"] = create_optimizer(vae_params, default_opt_config)
+                logger.info(
+                    f"✓ Created default VAE optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
+                )
+
+            # Create discriminator optimizer if GAN enabled
+            if step.gan_training and models.get("D_img"):
+                optimizers["discriminator"] = create_optimizer(
+                    models["D_img"].parameters(), default_opt_config
+                )
+                logger.info(
+                    f"✓ Created default discriminator optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
+                )
+
+            # Create flow optimizer if training flow
+            if (step.train_diff or step.train_diff_full) and models.get("flow_processor"):
+                optimizers["flow"] = create_optimizer(
+                    models["flow_processor"].parameters(), default_opt_config
+                )
+                logger.info(
+                    f"✓ Created default flow optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
+                )
+
+            # Create text encoder optimizer if specified
+            if (
+                hasattr(step, "train_text_encoder")
+                and step.train_text_encoder
+                and models.get("text_encoder")
+            ):
+                optimizers["text_encoder"] = create_optimizer(
+                    models["text_encoder"].parameters(), default_opt_config
+                )
+                logger.info(
+                    f"✓ Created default text_encoder optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
+                )
+
             return optimizers
 
+        # Explicit optimizer config provided - rest of method unchanged
         for name, opt_config_obj in step.optimization.optimizers.items():
-            # Convert OptimizerConfig to dict format expected by create_optimizer
-            opt_config = {
-                "type": opt_config_obj.type,
-                "lr": opt_config_obj.lr,
-                "weight_decay": opt_config_obj.weight_decay,
-                "eps": opt_config_obj.eps,
-            }
-            if opt_config_obj.betas:
-                opt_config["betas"] = opt_config_obj.betas
+            opt_config = (
+                opt_config_obj.model_dump()
+                if hasattr(opt_config_obj, "model_dump")
+                else opt_config_obj
+            )
 
-            # Get parameters based on optimizer name
+            # Determine which parameters to optimize
             if name == "vae":
                 params = list(models["compressor"].parameters()) + list(
                     models["expander"].parameters()
                 )
+            elif name == "discriminator":
+                params = models["D_img"].parameters()
             elif name == "flow":
                 params = models["flow_processor"].parameters()
             elif name == "text_encoder":
                 params = models["text_encoder"].parameters()
-            elif name == "discriminator":
-                params = models["D_img"].parameters()
             else:
-                logger.warning(f"Unknown optimizer name: {name}")
+                logger.warning(f"Unknown optimizer name: {name}, skipping")
                 continue
 
-            optimizer = create_optimizer(params, opt_config)
-            optimizers[name] = optimizer
-            logger.info(
-                f"Created optimizer '{name}': {opt_config['type']} (lr={opt_config['lr']:.2e})"
-            )
+            optimizers[name] = create_optimizer(params, opt_config)
+            logger.info(f"Created optimizer for {name}: {opt_config.get('type', 'AdamW')}")
 
         return optimizers
 

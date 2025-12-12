@@ -124,7 +124,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
 - **✨ Classifier-Free Guidance (CFG)** (v0.3.0+)
   - Train models to generate with or without text conditioning
   - Single model learns both conditional p(x|text) and unconditional p(x)
-  - Inference-time guidance scale control (1.0-9.0)
+  - Inference-time guidance scale control (1.0-15.0, recommended: 3.0-7.0)
   - Enables quality/diversity trade-off without retraining
   - Proven approach: Stable Diffusion, DALL-E 2, Imagen, Flux.1
   - See [config.cfg.example.yaml](config.cfg.example.yaml) for setup
@@ -261,13 +261,13 @@ fluxflow-generate \
     --text_prompts_path prompts/ \
     --output_path outputs/ \
     --use_cfg \
-    --guidance_scale 5.0  # Range: 1.0 (no guidance) to 9.0 (strong)
+    --guidance_scale 5.0  # Range: 1.0-15.0, recommended: 3.0-7.0
 ```
 
 **Guidance scale examples** (tune for your model):
 - `1.0`: Standard conditional (no guidance)
-- `3.0-5.0`: Moderate guidance
-- `7.0-9.0`: Strong prompt adherence (may oversaturate)
+- `3.0-7.0`: Moderate guidance (RECOMMENDED - balanced quality/creativity)
+- `7.0-15.0`: Strong guidance (may oversaturate or lose diversity)
 
 See [config.cfg.example.yaml](config.cfg.example.yaml) for complete CFG training example.
 

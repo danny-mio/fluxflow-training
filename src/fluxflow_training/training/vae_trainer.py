@@ -151,8 +151,14 @@ class VAETrainer:
 
         # GAN settings
         self.use_gan = use_gan
-        if use_gan and discriminator is None:
-            raise ValueError("discriminator is required when use_gan=True")
+        if use_gan:
+            if discriminator is None:
+                raise ValueError("discriminator is required when use_gan=True")
+            if discriminator_optimizer is None:
+                raise ValueError(
+                    "discriminator_optimizer is required when use_gan=True. "
+                    "Ensure pipeline config includes optimization.optimizers.discriminator section."
+                )
 
         self.discriminator = discriminator
         self.discriminator_optimizer = discriminator_optimizer
