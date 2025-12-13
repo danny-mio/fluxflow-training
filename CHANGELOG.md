@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2025-12-13
+
+### 🔄 Dependencies
+- **Updated fluxflow dependency** from `>=0.3.0` to `>=0.3.1`
+  - Aligns with fluxflow-core v0.3.1 release
+  - Note: v0.3.0 skipped due to release coordination issues
+
+### 📝 Notes
+- This release updates dependency versions only
+- All training features from v0.3.0 remain unchanged
+- See v0.3.0 release notes below for major CFG features
+
 ## [0.3.0] - 2025-12-12
 
 ### 🚀 Major Features
