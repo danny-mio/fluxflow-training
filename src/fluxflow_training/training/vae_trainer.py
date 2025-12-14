@@ -277,6 +277,12 @@ class VAETrainer:
 
         # Train discriminator first if using GAN
         if self.use_gan and self.discriminator is not None:
+            # Extra safety check (should never happen due to __init__ validation)
+            if self.discriminator_optimizer is None:
+                raise RuntimeError(
+                    "VAETrainer.use_gan=True but discriminator_optimizer is None. "
+                    "This should have been caught in __init__. Please report this bug."
+                )
             d_loss = self._train_discriminator(real_imgs, global_step)
             losses["discriminator"] = d_loss
             self.d_loss_buffer.add_item(d_loss)
@@ -493,9 +499,12 @@ class VAETrainer:
                 "recon": 0.0,
             }
 
-        # CRITICAL: Clear CUDA cache before backward to prevent OOM
+        # CRITICAL: Clear cache before backward to prevent OOM
         # Gradient checkpointing in VAE causes memory spikes during backward pass
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
         self.accelerator.backward(total_loss)
 
