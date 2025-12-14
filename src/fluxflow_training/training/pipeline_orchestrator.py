@@ -1001,14 +1001,47 @@ class TrainingPipelineOrchestrator:
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"flow_loss": flow_loss})
+                        
+                        # Critical: Delete tensors immediately after use to prevent accumulation
+                        del real_imgs
+                    
+                    # Delete batch tensors after processing all resolutions
+                    del imgs, input_ids, attention_mask
 
                     # Track batch time
                     batch_time = time.time() - batch_start_time
                     batch_times.add_item(batch_time)
 
-                    # Periodic CUDA cache clearing to prevent fragmentation (every 10 batches)
+                    # Periodic cache clearing to prevent fragmentation (every 10 batches)
+                    # Works for both CUDA and MPS backends
                     if batch_idx % 10 == 0:
-                        torch.cuda.empty_cache()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        elif torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                        
+                        # Force Python garbage collection periodically
+                        import gc
+                        gc.collect()
+                    
+                    # Deep memory cleanup every 100 batches to prevent gradual accumulation
+                    # This is critical for long training runs (hours/days)
+                    if batch_idx % 100 == 0 and batch_idx > 0:
+                        import gc
+                        gc.collect()
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                            # Force synchronization to ensure all GPU operations complete
+                            torch.cuda.synchronize()
+                        elif torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                            # MPS-specific: force synchronization
+                            torch.mps.synchronize()
+                        
+                        logger.info(
+                            f"Deep memory cleanup at batch {batch_idx} "
+                            f"(global_step={self.global_step})"
+                        )
 
                     # Logging
                     if batch_idx % args.log_interval == 0:
@@ -1074,8 +1107,15 @@ class TrainingPipelineOrchestrator:
                             step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
                         )
 
-                        # Clear CUDA cache after checkpoint save to prevent fragmentation
-                        torch.cuda.empty_cache()
+                        # Clear cache after checkpoint save to prevent fragmentation
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        elif torch.backends.mps.is_available():
+                            torch.mps.empty_cache()
+                        
+                        # Force garbage collection after checkpoint
+                        import gc
+                        gc.collect()
 
                         # Generate samples at checkpoint intervals if requested
                         if args.samples_per_checkpoint > 0:
@@ -1089,6 +1129,12 @@ class TrainingPipelineOrchestrator:
                                 args,
                                 parsed_sample_sizes,
                             )
+                            
+                            # Clear cache after sample generation
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            elif torch.backends.mps.is_available():
+                                torch.mps.empty_cache()
 
                 # End-of-epoch checkpoint (always save after completing an epoch)
                 epoch_time = time.time() - epoch_start_time
@@ -1103,6 +1149,17 @@ class TrainingPipelineOrchestrator:
                 self._generate_samples(
                     step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
                 )
+                
+                # Aggressive memory cleanup at end of epoch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                import gc
+                gc.collect()
+                
+                # Clear error buffers to prevent accumulation
+                del vae_errors, kl_errors, flow_errors, g_errors, d_errors, lpips_errors, batch_times
 
                 # Check transition criteria (after saving checkpoint)
                 should_trans, reason = self.should_transition(step, epoch)
