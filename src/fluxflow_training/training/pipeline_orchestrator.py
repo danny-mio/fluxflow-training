@@ -4,6 +4,7 @@ Manages sequential execution of training pipeline steps with model freezing,
 loss-threshold transitions, and checkpoint management.
 """
 
+import gc
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -502,14 +503,18 @@ class TrainingPipelineOrchestrator:
                     f"Step '{step.name}' requires GAN training (gan_training=true) "
                     f"but discriminator model (D_img) is not available"
                 )
-            
+
             # Use same config as VAE optimizer if available, else use defaults
             if "vae" in optimizers and step.optimization.optimizers.get("vae"):
                 vae_config_obj = step.optimization.optimizers["vae"]
                 if hasattr(vae_config_obj, "__dataclass_fields__"):
-                    disc_opt_config = {k: v for k, v in asdict(vae_config_obj).items() if v is not None}
+                    disc_opt_config = {
+                        k: v for k, v in asdict(vae_config_obj).items() if v is not None
+                    }
                 else:
-                    disc_opt_config = vae_config_obj.copy() if isinstance(vae_config_obj, dict) else {}
+                    disc_opt_config = (
+                        vae_config_obj.copy() if isinstance(vae_config_obj, dict) else {}
+                    )
                 logger.info(f"Using VAE optimizer config for discriminator")
             else:
                 disc_opt_config = {
@@ -519,7 +524,7 @@ class TrainingPipelineOrchestrator:
                     "betas": (0.9, 0.999),
                 }
                 logger.info(f"Using default AdamW config for discriminator")
-            
+
             optimizers["discriminator"] = create_optimizer(
                 models["D_img"].parameters(), disc_opt_config
             )
@@ -595,9 +600,15 @@ class TrainingPipelineOrchestrator:
                 # GAN-specific parameters (read from config, with safe defaults)
                 r1_gamma=step.r1_gamma if hasattr(step, "r1_gamma") else 5.0,
                 r1_interval=step.r1_interval if hasattr(step, "r1_interval") else 16,
-                instance_noise_std=step.instance_noise_std if hasattr(step, "instance_noise_std") else 0.01,
-                instance_noise_decay=step.instance_noise_decay if hasattr(step, "instance_noise_decay") else 0.9999,
-                adaptive_weights=step.adaptive_weights if hasattr(step, "adaptive_weights") else True,
+                instance_noise_std=(
+                    step.instance_noise_std if hasattr(step, "instance_noise_std") else 0.01
+                ),
+                instance_noise_decay=(
+                    step.instance_noise_decay if hasattr(step, "instance_noise_decay") else 0.9999
+                ),
+                adaptive_weights=(
+                    step.adaptive_weights if hasattr(step, "adaptive_weights") else True
+                ),
                 mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
@@ -926,7 +937,7 @@ class TrainingPipelineOrchestrator:
                 logger.info("✓ EMA enabled (adds 2x model VRAM)")
             elif needs_vae_trainer and not step.use_ema:
                 logger.info("⚠ EMA disabled to save VRAM (~14GB for vae_dim=128)")
-            
+
             # Load optimizer/scheduler/EMA states when resuming
             # CRITICAL: Only load for the step we're resuming from
             if step_idx == start_step and (start_epoch > 0 or start_batch > 0):
@@ -939,7 +950,9 @@ class TrainingPipelineOrchestrator:
                 if loaded:
                     logger.info("✓ Restored optimizer, scheduler, and EMA states from checkpoint")
                 else:
-                    logger.warning("⚠ Could not load optimizer states, starting with fresh optimizers")
+                    logger.warning(
+                        "⚠ Could not load optimizer states, starting with fresh optimizers"
+                    )
 
             # Create trainers for this step
             trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
@@ -1020,10 +1033,10 @@ class TrainingPipelineOrchestrator:
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"flow_loss": flow_loss})
-                        
+
                         # Critical: Delete tensors immediately after use to prevent accumulation
                         del real_imgs
-                    
+
                     # Delete batch tensors after processing all resolutions
                     del imgs, input_ids, attention_mask
 
@@ -1038,15 +1051,15 @@ class TrainingPipelineOrchestrator:
                             torch.cuda.empty_cache()
                         elif torch.backends.mps.is_available():
                             torch.mps.empty_cache()
-                        
+
                         # Force Python garbage collection periodically
-                        import gc
+
                         gc.collect()
-                    
+
                     # Deep memory cleanup every 100 batches to prevent gradual accumulation
                     # This is critical for long training runs (hours/days)
                     if batch_idx % 100 == 0 and batch_idx > 0:
-                        import gc
+
                         gc.collect()
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
@@ -1056,7 +1069,7 @@ class TrainingPipelineOrchestrator:
                             torch.mps.empty_cache()
                             # MPS-specific: force synchronization
                             torch.mps.synchronize()
-                        
+
                         logger.info(
                             f"Deep memory cleanup at batch {batch_idx} "
                             f"(global_step={self.global_step})"
@@ -1131,9 +1144,9 @@ class TrainingPipelineOrchestrator:
                             torch.cuda.empty_cache()
                         elif torch.backends.mps.is_available():
                             torch.mps.empty_cache()
-                        
+
                         # Force garbage collection after checkpoint
-                        import gc
+
                         gc.collect()
 
                         # Generate samples at checkpoint intervals if requested
@@ -1148,7 +1161,7 @@ class TrainingPipelineOrchestrator:
                                 args,
                                 parsed_sample_sizes,
                             )
-                            
+
                             # Clear cache after sample generation
                             if torch.cuda.is_available():
                                 torch.cuda.empty_cache()
@@ -1168,17 +1181,25 @@ class TrainingPipelineOrchestrator:
                 self._generate_samples(
                     step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
                 )
-                
+
                 # Aggressive memory cleanup at end of epoch
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 elif torch.backends.mps.is_available():
                     torch.mps.empty_cache()
-                import gc
+
                 gc.collect()
-                
+
                 # Clear error buffers to prevent accumulation
-                del vae_errors, kl_errors, flow_errors, g_errors, d_errors, lpips_errors, batch_times
+                del (
+                    vae_errors,
+                    kl_errors,
+                    flow_errors,
+                    g_errors,
+                    d_errors,
+                    lpips_errors,
+                    batch_times,
+                )
 
                 # Check transition criteria (after saving checkpoint)
                 should_trans, reason = self.should_transition(step, epoch)
