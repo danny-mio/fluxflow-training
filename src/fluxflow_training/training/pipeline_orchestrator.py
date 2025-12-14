@@ -592,8 +592,13 @@ class TrainingPipelineOrchestrator:
                 lambda_adv=step.lambda_adv if hasattr(step, "lambda_adv") else 0.5,
                 use_lpips=step.use_lpips,
                 lambda_lpips=step.lambda_lpips if hasattr(step, "lambda_lpips") else 0.1,
-                r1_gamma=5.0,
-                r1_interval=16,
+                # GAN-specific parameters (read from config, with safe defaults)
+                r1_gamma=step.r1_gamma if hasattr(step, "r1_gamma") else 5.0,
+                r1_interval=step.r1_interval if hasattr(step, "r1_interval") else 16,
+                instance_noise_std=step.instance_noise_std if hasattr(step, "instance_noise_std") else 0.01,
+                instance_noise_decay=step.instance_noise_decay if hasattr(step, "instance_noise_decay") else 0.9999,
+                adaptive_weights=step.adaptive_weights if hasattr(step, "adaptive_weights") else True,
+                mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
             )
@@ -921,6 +926,20 @@ class TrainingPipelineOrchestrator:
                 logger.info("✓ EMA enabled (adds 2x model VRAM)")
             elif needs_vae_trainer and not step.use_ema:
                 logger.info("⚠ EMA disabled to save VRAM (~14GB for vae_dim=128)")
+            
+            # Load optimizer/scheduler/EMA states when resuming
+            # CRITICAL: Only load for the step we're resuming from
+            if step_idx == start_step and (start_epoch > 0 or start_batch > 0):
+                logger.info(f"Resuming from step {step_idx}, loading optimizer/scheduler states...")
+                loaded = self.checkpoint_manager.load_optimizer_scheduler_ema_states(
+                    optimizers=optimizers,
+                    schedulers=schedulers,
+                    ema=ema,
+                )
+                if loaded:
+                    logger.info("✓ Restored optimizer, scheduler, and EMA states from checkpoint")
+                else:
+                    logger.warning("⚠ Could not load optimizer states, starting with fresh optimizers")
 
             # Create trainers for this step
             trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
