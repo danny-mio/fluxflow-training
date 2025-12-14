@@ -426,7 +426,13 @@ class TrainingPipelineOrchestrator:
                 )
 
             # Create discriminator optimizer if GAN enabled
-            if step.gan_training and models.get("D_img"):
+            # CRITICAL: Must check both gan_training AND that discriminator model exists
+            if step.gan_training:
+                if not models.get("D_img"):
+                    raise ValueError(
+                        f"Step '{step.name}' requires GAN training (gan_training=true) "
+                        f"but discriminator model (D_img) is not available"
+                    )
                 optimizers["discriminator"] = create_optimizer(
                     models["D_img"].parameters(), default_opt_config
                 )
@@ -458,7 +464,7 @@ class TrainingPipelineOrchestrator:
 
             return optimizers
 
-        # Explicit optimizer config provided - rest of method unchanged
+        # Explicit optimizer config provided
         for name, opt_config_obj in step.optimization.optimizers.items():
             # Convert dataclass to dict, filtering out None values
             if hasattr(opt_config_obj, "__dataclass_fields__"):
@@ -483,6 +489,44 @@ class TrainingPipelineOrchestrator:
 
             optimizers[name] = create_optimizer(params, opt_config)
             logger.info(f"Created optimizer for {name}: {opt_config.get('type', 'AdamW')}")
+
+        # CRITICAL: Check if discriminator optimizer is missing when GAN training is enabled
+        # This handles the case where some optimizers are defined in config but discriminator is missing
+        if step.gan_training and "discriminator" not in optimizers:
+            logger.warning(
+                f"Step '{step.name}' has gan_training=true but no discriminator optimizer in config. "
+                f"Creating default discriminator optimizer."
+            )
+            if not models.get("D_img"):
+                raise ValueError(
+                    f"Step '{step.name}' requires GAN training (gan_training=true) "
+                    f"but discriminator model (D_img) is not available"
+                )
+            
+            # Use same config as VAE optimizer if available, else use defaults
+            if "vae" in optimizers and step.optimization.optimizers.get("vae"):
+                vae_config_obj = step.optimization.optimizers["vae"]
+                if hasattr(vae_config_obj, "__dataclass_fields__"):
+                    disc_opt_config = {k: v for k, v in asdict(vae_config_obj).items() if v is not None}
+                else:
+                    disc_opt_config = vae_config_obj.copy() if isinstance(vae_config_obj, dict) else {}
+                logger.info(f"Using VAE optimizer config for discriminator")
+            else:
+                disc_opt_config = {
+                    "type": "AdamW",
+                    "lr": 0.0001,
+                    "weight_decay": 0.01,
+                    "betas": (0.9, 0.999),
+                }
+                logger.info(f"Using default AdamW config for discriminator")
+            
+            optimizers["discriminator"] = create_optimizer(
+                models["D_img"].parameters(), disc_opt_config
+            )
+            logger.info(
+                f"✓ Created discriminator optimizer: {disc_opt_config.get('type', 'AdamW')} "
+                f"(lr={disc_opt_config.get('lr', 0.0001):.2e})"
+            )
 
         return optimizers
 
