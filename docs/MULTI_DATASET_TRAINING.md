@@ -184,14 +184,35 @@ steps:
 
 ## Batch Size and Workers
 
-Dataset-specific overrides take precedence:
+Both datasets and steps can specify `batch_size` and `workers`. The configuration resolution follows this priority:
 
 ```
 Priority (highest to lowest):
-1. dataset.batch_size / dataset.workers
-2. step.batch_size / step.workers
-3. defaults.batch_size / defaults.workers
-4. Hard-coded defaults (batch_size=2, workers=8)
+1. step.batch_size / step.workers (most specific)
+2. dataset.batch_size / dataset.workers (dataset-level override)
+3. defaults.batch_size / defaults.workers (pipeline defaults)
+4. args.batch_size / args.workers (global training config)
+5. Hard-coded defaults (batch_size=2, workers=8)
+```
+
+**Recommendation**: Set `batch_size` in the dataset config for dataset-specific requirements, and override at the step level only when a specific step needs different batching:
+
+```yaml
+datasets:
+  high_res:
+    type: local
+    image_folder: /data/highres
+    captions_file: /data/captions.txt
+    batch_size: 2  # High-res images need smaller batches
+
+steps:
+  - name: warmup
+    dataset: high_res
+    # Uses batch_size=2 from dataset
+  
+  - name: main_training
+    dataset: high_res
+    batch_size: 4  # Override to 4 for this step only
 ```
 
 ## Validation

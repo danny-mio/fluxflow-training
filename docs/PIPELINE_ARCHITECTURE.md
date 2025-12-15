@@ -499,6 +499,78 @@ EMA (Exponential Moving Average) is created when any of these are true:
 
 This ensures EMA exists even in GAN-only mode.
 
+### Auto-Create Missing Models
+
+**New in Unreleased** (PR #13): Pipeline orchestrator automatically creates missing models when transitioning between steps.
+
+#### How It Works
+
+When transitioning from VAE training to Flow training, the following models are auto-created if missing:
+
+| Model | Created When | Default Parameters |
+|-------|--------------|-------------------|
+| `flow_processor` | `train_diff: true` or `train_diff_full: true` | `feature_maps_dim` from args |
+| `text_encoder` | Flow training enabled | `text_embedding_dim` from args |
+| `compressor` (for Flow) | Flow training enabled | `vae_dim` from args |
+| `expander` | VAE training with GAN | `vae_dim` from args |
+| `D_img` (discriminator) | `gan_training: true` | `vae_dim` from args |
+
+#### Example Scenario
+
+```yaml
+steps:
+  - name: vae_warmup
+    train_vae: true
+    gan_training: false
+    # Models: compressor, decoder (auto-created by VAE trainer)
+  
+  - name: flow_training
+    train_diff: true
+    freeze: [compressor, expander]
+    # Auto-creates: flow_processor, text_encoder, compressor (for Flow)
+    # Logs: "Auto-created flow_processor with feature_maps_dim=128"
+```
+
+#### User Impact
+
+- **Before (v0.3.0 and earlier)**: Crash with `AttributeError: 'NoneType' object has no attribute 'forward'`
+- **After (Unreleased)**: Models created automatically with default parameters, training continues
+
+#### When Auto-Creation Happens
+
+Models are created in `_ensure_required_models()` method (lines 579-713 in `pipeline_orchestrator.py`):
+
+1. **Before creating trainers** for each step
+2. **Only if missing** from `models` dict
+3. **With warnings logged**: `"Auto-created {model_name} with default parameters"`
+4. **On correct device**: Models moved to `args.device`
+
+#### Disabling Auto-Creation
+
+Auto-creation cannot be disabled (by design). If you need custom model parameters:
+
+**Option 1**: Pre-create models before pipeline:
+```python
+from fluxflow.models import FlowProcessor
+flow_processor = FlowProcessor(
+    feature_maps_dim=256,  # Custom value
+    # ... other custom params
+)
+models = {"flow_processor": flow_processor}
+```
+
+**Option 2**: Use first step to initialize:
+```yaml
+steps:
+  - name: init_models
+    n_epochs: 1
+    train_diff: true  # Creates flow_processor with defaults
+  
+  - name: actual_training
+    n_epochs: 100
+    train_diff_full: true
+```
+
 ---
 
 ## Troubleshooting

@@ -101,8 +101,10 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Per-step freeze/unfreeze of model components
   - Loss-threshold transitions with early stopping
   - Full checkpoint resume from any step/epoch/batch
+  - **Multi-dataset support** (Unreleased): Train different steps on different datasets (local/webdataset)
+  - **Auto-create missing models** (Unreleased): Automatic model initialization when transitioning between steps
   - 1035 lines in `pipeline_orchestrator.py`
-  - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md)
+  - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) and [MULTI_DATASET_TRAINING.md](docs/MULTI_DATASET_TRAINING.md)
 
 - **🎨 GAN-Only Training Mode** (v0.2.0+, **FULLY IMPLEMENTED**)
   - Train encoder/decoder with adversarial loss only (no reconstruction)

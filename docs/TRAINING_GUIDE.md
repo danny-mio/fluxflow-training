@@ -1148,11 +1148,45 @@ Pipeline training breaks your training workflow into multiple sequential steps, 
 - **Staged training**: VAE warmup → GAN training → Flow training
 - **Selective freezing**: Train components independently
 - **Loss-based transitions**: Automatically move to next step when loss threshold is met
+- **Multi-dataset training**: Train different steps on different datasets (see `docs/MULTI_DATASET_TRAINING.md`)
 
 **Use standard training for:**
 - Simple single-mode training (VAE-only or Flow-only)
 - Quick experiments
 - Resume training with same configuration
+
+### Pipeline Resilience Features
+
+**Auto-Create Missing Models** (New in Unreleased):
+
+When transitioning between pipeline steps (e.g., VAE → Flow), required models are automatically created:
+
+```yaml
+steps:
+  - name: vae_warmup
+    train_vae: true
+    # Only creates: compressor, decoder
+  
+  - name: flow_training
+    train_diff: true
+    # Auto-creates: flow_processor, text_encoder ✨
+    # No manual initialization needed!
+```
+
+**Auto-created models:**
+- `flow_processor` - Created when `train_diff: true` or `train_diff_full: true`
+- `text_encoder` - Created for flow training
+- `compressor` (for Flow) - Created for flow training if missing
+- `expander` - Created for VAE with GAN
+- `D_img` (discriminator) - Created when `gan_training: true`
+
+**What you see:**
+```
+⚠️  Auto-created flow_processor with feature_maps_dim=128
+⚠️  Auto-created text_encoder with text_embedding_dim=512
+```
+
+This prevents crashes and makes pipeline mode more robust. See `docs/PIPELINE_ARCHITECTURE.md` for details.
 
 ### Quick Start: Pipeline Training
 
