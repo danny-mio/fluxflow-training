@@ -577,28 +577,46 @@ class TrainingPipelineOrchestrator:
         )
 
         if needs_vae_trainer and "vae" in optimizers:
-            # Validate required VAE models exist
-            required_vae_models = ["compressor", "expander"]
-            missing_vae_models = [
-                m for m in required_vae_models if m not in models or models[m] is None
-            ]
-            
-            if missing_vae_models:
-                raise ValueError(
-                    f"Cannot create VAE trainer: missing required models: {missing_vae_models}. "
-                    f"Available models: {list(models.keys())}. "
-                    f"Ensure models are added to the models dict before pipeline execution."
+            # Auto-add missing VAE models if they don't exist
+            if "compressor" not in models or models["compressor"] is None:
+                from fluxflow import FluxCompressor
+                logger.warning(
+                    "Compressor not found in models dict, creating new FluxCompressor. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
                 )
+                # Get vae_dim from args or use default
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["compressor"] = FluxCompressor(
+                    d_model=vae_dim,
+                    use_attention=True,
+                    use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
+                ).to(self.device)
             
-            # Validate discriminator if GAN training enabled
-            if step.gan_training and (
-                "D_img" not in models or models["D_img"] is None
-            ):
-                raise ValueError(
-                    f"Cannot create VAE trainer with GAN: discriminator 'D_img' is missing. "
-                    f"Available models: {list(models.keys())}. "
-                    f"Ensure the discriminator model is added to the models dict."
+            if "expander" not in models or models["expander"] is None:
+                from fluxflow import FluxExpander
+                logger.warning(
+                    "Expander not found in models dict, creating new FluxExpander. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
                 )
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["expander"] = FluxExpander(
+                    d_model=vae_dim,
+                    use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
+                ).to(self.device)
+            
+            # Auto-add discriminator if GAN training enabled
+            if step.gan_training and ("D_img" not in models or models["D_img"] is None):
+                from fluxflow import PatchDiscriminator
+                logger.warning(
+                    "Discriminator 'D_img' not found but GAN training enabled, creating new PatchDiscriminator. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                channels = getattr(args, "channels", 3)
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["D_img"] = PatchDiscriminator(
+                    in_channels=channels,
+                    ctx_dim=vae_dim
+                ).to(self.device)
             
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
@@ -651,15 +669,45 @@ class TrainingPipelineOrchestrator:
             logger.info(f"Created VAE trainer ({', '.join(modes)})")
 
         if (step.train_diff or step.train_diff_full) and "flow" in optimizers:
-            # Validate required models exist
-            required_models = ["flow_processor", "text_encoder", "compressor"]
-            missing_models = [m for m in required_models if m not in models or models[m] is None]
-            
-            if missing_models:
-                raise ValueError(
-                    f"Cannot create Flow trainer: missing required models: {missing_models}. "
-                    f"Available models: {list(models.keys())}"
+            # Auto-add missing Flow models if they don't exist
+            if "flow_processor" not in models or models["flow_processor"] is None:
+                from fluxflow import FluxFlowProcessor
+                logger.warning(
+                    "FlowProcessor not found in models dict, creating new FluxFlowProcessor. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
                 )
+                feature_maps_dim = getattr(args, "feature_maps_dim", 512)
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["flow_processor"] = FluxFlowProcessor(
+                    d_model=feature_maps_dim,
+                    vae_dim=vae_dim
+                ).to(self.device)
+            
+            if "text_encoder" not in models or models["text_encoder"] is None:
+                from fluxflow import BertTextEncoder
+                logger.warning(
+                    "TextEncoder not found in models dict, creating new BertTextEncoder. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                text_embedding_dim = getattr(args, "text_embedding_dim", 768)
+                pretrained_bert = getattr(args, "pretrained_bert_model", "bert-base-uncased")
+                models["text_encoder"] = BertTextEncoder(
+                    embed_dim=text_embedding_dim,
+                    pretrain_model=pretrained_bert
+                ).to(self.device)
+            
+            if "compressor" not in models or models["compressor"] is None:
+                from fluxflow import FluxCompressor
+                logger.warning(
+                    "Compressor not found in models dict for Flow trainer, creating new FluxCompressor. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["compressor"] = FluxCompressor(
+                    d_model=vae_dim,
+                    use_attention=True,
+                    use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
+                ).to(self.device)
             
             trainers["flow"] = FlowTrainer(
                 flow_processor=models["flow_processor"],
