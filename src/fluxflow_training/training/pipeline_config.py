@@ -255,13 +255,9 @@ class PipelineConfigValidator:
             if dataset.type == "local":
                 # Local dataset requires image_folder and captions_file
                 if not dataset.image_folder:
-                    self.errors.append(
-                        f"Dataset '{name}': type='local' requires 'image_folder'"
-                    )
+                    self.errors.append(f"Dataset '{name}': type='local' requires 'image_folder'")
                 if not dataset.captions_file:
-                    self.errors.append(
-                        f"Dataset '{name}': type='local' requires 'captions_file'"
-                    )
+                    self.errors.append(f"Dataset '{name}': type='local' requires 'captions_file'")
             elif dataset.type == "webdataset":
                 # WebDataset requires webdataset_url and webdataset_token
                 if not dataset.webdataset_url:
@@ -492,10 +488,7 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
         steps.append(step)
 
     config = PipelineConfig(
-        steps=steps, 
-        defaults=defaults,
-        datasets=datasets,
-        default_dataset=default_dataset
+        steps=steps, defaults=defaults, datasets=datasets, default_dataset=default_dataset
     )
 
     # Validate configuration
