@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### 🚀 Added
+
+#### Multi-Dataset Pipeline Support
+- **Define multiple named datasets** for different pipeline steps
+  - Support for both local and webdataset sources in same pipeline
+  - Per-dataset configuration: `batch_size`, `workers`, image folders, URLs
+  - Assign specific datasets to individual steps via `dataset` field
+  - Optional `default_dataset` for steps without explicit assignment
+- **Use cases**:
+  - Progressive training: High-res local → Low-res webdataset
+  - Domain-specific: Train VAE on portraits, Flow on landscapes
+  - Resource optimization: Local SSD for warmup, cloud storage for main training
+- **Files**: `src/fluxflow_training/training/pipeline_config.py` (DatasetConfig, parsing, validation)
+- **Documentation**: `docs/MULTI_DATASET_TRAINING.md` (285 lines with examples)
+- **Example**: `examples/multi_dataset_pipeline.yaml`
+
+#### Auto-Create Missing Models in Pipeline Mode
+- **Automatic model initialization** when transitioning between pipeline steps
+  - Prevents crashes when moving from VAE → Flow training
+  - Auto-creates: `flow_processor`, `text_encoder`, `compressor`, `expander`, `D_img` (discriminator)
+  - Uses default parameters from args (`vae_dim`, `feature_maps_dim`, `text_embedding_dim`)
+  - Logs warnings when models are auto-created
+  - Moves models to correct device automatically
+- **User impact**: Pipeline mode now more resilient; no manual model initialization required
+- **Files**: `src/fluxflow_training/training/pipeline_orchestrator.py` (lines 579-713)
+
+#### Model Validation Before Training
+- **Pre-flight validation** checks required models exist before creating trainers
+- **Clear error messages** listing missing models if validation fails
+- Prevents cryptic AttributeError crashes during training
+- **Files**: `src/fluxflow_training/training/pipeline_orchestrator.py`
+
+### 🧪 Testing
+- **Added 21 comprehensive unit tests** for multi-dataset pipeline
+  - DatasetConfig dataclass tests (3 tests)
+  - Dataset parsing tests for local + webdataset (4 tests)
+  - Step dataset assignment tests (3 tests)
+  - Dataset validation tests (9 tests)
+  - Backward compatibility tests (2 tests)
+- **File**: `tests/unit/test_pipeline_multi_dataset.py`
+
+### 🐛 Fixed
+- **Linting errors** in pipeline configuration (trailing whitespace)
+- **Pre-commit hooks** now enforced (flake8, black, pytest)
+
+### 📝 Documentation
+- Added comprehensive multi-dataset training guide with use cases, examples, troubleshooting
+- Added example pipeline configuration with multiple datasets
+
 ## [0.3.1] - 2025-12-13
 
 ### 🔄 Dependencies
