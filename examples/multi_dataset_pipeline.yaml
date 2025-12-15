@@ -1,0 +1,93 @@
+# Multi-Dataset Pipeline Training Configuration Example
+#
+# This example demonstrates how to configure multiple datasets and assign
+# different datasets to different pipeline steps.
+
+training:
+  pipeline:
+    # Define multiple datasets
+    datasets:
+      # Local filesystem dataset
+      local_highres:
+        type: local
+        image_folder: /path/to/highres/images
+        captions_file: /path/to/highres/captions.txt
+        batch_size: 2  # Override default batch size
+        workers: 8
+
+      # Another local dataset
+      local_lowres:
+        type: local
+        image_folder: /path/to/lowres/images
+        captions_file: /path/to/lowres/captions.txt
+        batch_size: 8
+        workers: 4
+
+      # WebDataset from HuggingFace
+      webdataset_large:
+        type: webdataset
+        webdataset_url: "pipe:aws s3 cp s3://bucket/dataset/{00000..00099}.tar -"
+        webdataset_token: hf_your_token_here
+        webdataset_image_key: png
+        webdataset_label_key: json
+        webdataset_caption_key: prompt
+        webdataset_size: 100000
+        webdataset_samples_per_shard: 1000
+        batch_size: 4
+
+    # Specify which dataset to use by default
+    # Steps without explicit "dataset" field will use this
+    default_dataset: local_highres
+
+    # Pipeline steps - each can specify its own dataset
+    steps:
+      # Step 1: Train VAE on high-resolution local data
+      - name: vae_warmup
+        description: "VAE warmup with high-res local dataset"
+        n_epochs: 5
+        train_vae: true
+        dataset: local_highres  # Explicitly use high-res dataset
+        batch_size: 2
+        workers: 8
+
+      # Step 2: Train VAE with GAN on low-resolution data
+      - name: vae_gan_lowres
+        description: "VAE+GAN training on low-res dataset for speed"
+        n_epochs: 10
+        train_vae: true
+        gan_training: true
+        dataset: local_lowres  # Switch to low-res dataset
+        lambda_adv: 0.1
+        r1_gamma: 1.0
+
+      # Step 3: Train Flow on large webdataset
+      - name: flow_training
+        description: "Flow training on large webdataset"
+        n_epochs: 20
+        train_diff: true
+        dataset: webdataset_large  # Switch to webdataset
+        freeze:
+          - compressor
+          - expander
+        batch_size: 4
+
+      # Step 4: Fine-tune on high-res local data
+      # No dataset specified - uses default_dataset (local_highres)
+      - name: finetune_highres
+        description: "Final fine-tuning on high-res data"
+        n_epochs: 5
+        train_diff_full: true
+        batch_size: 2
+
+# Model configuration (shared across all datasets)
+model:
+  vae_dim: 128
+  feature_maps_dim: 512
+  text_embedding_dim: 768
+
+# Output configuration
+output:
+  checkpoint_dir: ./checkpoints
+  sample_dir: ./samples
+  sample_interval: 500
+  checkpoint_interval: 1000
