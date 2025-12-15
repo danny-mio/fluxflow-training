@@ -9,6 +9,7 @@ from diffusers import DPMSolverMultistepScheduler
 from fluxflow.utils import get_logger
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
+from typing import Optional
 
 from .schedulers import sample_t
 
@@ -57,8 +58,8 @@ class FlowTrainer:
         compressor: nn.Module,
         optimizer: Optimizer,
         scheduler: _LRScheduler,  # type: ignore[type-arg]
-        text_encoder_optimizer: Optimizer,
-        text_encoder_scheduler: _LRScheduler,  # type: ignore[type-arg]
+        text_encoder_optimizer: Optional[Optimizer] = None,
+        text_encoder_scheduler: Optional[_LRScheduler] = None,  # type: ignore[type-arg]
         gradient_clip_norm: float = 1.0,
         num_train_timesteps: int = 1000,
         ema_decay: float = 0.9999,
@@ -75,8 +76,8 @@ class FlowTrainer:
             compressor: VAE compressor (frozen during flow training)
             optimizer: Flow processor optimizer
             scheduler: Flow processor learning rate scheduler
-            text_encoder_optimizer: Text encoder optimizer
-            text_encoder_scheduler: Text encoder scheduler
+            text_encoder_optimizer: Text encoder optimizer (None if frozen)
+            text_encoder_scheduler: Text encoder scheduler (None if frozen)
             gradient_clip_norm: Gradient clipping norm
             num_train_timesteps: Number of diffusion timesteps
             ema_decay: EMA decay rate for model parameters (default: 0.9999)
@@ -135,10 +136,14 @@ class FlowTrainer:
             Dictionary with loss and metric values
         """
         self.flow_processor.train()
-        self.text_encoder.train()
+        if self.text_encoder_optimizer is not None:
+            self.text_encoder.train()
+        else:
+            self.text_encoder.eval()
 
         self.optimizer.zero_grad(set_to_none=True)
-        self.text_encoder_optimizer.zero_grad(set_to_none=True)
+        if self.text_encoder_optimizer is not None:
+            self.text_encoder_optimizer.zero_grad(set_to_none=True)
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
@@ -242,7 +247,8 @@ class FlowTrainer:
         )
 
         self.optimizer.step()
-        self.text_encoder_optimizer.step()
+        if self.text_encoder_optimizer is not None:
+            self.text_encoder_optimizer.step()
 
         # Update EMA
         self.ema.update()
@@ -257,13 +263,14 @@ class FlowTrainer:
         else:
             self.scheduler.step()  # type: ignore[call-arg]
 
-        base_te_scheduler = getattr(
-            self.text_encoder_scheduler, "scheduler", self.text_encoder_scheduler
-        )
-        if isinstance(base_te_scheduler, ReduceLROnPlateau):
-            self.text_encoder_scheduler.step(loss_value)  # type: ignore[arg-type]
-        else:
-            self.text_encoder_scheduler.step()  # type: ignore[call-arg]
+        if self.text_encoder_scheduler is not None:
+            base_te_scheduler = getattr(
+                self.text_encoder_scheduler, "scheduler", self.text_encoder_scheduler
+            )
+            if isinstance(base_te_scheduler, ReduceLROnPlateau):
+                self.text_encoder_scheduler.step(loss_value)  # type: ignore[arg-type]
+            else:
+                self.text_encoder_scheduler.step()  # type: ignore[call-arg]
 
         # Return comprehensive metrics
         metrics = {
@@ -273,10 +280,13 @@ class FlowTrainer:
             "grad_norm_flow": compute_grad_norm(self.flow_processor.parameters()),
             "grad_norm_text": compute_grad_norm(self.text_encoder.parameters()),
             "lr_flow": self.optimizer.param_groups[0]["lr"],
-            "lr_text": self.text_encoder_optimizer.param_groups[0]["lr"],
             "pred_mean": pred_seq.mean().item(),
             "pred_std": pred_seq.std().item(),
         }
+
+        # Add text encoder LR only if optimizer exists
+        if self.text_encoder_optimizer is not None:
+            metrics["lr_text"] = self.text_encoder_optimizer.param_groups[0]["lr"]
 
         return metrics
 
