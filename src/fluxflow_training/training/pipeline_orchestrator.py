@@ -577,6 +577,29 @@ class TrainingPipelineOrchestrator:
         )
 
         if needs_vae_trainer and "vae" in optimizers:
+            # Validate required VAE models exist
+            required_vae_models = ["compressor", "expander"]
+            missing_vae_models = [
+                m for m in required_vae_models if m not in models or models[m] is None
+            ]
+            
+            if missing_vae_models:
+                raise ValueError(
+                    f"Cannot create VAE trainer: missing required models: {missing_vae_models}. "
+                    f"Available models: {list(models.keys())}. "
+                    f"Ensure models are added to the models dict before pipeline execution."
+                )
+            
+            # Validate discriminator if GAN training enabled
+            if step.gan_training and (
+                "D_img" not in models or models["D_img"] is None
+            ):
+                raise ValueError(
+                    f"Cannot create VAE trainer with GAN: discriminator 'D_img' is missing. "
+                    f"Available models: {list(models.keys())}. "
+                    f"Ensure the discriminator model is added to the models dict."
+                )
+            
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
                 expander=models["expander"],
@@ -628,6 +651,16 @@ class TrainingPipelineOrchestrator:
             logger.info(f"Created VAE trainer ({', '.join(modes)})")
 
         if (step.train_diff or step.train_diff_full) and "flow" in optimizers:
+            # Validate required models exist
+            required_models = ["flow_processor", "text_encoder", "compressor"]
+            missing_models = [m for m in required_models if m not in models or models[m] is None]
+            
+            if missing_models:
+                raise ValueError(
+                    f"Cannot create Flow trainer: missing required models: {missing_models}. "
+                    f"Available models: {list(models.keys())}"
+                )
+            
             trainers["flow"] = FlowTrainer(
                 flow_processor=models["flow_processor"],
                 text_encoder=models["text_encoder"],
