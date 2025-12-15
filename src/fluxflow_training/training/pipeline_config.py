@@ -14,6 +14,31 @@ logger = get_logger(__name__)
 
 
 @dataclass
+class DatasetConfig:
+    """Configuration for a single dataset (local or webdataset)."""
+
+    # Dataset type
+    type: Literal["local", "webdataset"] = "local"
+
+    # Local dataset configuration
+    image_folder: Optional[str] = None
+    captions_file: Optional[str] = None
+
+    # WebDataset configuration
+    webdataset_url: Optional[str] = None
+    webdataset_token: Optional[str] = None
+    webdataset_image_key: str = "png"
+    webdataset_label_key: str = "json"
+    webdataset_caption_key: str = "prompt"
+    webdataset_size: int = 10000
+    webdataset_samples_per_shard: int = 1000
+
+    # Common configuration
+    batch_size: Optional[int] = None  # Override step batch_size
+    workers: Optional[int] = None  # Override step workers
+
+
+@dataclass
 class TransitionCriteria:
     """Defines when to transition to the next pipeline step."""
 
@@ -75,6 +100,9 @@ class PipelineStepConfig:
     # Optional descriptive fields
     description: str = ""
 
+    # Dataset selection (optional - uses default if not specified)
+    dataset: Optional[str] = None  # Name of dataset from datasets dict
+
     # Training modes
     train_vae: bool = False
     gan_training: bool = False
@@ -128,6 +156,8 @@ class PipelineConfig:
 
     steps: list[PipelineStepConfig]
     defaults: Optional[PipelineStepConfig] = None
+    datasets: dict[str, DatasetConfig] = field(default_factory=dict)
+    default_dataset: Optional[str] = None  # Name of default dataset
 
 
 class PipelineConfigValidator:
@@ -195,17 +225,78 @@ class PipelineConfigValidator:
             self.errors.append("Pipeline has no steps defined")
             return self.errors
 
+        # Validate datasets
+        self._validate_datasets()
+
+        # Validate steps
         for i, step in enumerate(self.config.steps):
             step_name = step.name or f"step_{i}"
             self._validate_step(step, step_name, i)
 
         return self.errors
 
+    def _validate_datasets(self) -> None:
+        """Validate dataset configurations."""
+        # Check if default_dataset exists in datasets dict
+        if self.config.default_dataset:
+            if not self.config.datasets:
+                self.errors.append(
+                    f"default_dataset '{self.config.default_dataset}' specified "
+                    f"but no datasets configured"
+                )
+            elif self.config.default_dataset not in self.config.datasets:
+                self.errors.append(
+                    f"default_dataset '{self.config.default_dataset}' not found in datasets. "
+                    f"Available: {', '.join(self.config.datasets.keys())}"
+                )
+
+        # Validate each dataset configuration
+        for name, dataset in self.config.datasets.items():
+            if dataset.type == "local":
+                # Local dataset requires image_folder and captions_file
+                if not dataset.image_folder:
+                    self.errors.append(
+                        f"Dataset '{name}': type='local' requires 'image_folder'"
+                    )
+                if not dataset.captions_file:
+                    self.errors.append(
+                        f"Dataset '{name}': type='local' requires 'captions_file'"
+                    )
+            elif dataset.type == "webdataset":
+                # WebDataset requires webdataset_url and webdataset_token
+                if not dataset.webdataset_url:
+                    self.errors.append(
+                        f"Dataset '{name}': type='webdataset' requires 'webdataset_url'"
+                    )
+                if not dataset.webdataset_token:
+                    self.errors.append(
+                        f"Dataset '{name}': type='webdataset' requires 'webdataset_token'"
+                    )
+            else:
+                self.errors.append(
+                    f"Dataset '{name}': unknown type '{dataset.type}'. "
+                    f"Valid types: 'local', 'webdataset'"
+                )
+
     def _validate_step(self, step: PipelineStepConfig, step_name: str, step_index: int) -> None:
         """Validate a single pipeline step."""
         # Check epoch count
         if step.n_epochs <= 0:
             self.errors.append(f"Step '{step_name}' (step {step_index + 1}): n_epochs must be > 0")
+
+        # Validate dataset reference
+        if step.dataset:
+            if not self.config.datasets:
+                self.errors.append(
+                    f"Step '{step_name}' (step {step_index + 1}): "
+                    f"references dataset '{step.dataset}' but no datasets configured"
+                )
+            elif step.dataset not in self.config.datasets:
+                self.errors.append(
+                    f"Step '{step_name}' (step {step_index + 1}): "
+                    f"references unknown dataset '{step.dataset}'. "
+                    f"Available: {', '.join(self.config.datasets.keys())}"
+                )
 
         # Check training modes
         training_modes = {
@@ -346,6 +437,27 @@ class PipelineConfigValidator:
                 )
 
 
+def _parse_dataset_config(dataset_dict: dict) -> DatasetConfig:
+    """Parse a single dataset configuration."""
+    return DatasetConfig(
+        type=dataset_dict.get("type", "local"),
+        # Local dataset fields
+        image_folder=dataset_dict.get("image_folder"),
+        captions_file=dataset_dict.get("captions_file"),
+        # WebDataset fields
+        webdataset_url=dataset_dict.get("webdataset_url"),
+        webdataset_token=dataset_dict.get("webdataset_token"),
+        webdataset_image_key=dataset_dict.get("webdataset_image_key", "png"),
+        webdataset_label_key=dataset_dict.get("webdataset_label_key", "json"),
+        webdataset_caption_key=dataset_dict.get("webdataset_caption_key", "prompt"),
+        webdataset_size=dataset_dict.get("webdataset_size", 10000),
+        webdataset_samples_per_shard=dataset_dict.get("webdataset_samples_per_shard", 1000),
+        # Common fields
+        batch_size=dataset_dict.get("batch_size"),
+        workers=dataset_dict.get("workers"),
+    )
+
+
 def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
     """
     Parse pipeline configuration from dictionary.
@@ -363,6 +475,14 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
     defaults_dict = config_dict.get("defaults", {})
     defaults = _parse_step_config(defaults_dict, is_default=True) if defaults_dict else None
 
+    # Parse datasets if provided
+    datasets = {}
+    for name, dataset_dict in config_dict.get("datasets", {}).items():
+        datasets[name] = _parse_dataset_config(dataset_dict)
+
+    # Get default dataset name
+    default_dataset = config_dict.get("default_dataset")
+
     # Parse steps
     steps = []
     for i, step_dict in enumerate(config_dict.get("steps", [])):
@@ -371,7 +491,12 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
         step = _parse_step_config(merged_dict, is_default=False)
         steps.append(step)
 
-    config = PipelineConfig(steps=steps, defaults=defaults)
+    config = PipelineConfig(
+        steps=steps, 
+        defaults=defaults,
+        datasets=datasets,
+        default_dataset=default_dataset
+    )
 
     # Validate configuration
     validator = PipelineConfigValidator(config)
@@ -443,6 +568,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         n_epochs=step_dict.get("n_epochs", 0) if not is_default else 0,
         max_steps=step_dict.get("max_steps"),
         description=step_dict.get("description", ""),
+        dataset=step_dict.get("dataset"),  # Dataset name
         train_vae=step_dict.get("train_vae", False),
         gan_training=step_dict.get("gan_training", False),
         use_lpips=step_dict.get("use_lpips", False),
