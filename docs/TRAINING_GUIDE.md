@@ -108,13 +108,110 @@ FluxFlow uses a unified training script (`packages/training/src/fluxflow_trainin
 
 The training process is highly configurable with parameters for data, model architecture, training behavior, and output.
 
+## Configuration Methods
+
+FluxFlow supports two configuration approaches:
+
+### 🎯 YAML Config Files (Recommended for Production)
+
+**Use when:**
+- Running multi-step training pipelines
+- Need reproducible, version-controlled configs
+- Want inline optimizer/scheduler customization per step
+- Training production models
+
+**Example:**
+```yaml
+# config.yaml
+data:
+  data_path: "/path/to/images"
+  captions_file: "/path/to/captions.txt"
+
+model:
+  vae_dim: 128
+  feature_maps_dim: 128
+
+training:
+  batch_size: 4
+  pipeline:
+    steps:
+      - name: "vae_training"
+        n_epochs: 50
+        train_vae: true
+        train_spade: true
+        optimizers:
+          vae:
+            optimizer_type: "AdamW"
+            lr: 0.0001
+            weight_decay: 0.01
+        schedulers:
+          vae:
+            scheduler_type: "CosineAnnealingLR"
+            eta_min_factor: 0.1
+
+output:
+  output_path: "outputs/vae"
+```
+
+**Run:** `fluxflow-train --config config.yaml`
+
+---
+
+### 🔧 CLI Arguments (For Quick Tests Only)
+
+**Use when:**
+- Running quick experiments
+- Testing single training modes (VAE-only or Flow-only)
+- Debugging or prototyping
+
+**Example:**
+```bash
+fluxflow-train \
+  --data_path /path/to/images \
+  --captions_file /path/to/captions.txt \
+  --train_vae \
+  --n_epochs 50 \
+  --batch_size 2 \
+  --lr 1e-5
+```
+
+**Limitations:**
+- ❌ No multi-step pipelines
+- ❌ No per-step optimizer customization
+- ❌ No inline YAML optimizer config
+- ❌ Hard to version control
+- ❌ Complex commands become unwieldy
+
+---
+
+### 📊 Feature Comparison
+
+| Feature | YAML Config | CLI Args |
+|---------|-------------|----------|
+| Multi-step pipelines | ✅ | ❌ |
+| Inline optimizer config | ✅ | ❌ (requires external JSON) |
+| Per-step freezing | ✅ | ❌ |
+| Loss-based transitions | ✅ | ❌ |
+| Version control friendly | ✅ | ⚠️ (must maintain scripts) |
+| Quick experiments | ⚠️ (requires YAML file) | ✅ |
+
+**Recommendation:**
+- **Beginners / Quick Tests:** Start with CLI args (see Quick Start below)
+- **Production / Serious Training:** Use YAML config + pipeline mode (see "Pipeline Training Mode" section)
+
+---
+
 ## Quick Start
 
-### 1. Prepare Your Data
+Choose your path based on your needs:
 
-**Option A: Local Dataset**
+### Path A: CLI Quick Test (5 Minutes) ⚡
+
+For quick experiments and learning, use CLI arguments:
+
+**Step 1: Prepare Data**
 ```bash
-# Your directory structure should be:
+# Your directory structure:
 # /path/to/images/
 #   ├── image1.jpg
 #   ├── image2.png
@@ -126,44 +223,88 @@ The training process is highly configurable with parameters for data, model arch
 # image2.png	an illustration of mountains at sunset
 ```
 
-**Option B: TTI-2M Streaming Dataset**
-```bash
-# Use the TTI-2M dataset from HuggingFace
-# Requires: HuggingFace token with access to the dataset
-```
-
-### 2. Basic Training Commands
-
-**Train VAE (Stage 1 - Recommended First)**
+**Step 2: Run Quick VAE Training**
 ```bash
 fluxflow-train \
   --data_path /path/to/images \
   --captions_file /path/to/captions.txt \
-  --output_path outputs/flux \
+  --output_path outputs/quick_test \
   --train_vae \
-  --train_spade \
-  --n_epochs 50 \
+  --n_epochs 5 \
   --batch_size 2 \
   --lr 1e-5 \
-  --vae_dim 128 \
-  --feature_maps_dim 128 \
-  --feature_maps_dim_disc 8
+  --vae_dim 64  # Reduced for speed
 ```
 
-**Train Flow Model (Stage 2)**
-```bash
-fluxflow-train \
-  --data_path /path/to/images \
-  --captions_file /path/to/captions.txt \
-  --output_path outputs/flux \
-  --model_checkpoint outputs/flux/flxflow_final.safetensors \
-  --train_diff_full \
-  --n_epochs 100 \
-  --batch_size 2 \
-  --lr 5e-7 \
-  --vae_dim 128 \
-  --feature_maps_dim 128
+**⚠️ When you're ready for serious training, switch to Path B (YAML Config).**
+
+---
+
+### Path B: YAML Config (Production-Ready) 🚀
+
+For reproducible, production-quality training with multi-step pipelines:
+
+**Step 1: Prepare Data** (same as Path A)
+
+**Step 2: Create `config.yaml`**
+```yaml
+data:
+  data_path: "/path/to/images"
+  captions_file: "/path/to/captions.txt"
+
+model:
+  vae_dim: 128
+  feature_maps_dim: 128
+
+training:
+  batch_size: 2
+  workers: 8
+  
+  pipeline:
+    steps:
+      # Step 1: VAE training with GAN
+      - name: "vae_training"
+        n_epochs: 50
+        train_vae: true
+        train_spade: true
+        gan_training: true
+        
+        optimizers:
+          vae:
+            optimizer_type: "AdamW"
+            lr: 0.00001  # Same as 1e-5
+            betas: [0.9, 0.999]
+            weight_decay: 0.01
+          discriminator:
+            optimizer_type: "AdamW"
+            lr: 0.00001
+            betas: [0.0, 0.9]
+            amsgrad: true
+        
+        schedulers:
+          vae:
+            scheduler_type: "CosineAnnealingLR"
+            eta_min_factor: 0.1
+          discriminator:
+            scheduler_type: "CosineAnnealingLR"
+            eta_min_factor: 0.1
+
+output:
+  output_path: "outputs/production"
 ```
+
+**Step 3: Run Training**
+```bash
+fluxflow-train --config config.yaml
+```
+
+**✅ Benefits:**
+- Reproducible configs (version control friendly)
+- Multi-step pipeline support
+- Per-step optimizer customization
+- No complex CLI commands
+
+**See "Pipeline Training Mode" section below for multi-stage training (VAE → Flow → Fine-tune).**
 
 ## Training Command Reference
 
@@ -1065,6 +1206,35 @@ fluxflow-train \
 # Disable samples to speed up training
 --no_samples
 ```
+
+##### Sample Generation Behavior
+
+**When samples are generated:**
+- **VAE reconstruction samples** (`safe_vae_sample`): Generated when encoder/decoder is being trained
+  - `train_vae=True`: VAE mode (reconstruction loss)
+  - `gan_training=True`: GAN-only mode (adversarial loss without reconstruction)
+  - `train_spade=True`: SPADE conditioning mode
+- **Flow generation samples** (`save_sample_images`): Generated when flow model is being trained
+  - `train_diff=True` or `train_diff_full=True`
+
+**Sample frequency calculation:**
+```
+Samples generated every: checkpoint_save_interval × samples_per_checkpoint batches
+```
+
+**Example:**
+- `checkpoint_save_interval=100` (checkpoint every 100 batches)
+- `samples_per_checkpoint=50` (sample every 50 checkpoints)
+- **Result**: Samples every **5,000 batches** (100 × 50)
+
+**Sample filenames:**
+- VAE: `vae_epoch_{global_step:04d}-{hash}-{suffix}.webp`
+  - Example: `vae_epoch_05000-abc123-ctx.webp`, `vae_epoch_10000-def456-nr_o.webp`
+  - Suffixes: `-ctx` (with context), `-nc` (no context), `_ns_i` (noise input), `_ns_o` (noise output), `-nr_o` (reconstructed output)
+- Flow: `samples_epoch_{global_step:04d}_caption_{idx}-{size}.webp`
+  - Example: `samples_epoch_05000_caption_0-0512.webp`, `samples_epoch_10000_caption_1-1024.webp`
+
+**Note:** Filenames use `global_step` (total batch count) for unique, sequential numbering across entire training run.
 
 #### Miscellaneous
 

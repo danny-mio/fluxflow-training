@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### 🚀 Added
 
+#### CFG-Enabled Training Sample Generation
+- **Training samples now use CFG by default** when generating flow model samples
+  - Automatically enables `use_cfg=True` with `guidance_scale=5.0`
+  - Provides better preview quality during training
+  - Matches inference-time generation quality
+  - Only applies to flow training (`train_diff` or `train_diff_full`)
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 895-905, 1154-1164)
+  - **Requires**: fluxflow-core with CFG sample generation support
+
 #### Multi-Dataset Pipeline Support
 - **Define multiple named datasets** for different pipeline steps
   - Support for both local and webdataset sources in same pipeline
@@ -46,6 +55,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Dataset validation tests (9 tests)
   - Backward compatibility tests (2 tests)
 - **File**: `tests/unit/test_pipeline_multi_dataset.py`
+
+### 📚 Documentation
+- **Major TRAINING_GUIDE.md improvements** for YAML-first configuration
+  - Added "Configuration Methods" section comparing YAML vs CLI approaches
+  - Rewrote Quick Start with dual paths: "CLI Quick Test" vs "YAML Config (Production)"
+  - Clear recommendation: YAML config for production, CLI for quick tests only
+  - Feature comparison table showing YAML advantages
+  - Eliminates confusion about external JSON optimizer configs
+  - Emphasizes inline YAML optimizer configuration in pipeline mode
+  - **Impact**: Users now understand YAML is the recommended production approach
+  - **Files**: `docs/TRAINING_GUIDE.md` (lines 102-220)
+
+### 🐛 Fixed
+
+#### Logging and Sampling Bugs
+- **CRITICAL: Missing JSONL records on crash/interrupt**
+  - Added `f.flush()` to `progress_logger.log_metrics()` to force immediate disk writes
+  - Prevents data loss when training is interrupted or crashes
+  - **Impact**: All metrics are now guaranteed to be written to disk immediately
+  - **Files**: `src/fluxflow_training/training/progress_logger.py:189`
+
+- **VAE snapshots generated during Flow-only training**
+  - Fixed `safe_vae_sample()` being called during pure Flow training (no VAE, no GAN, no SPADE)
+  - Now generates VAE samples when encoder/decoder is being trained: `train_vae=True` OR `gan_training=True` OR `train_spade=True`
+  - Correctly handles all encoder/decoder training modes:
+    - VAE mode: Reconstruction loss training
+    - GAN-only mode: Adversarial loss training without reconstruction
+    - SPADE mode: Decoder SPADE conditioning training
+  - **Impact**: 
+    - Eliminates confusing VAE samples during Flow-only training
+    - Preserves samples for all encoder/decoder training modes
+    - Reduces I/O overhead (~2-5 seconds per checkpoint for multi-image test sets)
+    - Sample generation now accurately reflects active training modes
+  - **Files**: `src/fluxflow_training/scripts/train.py:1152`
+
+- **Sample filename numbering inconsistency**
+  - Changed from `epoch` to `global_step` for sample filenames
+  - Ensures consistent, sequential numbering across entire training run
+  - Prevents filename overwrites when multiple samples generated per epoch
+  - **Impact**: Sample files now have unique, sequential identifiers
+  - **Files**: `src/fluxflow_training/scripts/train.py:1153` (conditional), `1160, 1171` (global_step usage)
+  - **Format**: Sample files use `global_step` as step identifier (e.g., `vae_epoch_05000-abc123-original.webp`, `samples_epoch_10000_caption_0-0512.webp`)
 
 ### 🐛 Fixed
 - **Linting errors** in pipeline configuration (trailing whitespace)

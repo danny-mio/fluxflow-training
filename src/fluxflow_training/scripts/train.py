@@ -902,6 +902,8 @@ def train_legacy(args):
                 args.sample_captions,
                 args.batch_size,
                 sample_sizes=parsed_sample_sizes,
+                use_cfg=True,
+                guidance_scale=5.0,
             )
 
     global_step = saved_global_step
@@ -1140,27 +1142,39 @@ def train_legacy(args):
                         torch.cuda.empty_cache()
 
                     # Generate samples every N checkpoint saves
+                    # Note: checkpoint_count % samples_per_checkpoint triggers every (checkpoint_save_interval × samples_per_checkpoint) batches
+                    # Example: checkpoint_save_interval=100, samples_per_checkpoint=50 → Checkpoint every 100 batches, sample every 50 checkpoints = 5000 batches between samples
                     if not args.no_samples and checkpoint_count % args.samples_per_checkpoint == 0:
-                        for img_addr in args.test_image_address:
-                            safe_vae_sample(
-                                diffuser,
-                                img_addr,
-                                channels,
-                                args.output_path,
-                                epoch,
-                                device,
-                            )
+                        # Generate VAE samples if training encoder/decoder in any mode:
+                        # - VAE mode (train_vae=True): Reconstruction loss training
+                        # - GAN-only mode (gan_training=True): Adversarial loss training without reconstruction
+                        # - SPADE mode (train_spade=True): Decoder SPADE conditioning training
+                        # Samples show decoder quality improvements across all these training modes
+                        if args.train_vae or args.gan_training or args.train_spade:
+                            for img_addr in args.test_image_address:
+                                safe_vae_sample(
+                                    diffuser,
+                                    img_addr,
+                                    channels,
+                                    args.output_path,
+                                    global_step,  # Use global_step for consistent numbering
+                                    device,
+                                )
+
+                        # Only generate Flow samples if training Flow
                         if args.train_diff or args.train_diff_full:
                             save_sample_images(
                                 diffuser,
                                 text_encoder,
                                 tokenizer,
                                 args.output_path,
-                                epoch,
+                                global_step,  # Use global_step for consistent numbering
                                 device,
                                 args.sample_captions,
                                 args.batch_size,
                                 sample_sizes=parsed_sample_sizes,
+                                use_cfg=True,
+                                guidance_scale=5.0,
                             )
 
             except Exception as e:

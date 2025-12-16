@@ -187,6 +187,7 @@ class TrainingProgressLogger:
         # Append to metrics file (JSON Lines format)
         with open(self.metrics_file, "a") as f:
             f.write(json.dumps(log_entry) + "\n")
+            f.flush()  # Force write to disk immediately to prevent data loss on crash
 
     def mark_resumed(self):
         """Mark this session as resumed (called when training is restarted)."""
