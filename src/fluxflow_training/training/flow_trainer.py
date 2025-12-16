@@ -3,13 +3,14 @@
 Handles flow-based diffusion model training with v-prediction.
 """
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from diffusers import DPMSolverMultistepScheduler
 from fluxflow.utils import get_logger
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
-from typing import Optional
 
 from .schedulers import sample_t
 

@@ -496,6 +496,7 @@ def train_legacy(args):
                 lr = {"lr": args.lr, "vae": args.lr}
 
     # Load training state from checkpoint if available
+    saved_last_sample_step = 0
     if os.path.exists(TRAINING_STATE_FILE):
         try:
             with open(TRAINING_STATE_FILE, "r") as f:
@@ -503,6 +504,7 @@ def train_legacy(args):
                 saved_global_step = training_state.get("global_step", 0)
                 saved_epoch = training_state.get("epoch", 0)
                 saved_batch_idx = training_state.get("batch_idx", 0)
+                saved_last_sample_step = training_state.get("last_sample_step", 0)
                 print(
                     f"Resuming from epoch {saved_epoch}, batch {saved_batch_idx}, global step: {saved_global_step}"
                 )
@@ -907,7 +909,8 @@ def train_legacy(args):
             )
 
     global_step = saved_global_step
-    checkpoint_count = 0
+    last_sample_step = saved_last_sample_step
+    sample_interval = args.checkpoint_save_interval * args.samples_per_checkpoint
 
     print(f"\nStarting training for {args.n_epochs} epochs...")
     print(f"Total batches: {total_batches}, Steps per epoch: {steps_per_epoch}")
@@ -1133,16 +1136,19 @@ def train_legacy(args):
                         ),
                         kl_warmup_steps=args.kl_warmup_steps,
                         kl_max_beta=args.kl_beta,
+                        last_sample_step=last_sample_step,
                     )
-
-                    checkpoint_count += 1
 
                     # Clear CUDA cache to prevent memory fragmentation
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
-                    # Generate samples every N checkpoint saves
-                    if not args.no_samples and checkpoint_count % args.samples_per_checkpoint == 0:
+                    # Generate samples based on step interval (decoupled from checkpoint count)
+                    if (
+                        not args.no_samples
+                        and global_step > 0
+                        and (global_step - last_sample_step) >= sample_interval
+                    ):
                         for img_addr in args.test_image_address:
                             safe_vae_sample(
                                 diffuser,
@@ -1166,6 +1172,7 @@ def train_legacy(args):
                                 use_cfg=True,
                                 guidance_scale=5.0,
                             )
+                        last_sample_step = global_step
 
             except Exception as e:
                 print(f"Error in batch {i}: {e}")
@@ -1211,6 +1218,7 @@ def train_legacy(args):
             kl_beta_current=cosine_anneal_beta(global_step, args.kl_warmup_steps, args.kl_beta),
             kl_warmup_steps=args.kl_warmup_steps,
             kl_max_beta=args.kl_beta,
+            last_sample_step=last_sample_step,
         )
 
         model_saved = True
