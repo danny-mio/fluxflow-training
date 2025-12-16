@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### 🚀 Added
 
+#### CFG-Enabled Training Sample Generation
+- **Training samples now use CFG by default** when generating flow model samples
+  - Automatically enables `use_cfg=True` with `guidance_scale=5.0`
+  - Provides better preview quality during training
+  - Matches inference-time generation quality
+  - Only applies to flow training (`train_diff` or `train_diff_full`)
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 895-905, 1154-1164)
+  - **Requires**: fluxflow-core with CFG sample generation support
+
 #### Multi-Dataset Pipeline Support
 - **Define multiple named datasets** for different pipeline steps
   - Support for both local and webdataset sources in same pipeline
@@ -46,6 +55,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Dataset validation tests (9 tests)
   - Backward compatibility tests (2 tests)
 - **File**: `tests/unit/test_pipeline_multi_dataset.py`
+
+### 📚 Documentation
+- **Major TRAINING_GUIDE.md improvements** for YAML-first configuration
+  - Added "Configuration Methods" section comparing YAML vs CLI approaches
+  - Rewrote Quick Start with dual paths: "CLI Quick Test" vs "YAML Config (Production)"
+  - Clear recommendation: YAML config for production, CLI for quick tests only
+  - Feature comparison table showing YAML advantages
+  - Eliminates confusion about external JSON optimizer configs
+  - Emphasizes inline YAML optimizer configuration in pipeline mode
+  - **Impact**: Users now understand YAML is the recommended production approach
+  - **Files**: `docs/TRAINING_GUIDE.md` (lines 102-220)
 
 ### 🐛 Fixed
 - **Linting errors** in pipeline configuration (trailing whitespace)
