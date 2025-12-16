@@ -1044,6 +1044,10 @@ class TrainingPipelineOrchestrator:
             # Training loop for this step
             step_start_time = time.time()
 
+            # Initialize epoch and batch_idx in case loop exits early (e.g., max_steps < batches_per_epoch)
+            epoch = start_epoch if step_idx == start_step else 0
+            batch_idx = 0
+
             for epoch in range(start_epoch if step_idx == start_step else 0, step.n_epochs):
                 # Calculate total batches for this epoch (considering max_steps)
                 epoch_total_batches = (
