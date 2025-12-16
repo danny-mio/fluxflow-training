@@ -98,7 +98,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Files**: `src/fluxflow_training/scripts/train.py:1153` (conditional), `1160, 1171` (global_step usage)
   - **Format**: Sample files use `global_step` as step identifier (e.g., `vae_epoch_05000-abc123-original.webp`, `samples_epoch_10000_caption_0-0512.webp`)
 
-### 🐛 Fixed
 - **Linting errors** in pipeline configuration (trailing whitespace)
 - **Pre-commit hooks** now enforced (flake8, black, pytest)
 
