@@ -1207,6 +1207,35 @@ fluxflow-train \
 --no_samples
 ```
 
+##### Sample Generation Behavior
+
+**When samples are generated:**
+- **VAE reconstruction samples** (`safe_vae_sample`): Generated when encoder/decoder is being trained
+  - `train_vae=True`: VAE mode (reconstruction loss)
+  - `gan_training=True`: GAN-only mode (adversarial loss without reconstruction)
+  - `train_spade=True`: SPADE conditioning mode
+- **Flow generation samples** (`save_sample_images`): Generated when flow model is being trained
+  - `train_diff=True` or `train_diff_full=True`
+
+**Sample frequency calculation:**
+```
+Samples generated every: checkpoint_save_interval × samples_per_checkpoint batches
+```
+
+**Example:**
+- `checkpoint_save_interval=100` (checkpoint every 100 batches)
+- `samples_per_checkpoint=50` (sample every 50 checkpoints)
+- **Result**: Samples every **5,000 batches** (100 × 50)
+
+**Sample filenames:**
+- VAE: `vae_epoch_{global_step:04d}-{hash}-{suffix}.webp`
+  - Example: `vae_epoch_05000-abc123-ctx.webp`, `vae_epoch_10000-def456-nr_o.webp`
+  - Suffixes: `-ctx` (with context), `-nc` (no context), `_ns_i` (noise input), `_ns_o` (noise output), `-nr_o` (reconstructed output)
+- Flow: `samples_epoch_{global_step:04d}_caption_{idx}-{size}.webp`
+  - Example: `samples_epoch_05000_caption_0-0512.webp`, `samples_epoch_10000_caption_1-1024.webp`
+
+**Note:** Filenames use `global_step` (total batch count) for unique, sequential numbering across entire training run.
+
 #### Miscellaneous
 
 | Parameter | Type | Default | Description |
