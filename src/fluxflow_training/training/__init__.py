@@ -25,6 +25,7 @@ from .schedulers import (
     cosine_anneal_beta,
     sample_t,
 )
+from .training_mode import TrainingComponent, TrainingMode
 from .utils import (
     EMA,
     FloatBuffer,
@@ -62,6 +63,9 @@ __all__ = [
     # Trainers
     "VAETrainer",
     "FlowTrainer",
+    # Training modes
+    "TrainingComponent",
+    "TrainingMode",
     # Pipeline configuration
     "PipelineConfig",
     "PipelineStepConfig",
