@@ -22,8 +22,7 @@ def _bezier_regularization_loss(self):
     """Prevent extreme Bezier curves."""
     # Encourages p1 ≈ -0.33, p2 ≈ 0.33 (linear curve)
     # Also penalizes large p2-p1 differences (prevents S-curves)
-```
-
+```text
 **Weight:** `0.01 * bezier_reg` added to total loss
 
 **Effect:**
@@ -43,8 +42,7 @@ def _color_statistics_loss(self, pred, target):
     for c in [R, G, B]:
         loss += (pred_mean - target_mean)²
         loss += (pred_std - target_std)²  # Prevents contrast expansion!
-```
-
+```text
 **Weight:** `0.05 * color_stats_loss` added to total loss
 
 **Effect:**
@@ -62,8 +60,7 @@ Matches the full color distribution (histogram) between reconstruction and input
 def _histogram_matching_loss(self, pred, target, bins=64):
     """Match color distributions using Wasserstein-1 distance."""
     # Compute CDFs and measure L1 distance
-```
-
+```text
 **Weight:** `0.02 * hist_loss` added to total loss
 
 **Effect:**
@@ -83,8 +80,7 @@ recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=1.0)
 
 # After: alpha=0.5 (reduced high-freq emphasis)
 recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.5)
-```
-
+```text
 **Effect:**
 - Less penalty for not matching sharp edges exactly
 - Encourages smoother, more natural reconstructions
@@ -102,8 +98,7 @@ total_loss = (
     0.05 * color_stats_loss +             # NEW: Color statistics matching
     0.02 * hist_loss                      # NEW: Histogram matching
 )
-```
-
+```text
 **Weights Explanation:**
 - `0.01` for Bezier: Small but prevents extreme curves
 - `0.05` for color stats: More important, directly prevents contrast expansion
@@ -112,13 +107,12 @@ total_loss = (
 ## Monitoring
 
 The training logs now include:
-```
+```text
 [Step 1000] VAE: 0.0523 | KL: 8461.29 | ...
   bezier_reg: 0.0023  ← Should decrease over time
   color_stats: 0.0145  ← Should be low (<0.05)
   hist_loss: 0.0089   ← Should be low (<0.02)
-```
-
+```text
 **What to watch:**
 - `bezier_reg` decreasing → Bezier converging to good curve
 - `color_stats` staying low → No contrast expansion
@@ -134,39 +128,33 @@ The training logs now include:
 total_loss = total_loss + 0.02 * bezier_reg      # Was 0.01
 total_loss = total_loss + 0.10 * color_stats_loss  # Was 0.05
 total_loss = total_loss + 0.05 * hist_loss       # Was 0.02
-```
-
+```text
 **Further reduce high-freq weight:**
 ```python
 # Line ~601
 recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.3)  # Was 0.5
-```
-
+```text
 ### If losing detail:
 
 **Reduce regularization:**
 ```python
 total_loss = total_loss + 0.005 * bezier_reg     # Reduce from 0.01
 total_loss = total_loss + 0.02 * color_stats_loss  # Reduce from 0.05
-```
-
+```text
 **Increase high-freq weight:**
 ```python
 recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.7)  # Increase from 0.5
-```
-
+```text
 ### If colors look washed out:
 
 **Reduce histogram loss:**
 ```python
 total_loss = total_loss + 0.01 * hist_loss  # Reduce from 0.02
-```
-
+```text
 **Allow more Bezier freedom:**
 ```python
 total_loss = total_loss + 0.005 * bezier_reg  # Reduce from 0.01
-```
-
+```text
 ## Alternative: Enable LPIPS Earlier
 
 LPIPS (perceptual loss from VGG) naturally prevents unnatural colors and contrast.
@@ -180,8 +168,7 @@ pipeline:
       train_vae: true
       use_gan: true
       use_lpips: true  # CHANGE: Enable from step 1 (was step 2)
-```
-
+```text
 **Effect:**
 - VGG-based perceptual loss penalizes unnatural colors
 - Catches contrast/saturation issues immediately
@@ -201,8 +188,7 @@ freq_alpha = 0.5  # Reduced from 1.0
 
 # LPIPS
 use_lpips_from_start = True  # Enable in step 1
-```
-
+```text
 **This combination:**
 - ✅ Prevents extreme Bezier curves
 - ✅ Matches color statistics (no contrast expansion)
@@ -215,13 +201,13 @@ use_lpips_from_start = True  # Enable in step 1
 After implementing these fixes:
 
 1. **Generate samples** during training
-2. **Check for:**
+1. **Check for:**
    - Natural contrast (not crushed blacks/blown highlights)
    - Natural color saturation (not oversaturated)
    - Smooth tonal transitions (not posterized)
    - Preserved shadow/highlight detail
 
-3. **Compare before/after:**
+1. **Compare before/after:**
    - Save samples from old training
    - Retrain with new losses
    - Side-by-side comparison
@@ -239,8 +225,8 @@ After implementing these fixes:
 
 All fixes are **training-only** (no model architecture changes):
 1. ✅ Bezier regularization → prevents extreme curves
-2. ✅ Color statistics matching → prevents contrast expansion
-3. ✅ Histogram matching → prevents tonal distortion
-4. ✅ Reduced high-freq weight → prevents over-sharpening
+1. ✅ Color statistics matching → prevents contrast expansion
+1. ✅ Histogram matching → prevents tonal distortion
+1. ✅ Reduced high-freq weight → prevents over-sharpening
 
 **Result:** Natural-looking reconstructions with proper contrast and saturation.

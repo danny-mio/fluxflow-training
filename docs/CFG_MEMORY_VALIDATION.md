@@ -13,8 +13,7 @@ Classifier-Free Guidance (CFG) adds **negligible memory overhead** during traini
 ```python
 # CFG dropout implementation
 text_emb_dropped = apply_cfg_dropout(text_emb, p_uncond=0.1)
-```
-
+```text
 **Memory overhead**: **Negligible (<1 MB)**
 - Creates boolean mask (batch_size × 1 byte, ~4-16 bytes typical)
 - Modifies text embeddings in-place (zero copy overhead)
@@ -40,8 +39,7 @@ From empirical measurements (TRAINING_GUIDE.md):
 v_cond = model(z_t, text_emb, t)      # Conditional forward pass
 v_uncond = model(z_t, null_emb, t)    # Unconditional forward pass
 v_guided = v_uncond + ω * (v_cond - v_uncond)
-```
-
+```text
 **Memory overhead**: **~0 MB** (2 forward passes, but no gradient storage)
 - Each forward pass uses same VRAM as standard inference
 - No gradient computation (inference mode with `torch.no_grad()`)
@@ -57,8 +55,7 @@ z_doubled = torch.cat([z_t, z_t])
 text_doubled = torch.cat([text_emb, null_emb])
 v_doubled = model(z_doubled, text_doubled, t)
 v_cond, v_uncond = v_doubled.chunk(2)
-```
-
+```text
 **Batched memory overhead**: **~2× during inference** (temporary)
 - Doubles batch size from 1 → 2 (or N → 2N)
 - For batch_size=1, img_size=1024, adds ~2-4 GB peak VRAM
@@ -78,8 +75,7 @@ training:
         use_ema: false          # Saves ~14 GB (recommended)
         batch_size: 2
         workers: 1
-```
-
+```text
 **Expected peak VRAM**: ~44.9 GB (same as non-CFG)
 
 ### Inference (CFG Enabled)
@@ -91,8 +87,7 @@ fluxflow-generate \
     --use_cfg \
     --guidance_scale 5.0 \
     --batch_size 1  # Keep at 1 to avoid batched CFG memory spike
-```
-
+```text
 **Expected peak VRAM**: ~8-12 GB (well within limits)
 
 ## Validation Test Script
@@ -122,13 +117,11 @@ print(f"Memory before CFG: {mem_before:.2f} GB")
 print(f"Memory after CFG: {mem_after:.2f} GB")
 print(f"Difference: {(mem_after - mem_before):.4f} GB")
 # Expected: ~0.0000 GB (negligible)
-```
-
+```text
 Run with:
 ```bash
 python test_cfg_memory.py
-```
-
+```text
 ## Known Memory Bottlenecks (Unrelated to CFG)
 
 If you encounter OOM during flow training, the culprits are likely:
@@ -136,13 +129,13 @@ If you encounter OOM during flow training, the culprits are likely:
 1. **EMA (Exponential Moving Average)**: +14.4 GB
    - Solution: Set `use_ema: false` in config
    
-2. **Large batch size**: +10-15 GB per additional sample
+1. **Large batch size**: +10-15 GB per additional sample
    - Solution: Reduce `batch_size` to 1
    
-3. **DataLoader prefetching**: +4-8 GB
+1. **DataLoader prefetching**: +4-8 GB
    - Solution: Already disabled in current implementation
    
-4. **LPIPS loss**: +3-5 GB (only in VAE stages)
+1. **LPIPS loss**: +3-5 GB (only in VAE stages)
    - Solution: Set `use_lpips: false` (only affects VAE quality)
 
 **None of these are caused by CFG**.

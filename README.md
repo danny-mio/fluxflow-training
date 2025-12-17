@@ -8,8 +8,7 @@ Training tools and scripts for FluxFlow text-to-image generation models.
 
 ```bash
 pip install fluxflow-training
-```
-
+```text
 **What gets installed:**
 - `fluxflow-training` - Training scripts and configuration tools
 - `fluxflow` core package (automatically installed as dependency)
@@ -21,13 +20,12 @@ pip install fluxflow-training
 git clone https://github.com/danny-mio/fluxflow-training.git
 cd fluxflow-training
 pip install -e ".[dev]"
-```
-
+```text
 ---
 
 ## 🚧 Training Status
 
-**Models Currently In Training**: FluxFlow is actively training models following the systematic [TRAINING_VALIDATION_PLAN.md](https://github.com/danny-mio/fluxflow-core/blob/main/TRAINING_VALIDATION_PLAN.md).
+**Models Currently In Training**: FluxFlow is actively training models following a systematic validation plan.
 
 **Current Phase**: Phase 1 - VAE Training (Weeks 1-4)
 
@@ -88,8 +86,7 @@ The training uses LPIPS for perceptual loss, which requires VGG16 weights (~528M
 
 ```bash
 python -c "import lpips; lpips.LPIPS(net='vgg')"
-```
-
+```text
 Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-downloaded, they'll download automatically on first training run.
 
 ## Features
@@ -167,8 +164,7 @@ fluxflow-train --config config.yaml
 
 # With automatic diagram generation
 fluxflow-train --config config.yaml --generate_diagrams
-```
-
+```text
 ### Pipeline Training (NEW in v0.2.0)
 
 Multi-step training for hypothesis testing and staged optimization:
@@ -198,18 +194,15 @@ training:
         n_epochs: 30
         train_vae: false      # Freeze VAE
         train_diff: true      # Train flow
-```
-
+```text
 **Run**:
 ```bash
 fluxflow-train --config pipeline_config.yaml
-```
-
+```text
 **Validate config before training**:
 ```bash
 fluxflow-train --config pipeline_config.yaml --validate-pipeline
-```
-
+```text
 See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) for complete documentation.
 
 ### GAN-Only Training (NEW in v0.2.0)
@@ -226,8 +219,7 @@ training:
         gan_training: true        # Train GAN discriminator
         train_spade: true         # With spatial conditioning
         use_lpips: false
-```
-
+```text
 **Use cases:**
 - Spatial structure learning without pixel constraints
 - Faster training (no reconstruction computation)
@@ -254,8 +246,7 @@ training:
         freeze:
           - compressor  # Freeze VAE
           - expander
-```
-
+```text
 **Generate with CFG**:
 ```bash
 fluxflow-generate \
@@ -264,8 +255,7 @@ fluxflow-generate \
     --output_path outputs/ \
     --use_cfg \
     --guidance_scale 5.0  # Range: 1.0-15.0, recommended: 3.0-7.0
-```
-
+```text
 **Guidance scale examples** (tune for your model):
 - `1.0`: Standard conditional (no guidance)
 - `3.0-7.0`: Moderate guidance (RECOMMENDED - balanced quality/creativity)
@@ -293,8 +283,7 @@ fluxflow-generate \
     --output_path outputs/ \
     --use_cfg \
     --guidance_scale 5.0
-```
-
+```text
 ### Visualizing Training Progress
 
 ```bash
@@ -311,25 +300,22 @@ python src/fluxflow_training/scripts/generate_training_graphs.py outputs/
 # - batch_times.png (training speed)
 # - training_overview.png (combined overview)
 # - training_summary.txt (statistics)
-```
-
+```text
 ## Console Output Examples
 
 ### Pipeline Training Mode
-```
+```text
 PIPELINE STEP 1/3: vae_warmup
 Description: Warmup VAE without GAN
 Duration: 10 epochs
 ================================================================================
 
 [00:15:23] Step vae_warmup (1/3) | Epoch 5/10 | Batch 127/500 | VAE: 0.0234 | KL: 12.45 | 3.2s/batch
-```
-
+```text
 ### GAN Training Mode
-```
+```text
 [00:15:23] Step vae_gan (2/3) | Epoch 5/20 | Batch 127/500 | VAE: 0.0234 | KL: 12.45 | G: 0.156 | D: 0.089 | LPIPS: 0.0812 | 3.2s/batch
-```
-
+```text
 **Metrics Shown**:
 - `VAE` - Reconstruction loss (L1 + MSE)
 - `KL` - KL divergence
@@ -343,17 +329,15 @@ Duration: 10 epochs
 ### Pipeline Mode (v0.2.0)
 
 **Mid-epoch samples**:
-```
+```text
 vae_warmup_001_005_00127_abc123-original.webp
 {stepname}_{step}_{epoch}_{batch}_{hash}-{suffix}.webp
-```
-
+```text
 **End-of-epoch samples**:
-```
+```text
 vae_warmup_001_005_abc123-original.webp
 {stepname}_{step}_{epoch}_{hash}-{suffix}.webp
-```
-
+```text
 **Suffixes**:
 - `-original` or `_ns_i` - Input image
 - `-nr_o` - VAE reconstruction (no random sampling)
@@ -415,8 +399,7 @@ output:
     - 512
     - [768, 512]  # landscape
     - 1024
-```
-
+```text
 ### Pipeline Configuration Example
 
 See `test_pipeline_minimal.yaml` or `config.example.yaml` for complete examples.
@@ -434,8 +417,7 @@ training:
         n_epochs: 10
         train_vae: true
         # ... step-specific config
-```
-
+```text
 ## Documentation
 
 ### Comprehensive Guides
@@ -507,8 +489,7 @@ training:
   pipeline:
     steps:
       - name: "step1"
-```
-
+```text
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ## Links

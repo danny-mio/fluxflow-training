@@ -43,8 +43,7 @@ training:
       - name: step3
         # No dataset specified - uses default_dataset
         # ... other step config
-```
-
+```text
 ### Dataset Types
 
 #### Local Dataset
@@ -57,8 +56,7 @@ datasets:
     captions_file: /path/to/captions.txt
     batch_size: 4        # Optional: override step batch_size
     workers: 8           # Optional: override step workers
-```
-
+```text
 **Required fields**:
 - `image_folder`: Path to folder containing images
 - `captions_file`: Path to text file with captions
@@ -78,8 +76,7 @@ datasets:
     webdataset_samples_per_shard: 1000  # Optional, default: 1000
     batch_size: 4                       # Optional
     workers: 8                          # Optional
-```
-
+```text
 **Required fields**:
 - `webdataset_url`: URL pattern for webdataset shards
 - `webdataset_token`: Authentication token (e.g., HuggingFace token)
@@ -114,8 +111,7 @@ steps:
     dataset: highres_dataset
     train_vae: true
     n_epochs: 5
-```
-
+```text
 ### 2. Domain-Specific Training
 
 Train different components on different domains:
@@ -143,8 +139,7 @@ steps:
     train_diff: true
     n_epochs: 20
     freeze: [compressor, expander]
-```
-
+```text
 ### 3. Local + Remote Data
 
 Combine local datasets with cloud-hosted webdatasets:
@@ -174,27 +169,25 @@ steps:
     dataset: local_curated
     train_vae: true
     n_epochs: 10
-```
-
+```text
 ## Dataset Selection Rules
 
 1. **Explicit dataset**: If `step.dataset` is specified, use that dataset
-2. **Default dataset**: If `step.dataset` is None and `default_dataset` is set, use default
-3. **Fallback**: If neither is set, use the original args-based dataset initialization
+1. **Default dataset**: If `step.dataset` is None and `default_dataset` is set, use default
+1. **Fallback**: If neither is set, use the original args-based dataset initialization
 
 ## Batch Size and Workers
 
 Both datasets and steps can specify `batch_size` and `workers`. The configuration resolution follows this priority:
 
-```
+```text
 Priority (highest to lowest):
 1. step.batch_size / step.workers (most specific)
-2. dataset.batch_size / dataset.workers (dataset-level override)
-3. defaults.batch_size / defaults.workers (pipeline defaults)
-4. args.batch_size / args.workers (global training config)
-5. Hard-coded defaults (batch_size=2, workers=8)
-```
-
+1. dataset.batch_size / dataset.workers (dataset-level override)
+1. defaults.batch_size / defaults.workers (pipeline defaults)
+1. args.batch_size / args.workers (global training config)
+1. Hard-coded defaults (batch_size=2, workers=8)
+```text
 **Recommendation**: Set `batch_size` in the dataset config for dataset-specific requirements, and override at the step level only when a specific step needs different batching:
 
 ```yaml
@@ -213,8 +206,7 @@ steps:
   - name: main_training
     dataset: high_res
     batch_size: 4  # Override to 4 for this step only
-```
-
+```text
 ## Validation
 
 The pipeline validator checks:
@@ -249,8 +241,7 @@ for step in config.steps:
     if dataset_name:
         dataset = config.datasets[dataset_name]
         print(f"Step {step.name} uses {dataset_name} ({dataset.type})")
-```
-
+```text
 ## Migration from Single Dataset
 
 If you have existing single-dataset configurations, they will continue to work. Multi-dataset is opt-in:
@@ -265,8 +256,7 @@ training:
         batch_size: 4
 
 # Uses dataset from args (--image_folder, --captions_file)
-```
-
+```text
 ## Limitations
 
 - Dataset switching requires full dataloader recreation
@@ -287,8 +277,7 @@ datasets:
 
 steps:
   - dataset: my_data  # ← Reference here
-```
-
+```text
 ### "default_dataset not found in datasets"
 
 Ensure `default_dataset` references an existing dataset:
@@ -299,8 +288,7 @@ datasets:
   dataset2: ...
 
 default_dataset: dataset1  # ← Must be 'dataset1' or 'dataset2'
-```
-
+```text
 ### WebDataset authentication errors
 
 Ensure `webdataset_token` is valid and has access to the dataset URL.
