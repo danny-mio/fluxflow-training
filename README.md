@@ -27,7 +27,7 @@ pip install -e ".[dev]"
 
 ## 🚧 Training Status
 
-**Models Currently In Training**: FluxFlow is actively training models following the systematic [TRAINING_VALIDATION_PLAN.md](https://github.com/danny-mio/fluxflow-core/blob/main/TRAINING_VALIDATION_PLAN.md).
+**Models Currently In Training**: FluxFlow is actively training models following a systematic validation plan.
 
 **Current Phase**: Phase 1 - VAE Training (Weeks 1-4)
 

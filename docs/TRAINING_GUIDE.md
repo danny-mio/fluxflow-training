@@ -1293,7 +1293,7 @@ Generation: ~2-5 seconds per image (512x512, 50 steps)
 
 - **Example Config**: `config.example.sh`
 - **UI Guide**: Use the web UI at `http://localhost:7860` for visual training configuration
-- **Issues**: Report bugs at https://github.com/danny-mio/fluxflow/issues
+- **Issues**: Report bugs at https://github.com/danny-mio/fluxflow-training/issues
 
 ## Summary
 
