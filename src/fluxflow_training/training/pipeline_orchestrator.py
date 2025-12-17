@@ -470,14 +470,15 @@ class TrainingPipelineOrchestrator:
         Returns:
             Tuple of (dataloader, sampler, dataset_size)
         """
-        import torch
         from functools import partial
+
+        import torch
         from torch.utils.data import DataLoader
 
         from ..data import (
+            ResumableDimensionSampler,
             StreamingWebDataset,
             TextImageDataset,
-            ResumableDimensionSampler,
             collate_fn_variable,
             get_or_build_dimension_cache,
         )
