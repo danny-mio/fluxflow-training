@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-12-17
+
+### 🐛 Fixed
+
+#### CRITICAL: Image Generation Script Color and Contrast Bug
+- **Fixed incorrect image saving in generate.py**
+  - Expander outputs images in `[-1, 1]` range, but `save_image()` was treating them as `[0, 1]`
+  - This caused negative pixel values to be clamped to black, crushing 50% of the dynamic range
+  - Added `normalize=True` and `value_range=(-1, 1)` to `save_image()` call (line 148)
+  - **Impact**: Generated images from `generate.py` script now have correct colors and contrast
+  - **Files**: `src/fluxflow_training/scripts/generate.py`
+  - **Related**: fluxflow-core PR #20 fixed the same issue in training sample images
+
+#### Missing Contrast Loss in Training Logs
+- **Fixed contrast_loss not appearing in training logs**
+  - `_train_generator()` was computing and returning `contrast_loss` but `train_step()` wasn't extracting it
+  - Added missing line to extract `contrast_loss` from `gen_losses` dict (line 444)
+  - Contrast regularization loss now properly appears in training logs
+  - **Files**: `src/fluxflow_training/training/vae_trainer.py`
+
 ### 🚀 Added
 
 #### CFG-Enabled Training Sample Generation
