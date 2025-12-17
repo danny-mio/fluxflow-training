@@ -258,6 +258,16 @@ def initialize_models(args, config, device, checkpoint_manager):
             D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded D_img checkpoint")
 
+            # Validate discriminator weights for NaN/Inf
+            nan_found = False
+            for name, param in D_img.named_parameters():
+                if torch.isnan(param).any() or torch.isinf(param).any():
+                    print(f"  ⚠️  WARNING: NaN/Inf in D_img parameter: {name}")
+                    nan_found = True
+            if nan_found:
+                print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
+                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+
     # Move to device
     diffuser.to(device)
     text_encoder.to(device)
@@ -599,6 +609,16 @@ def train_legacy(args):
     if loaded_states.get("D_img"):
         D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded D_img checkpoint")
+
+        # Validate discriminator weights for NaN/Inf
+        nan_found = False
+        for name, param in D_img.named_parameters():
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                print(f"  ⚠️  WARNING: NaN/Inf in D_img parameter: {name}")
+                nan_found = True
+        if nan_found:
+            print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
+            D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
 
     diffuser.to(device)
     text_encoder.to(device)
