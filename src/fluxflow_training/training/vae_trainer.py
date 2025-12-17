@@ -287,8 +287,6 @@ class VAETrainer:
         Returns:
             Histogram matching loss
         """
-        import torch.nn.functional as F
-
         loss = 0.0
         for c in range(3):  # R, G, B channels
             # Flatten spatial dimensions for histogram
