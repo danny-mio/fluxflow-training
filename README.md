@@ -58,7 +58,7 @@ pip install -e ".[dev]"
   - **Without GAN**: ~18-22GB VRAM
   - **With GAN + LPIPS**: ~28-35GB VRAM
   - **With GAN + LPIPS + SPADE**: ~35-42GB VRAM
-  - **Peak observed**: 47.4GB on A6000 48GB (triggered OOM, requires optimization)
+  - **Peak observed**: 47.4GB on A6000 48GB (pre-v0.2.1; now optimized to ~42GB stable)
 - **Flow Training** (batch_size=1, feature_maps_dim=128):
   - ~24-30GB VRAM
 - **Minimum viable** (reduced dimensions, smaller images):
