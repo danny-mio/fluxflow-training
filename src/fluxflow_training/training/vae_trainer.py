@@ -441,6 +441,7 @@ class VAETrainer:
         losses["bezier_reg"] = gen_losses.get("bezier_reg", 0.0)
         losses["color_stats"] = gen_losses.get("color_stats", 0.0)
         losses["hist_loss"] = gen_losses.get("hist_loss", 0.0)
+        losses["contrast_loss"] = gen_losses.get("contrast_loss", 0.0)
 
         # Check if optimizer was actually stepped (could be skipped due to NaN)
         optimizer_was_stepped = gen_losses.pop("_optimizer_stepped", True)
