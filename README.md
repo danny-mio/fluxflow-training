@@ -517,7 +517,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - [Core Package](https://github.com/danny-mio/fluxflow-core)
 - [Web UI](https://github.com/danny-mio/fluxflow-ui)
 - [ComfyUI Plugin](https://github.com/danny-mio/fluxflow-comfyui)
-- [PyPI Package](https://pypi.org/project/fluxflow-training/) (coming soon - not yet published)
+- [PyPI Package](https://pypi.org/project/fluxflow-training/) 
 
 ## License
 
