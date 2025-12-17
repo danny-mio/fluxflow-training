@@ -17,6 +17,73 @@ from .pipeline_config import PipelineConfig, PipelineStepConfig
 logger = get_logger(__name__)
 
 
+class FastForwardDataLoader:
+    """
+    Wrapper that yields None for initial batches to enable fast resume without data processing.
+
+    When resuming training mid-epoch, this wrapper returns (None, None) for the first
+    `skip_batches` iterations without consuming from the underlying dataloader iterator.
+    This avoids downloading tar files and decoding images for batches that will be skipped.
+
+    CRITICAL Requirements for Training Loop:
+        1. MUST use enumerate() to preserve batch_idx semantics
+        2. MUST skip None batches: if imgs is None: continue
+        3. Only use for resume scenarios, not general-purpose iteration
+
+    Thread Safety: Not thread-safe. Do not share across processes.
+
+    Example:
+        >>> dataloader = DataLoader(dataset, batch_size=4)
+        >>> wrapper = FastForwardDataLoader(dataloader, skip_batches=1000)
+        >>> for batch_idx, (imgs, labels) in enumerate(wrapper):
+        ...     if imgs is None:
+        ...         continue  # Skip without processing
+        ...     # Training starts at batch_idx=1000
+    """
+
+    def __init__(self, dataloader, skip_batches=0):
+        """
+        Args:
+            dataloader: PyTorch DataLoader to wrap
+            skip_batches: Number of batches to skip (return None for these)
+                         If this exceeds dataloader length, no real data will be yielded.
+        """
+        self.dataloader = dataloader
+        self.skip_batches = skip_batches
+        self.batch_count = 0
+
+        # Warn if skip might exceed dataloader length
+        # Use try/except to handle IterableDatasets which may have __len__ but raise TypeError
+        try:
+            if hasattr(dataloader, "__len__") and skip_batches >= len(dataloader):
+                logger.warning(
+                    f"FastForwardDataLoader: skip_batches ({skip_batches}) >= dataloader length "
+                    f"({len(dataloader)}). This epoch may yield no training data."
+                )
+        except TypeError:
+            # IterableDataset - no length available, skip warning
+            pass
+
+    def __iter__(self):
+        self.batch_count = 0
+        self.iterator = iter(self.dataloader)
+        return self
+
+    def __next__(self):
+        # For skipped batches, return None without consuming from dataloader
+        if self.batch_count < self.skip_batches:
+            self.batch_count += 1
+            return None, None
+
+        # Past skip point - yield real data from dataloader
+        self.batch_count += 1
+        return next(self.iterator)
+
+    def __len__(self):
+        """Preserve original dataloader length."""
+        return len(self.dataloader) if hasattr(self.dataloader, "__len__") else 0
+
+
 class TrainingPipelineOrchestrator:
     """
     Orchestrates multi-step training pipelines.
@@ -1200,6 +1267,18 @@ class TrainingPipelineOrchestrator:
                     f"Batches 0/{epoch_total_batches}{dataset_info}"
                 )
 
+                # Wrap dataloader with fast-forward if resuming mid-epoch
+                # This allows batch_idx to increment correctly without downloading/processing skipped batches
+                dataloader_for_epoch = dataloader
+                if step_idx == start_step and epoch == start_epoch and start_batch > 0:
+                    logger.info(
+                        f"Fast-forwarding to batch {start_batch} "
+                        f"(skipping without downloading/processing)"
+                    )
+                    dataloader_for_epoch = FastForwardDataLoader(
+                        dataloader, skip_batches=start_batch
+                    )
+
                 epoch_start_time = time.time()
 
                 # Error buffers for logging
@@ -1218,16 +1297,16 @@ class TrainingPipelineOrchestrator:
                 hist_loss_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Histogram loss
                 batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
-                for batch_idx, (imgs, input_ids) in enumerate(dataloader):
+                for batch_idx, (imgs, input_ids) in enumerate(dataloader_for_epoch):
+                    # Skip None batches from FastForwardDataLoader (fast-forward mode)
+                    if imgs is None:
+                        continue
+
                     batch_start_time = time.time()
                     # Break if max_steps reached (for quick testing)
                     if step.max_steps is not None and batch_idx >= step.max_steps:
                         logger.info(f"Reached max_steps={step.max_steps}, ending epoch early")
                         break
-
-                    # Skip batches if resuming mid-epoch
-                    if step_idx == start_step and epoch == start_epoch and batch_idx < start_batch:
-                        continue
 
                     self.global_step += 1
                     input_ids = input_ids.to(self.device)

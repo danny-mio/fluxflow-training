@@ -273,6 +273,28 @@ training:
 - Samplers are recreated per step (resume state may be lost)
 - Mixed local/webdataset in same step not supported
 
+## Resume Behavior
+
+When training is interrupted and resumed mid-epoch:
+
+- **Skip mechanism**: Dataloader wrapped to yield None for skipped batches without fetching data
+- **batch_idx preservation**: Batch counter increments correctly via enumerate(), preserving checkpoint/logging intervals  
+- **Minimal overhead**: Skipped batches return None without downloading tar files or decoding images
+- **Works for all dataset types**: Both local and webdataset benefit from this optimization
+
+How it works:
+```python
+# FastForwardDataLoader yields (None, None) for first N batches
+# Training loop skips None batches with continue
+for batch_idx, (imgs, input_ids) in enumerate(dataloader_wrapper):
+    if imgs is None:  # Skipped batch
+        continue  # batch_idx still increments
+    # Real training starts here
+```
+
+Note: For WebDatasets, this avoids network downloads. For local datasets with ResumableDimensionSampler, 
+both the sampler's skip logic AND the wrapper's skip logic apply sequentially.
+
 ## Troubleshooting
 
 ### "Dataset 'X' not found"
