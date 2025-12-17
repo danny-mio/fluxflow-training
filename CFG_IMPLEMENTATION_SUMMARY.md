@@ -45,12 +45,13 @@ Classifier-free guidance (CFG) implementation for FluxFlow text-to-image generat
   - Integration tests (full workflow, 2D/3D embeddings)
 
 **Test Results**:
-```text
+```
 15 passed in 7.00s ✅
 - apply_cfg_dropout: 9 tests
 - cfg_guided_prediction: 3 tests
 - Integration: 3 tests
-```text
+```
+
 ### 4. Documentation ✅
 
 **Files Created**:
@@ -83,11 +84,12 @@ training:
         train_diff: true
         cfg_dropout_prob: 0.10  # Industry standard
         use_ema: true
-```text
+```
+
 **How it works**:
 1. During training, randomly replace 10% of text embeddings with zeros
-1. Model learns both conditional p(x|text) and unconditional p(x)
-1. Single model, single training run (no two-phase training)
+2. Model learns both conditional p(x|text) and unconditional p(x)
+3. Single model, single training run (no two-phase training)
 
 ### Inference with CFG
 
@@ -97,7 +99,8 @@ fluxflow-generate \
     --text_prompts_path prompts/ \
     --use_cfg \
     --guidance_scale 5.0
-```text
+```
+
 **Guidance scale recommendations**:
 - `1.0`: Standard conditional (no guidance)
 - `3.0-5.0`: Balanced (recommended)
@@ -116,7 +119,8 @@ def apply_cfg_dropout(text_embeddings, p_uncond=0.1):
     null_emb = torch.zeros_like(text_embeddings[0:1])
     text_embeddings[dropout_mask] = null_emb
     return text_embeddings
-```text
+```
+
 ### CFG Guided Prediction
 
 ```python
@@ -126,7 +130,8 @@ def cfg_guided_prediction(model, z_t, text_emb, t, guidance_scale):
     v_uncond = model(z_t, torch.zeros_like(text_emb), t)
     v_guided = v_uncond + guidance_scale * (v_cond - v_uncond)
     return v_guided
-```text
+```
+
 ## Memory Analysis
 
 ### Training
@@ -178,12 +183,13 @@ def cfg_guided_prediction(model, z_t, text_emb, t, guidance_scale):
 
 ## Commits
 
-```text
+```
 ddf62da docs: add CFG memory validation
 fb9bfbc docs: add comprehensive CFG documentation and example config
 048cef2 feat: add CFG inference utilities and comprehensive tests
 5ebe582 feat: add classifier-free guidance (CFG) infrastructure
-```text
+```
+
 **Total changes**:
 - **7 files modified**
 - **4 files created**
@@ -209,19 +215,19 @@ fb9bfbc docs: add comprehensive CFG documentation and example config
 1. **Classifier-Free Diffusion Guidance** (Ho & Salimans, 2022)  
    https://arxiv.org/abs/2207.12598
 
-1. **High-Resolution Image Synthesis with Latent Diffusion Models** (Rombach et al., 2022)  
+2. **High-Resolution Image Synthesis with Latent Diffusion Models** (Rombach et al., 2022)  
    https://arxiv.org/abs/2112.10752  
    (Stable Diffusion)
 
-1. **Hierarchical Text-Conditional Image Generation with CLIP Latents** (Ramesh et al., 2022)  
+3. **Hierarchical Text-Conditional Image Generation with CLIP Latents** (Ramesh et al., 2022)  
    https://arxiv.org/abs/2204.06125  
    (DALL-E 2)
 
-1. **Photorealistic Text-to-Image Diffusion Models** (Saharia et al., 2022)  
+4. **Photorealistic Text-to-Image Diffusion Models** (Saharia et al., 2022)  
    https://arxiv.org/abs/2205.11487  
    (Imagen)
 
-1. **Flux.1 Technical Report** (Black Forest Labs, 2024)  
+5. **Flux.1 Technical Report** (Black Forest Labs, 2024)  
    https://blackforestlabs.ai/flux-1-tools/
 
 ### Key Implementation Details

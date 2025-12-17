@@ -39,35 +39,42 @@ If you hit **47GB+ on 48GB GPU** (or equivalent):
 **1. Reduce Batch Size** (most effective):
 ```yaml
 batch_size: 2  # or 1
-```text
+```
+
 **2. Disable LPIPS** (saves ~6-8GB):
 ```yaml
 use_lpips: false
-```text
+```
+
 **3. Reduce Image Size** (saves ~10-15GB):
 ```yaml
 img_size: 512  # instead of 1024
-```text
+```
+
 **4. Use GAN-Only Mode** (saves ~8-12GB by skipping reconstruction):
 ```yaml
 train_vae: false
 gan_training: true
 train_spade: true
-```text
+```
+
 **5. Disable SPADE** (saves ~3-5GB):
 ```yaml
 train_spade: false
-```text
+```
+
 **6. Reduce Dimensions** (saves ~5-10GB):
 ```yaml
 vae_dim: 64              # instead of 128
 feature_maps_dim: 64
 feature_maps_dim_disc: 8
-```text
+```
+
 **7. Use FP16** (saves ~20-30% if GPU supports Tensor Cores):
 ```yaml
 use_fp16: true  # RTX 3090/4090 recommended
-```text
+```
+
 ### Recent Optimizations (v0.2.1)
 
 FluxFlow v0.2.1 includes critical memory optimizations:
@@ -144,7 +151,8 @@ training:
 
 output:
   output_path: "outputs/vae"
-```text
+```
+
 **Run:** `fluxflow-train --config config.yaml`
 
 ---
@@ -165,7 +173,8 @@ fluxflow-train \
   --n_epochs 50 \
   --batch_size 2 \
   --lr 1e-5
-```text
+```
+
 **Limitations:**
 - ❌ No multi-step pipelines
 - ❌ No per-step optimizer customization
@@ -212,7 +221,8 @@ For quick experiments and learning, use CLI arguments:
 # Example captions.txt:
 # image1.jpg	a photo of a cat sitting on a couch
 # image2.png	an illustration of mountains at sunset
-```text
+```
+
 **Step 2: Run Quick VAE Training**
 ```bash
 fluxflow-train \
@@ -224,7 +234,8 @@ fluxflow-train \
   --batch_size 2 \
   --lr 1e-5 \
   --vae_dim 64  # Reduced for speed
-```text
+```
+
 **⚠️ When you're ready for serious training, switch to Path B (YAML Config).**
 
 ---
@@ -280,11 +291,13 @@ training:
 
 output:
   output_path: "outputs/production"
-```text
+```
+
 **Step 3: Run Training**
 ```bash
 fluxflow-train --config config.yaml
-```text
+```
+
 **✅ Benefits:**
 - Reproducible configs (version control friendly)
 - Multi-step pipeline support
@@ -332,7 +345,8 @@ fluxflow-train --config config.yaml
 
 # Legacy (still works but deprecated):
 # --use_tt2m --tt2m_token hf_your_actual_token
-```text
+```
+
 **Fixed Prompt Prefix** (added to captions at training time):
 
 The `--fixed_prompt_prefix` parameter allows you to prepend consistent text to all prompts during training. This is useful for:
@@ -368,7 +382,8 @@ If not set, prompts are used exactly as provided in the dataset.
 
 # Custom dimensions for limited VRAM
 --vae_dim 32 --feature_maps_dim 32 --feature_maps_dim_disc 32
-```text
+```
+
 #### Training Parameters
 
 | Parameter | Type | Default | Description |
@@ -443,7 +458,8 @@ FluxFlow supports advanced per-model optimizer and scheduler configuration via J
     }
   }
 }
-```text
+```
+
 **Supported Optimizers:**
 - **Lion**: Memory-efficient optimizer, great for flow models
 - **AdamW**: Adam with decoupled weight decay, excellent for VAE and discriminator
@@ -488,7 +504,8 @@ scheduler_config:
     type: "CosineAnnealingLR"
     T_max: 100
     eta_min_factor: 0.1
-```text
+```
+
 ---
 
 ## Parameter Details
@@ -525,7 +542,8 @@ Using `--training_steps N` accumulates gradients over N batches:
 To resume from a checkpoint:
 ```bash
 --model_checkpoint outputs/flux/flxflow_final.safetensors --preserve_lr
-```text
+```
+
 The training script automatically saves:
 - `training_state.json`: Epoch, batch, global step
 - `lr_sav.json`: Learning rates
@@ -574,7 +592,8 @@ steps:
     train_diff: true
     # Auto-creates: flow_processor, text_encoder ✨
     # No manual initialization needed!
-```text
+```
+
 **Auto-created models:**
 - `flow_processor` - Created when `train_diff: true` or `train_diff_full: true`
 - `text_encoder` - Created for flow training
@@ -583,10 +602,11 @@ steps:
 - `D_img` (discriminator) - Created when `gan_training: true`
 
 **What you see:**
-```text
+```
 ⚠️  Auto-created flow_processor with feature_maps_dim=128
 ⚠️  Auto-created text_encoder with text_embedding_dim=512
-```text
+```
+
 This prevents crashes and makes pipeline mode more robust. See `docs/PIPELINE_ARCHITECTURE.md` for details.
 
 ### Quick Start: Pipeline Training
@@ -619,11 +639,13 @@ training:
         stop_condition:
           loss_name: "loss_recon"
           threshold: 0.01
-```text
+```
+
 **Run:**
 ```bash
 fluxflow-train --config config.yaml
-```text
+```
+
 **Example 2: Multi-Stage with Different Optimizers**
 
 ```yaml
@@ -653,7 +675,8 @@ training:
         train_diff_full: true
         freeze_vae: true  # Freeze VAE, train flow only
         optim_sched_config: "configs/lion_flow.json"
-```text
+```
+
 **Optimizer config example (lion_gan.json):**
 ```json
 {
@@ -675,7 +698,8 @@ training:
     "discriminator": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1}
   }
 }
-```text
+```
+
 ### Pipeline-Specific Parameters
 
 | Parameter | Type | Description |
@@ -785,13 +809,15 @@ training:
           - "a photo of a cat sitting on a couch"
           - "an illustration of mountains at sunset"
         optim_sched_config: "configs/lion_flow.json"
-```text
+```
+
 **Run:**
 ```bash
 fluxflow-train --config config.yaml
-```text
+```
+
 **Output structure:**
-```text
+```
 outputs/full_pipeline/
 ├── flxflow_step_vae_warmup_final.safetensors
 ├── flxflow_step_vae_spade_gan_final.safetensors
@@ -807,7 +833,8 @@ outputs/full_pipeline/
     ├── sample_vae_warmup_epoch_5_batch_100.png
     ├── sample_vae_spade_gan_epoch_20_batch_500.png
     └── sample_flow_training_epoch_50_batch_1000.png
-```text
+```
+
 ### Pipeline vs. Standard Training
 
 | Feature | Standard Training | Pipeline Training |
@@ -876,7 +903,8 @@ fluxflow-train \
   --checkpoint_save_interval 50 \
   --gan_training \
   --workers 8
-```text
+```
+
 **Monitoring:**
 - Watch `loss_recon` (reconstruction loss): Should decrease to < 0.01
 - Watch `loss_kl` (KL divergence): Should stabilize around 10-50
@@ -907,7 +935,8 @@ fluxflow-train \
     "abstract geometric shapes on a blue background" \
   --checkpoint_save_interval 100 \
   --workers 8
-```text
+```
+
 **Monitoring:**
 - Watch `loss_flow` (flow matching loss): Should decrease to < 0.1
 - Check sample images: Should match the captions
@@ -942,7 +971,8 @@ fluxflow-train \
   --checkpoint_save_interval 50 \
   --gan_training \
   --workers 8
-```text
+```
+
 **Monitoring:**
 - Watch all losses: Should remain stable or slightly improve
 - Check sample quality: Should be better than Stage 2
@@ -970,7 +1000,8 @@ fluxflow-train \
   --img_size 512 \
   --use_fp16 \
   --workers 4
-```text
+```
+
 **Key settings:**
 - Small dimensions (32)
 - Smaller image size (512)
@@ -1010,7 +1041,8 @@ fluxflow-train \
   --train_vae \
   --n_epochs 10 \
   --batch_size 2
-```text
+```
+
 **Benefits:**
 - No need to download dataset
 - Streams data on-the-fly
@@ -1041,7 +1073,8 @@ fluxflow-train \
   --feature_maps_dim 32 \
   --log_interval 5 \
   --checkpoint_save_interval 10
-```text
+```
+
 ### Example 2: High-Quality VAE Training
 
 ```bash
@@ -1065,7 +1098,8 @@ fluxflow-train \
   --workers 16 \
   --checkpoint_save_interval 100 \
   --gan_training
-```text
+```
+
 ### Example 3: Flow Training with Custom Samples
 
 ```bash
@@ -1088,7 +1122,8 @@ fluxflow-train \
   --checkpoint_save_interval 200 \
   --use_fp16 \
   --workers 12
-```text
+```
+
 ### Example 4: Using Config File
 
 Create a config file `config.local.sh`:
@@ -1129,7 +1164,8 @@ fluxflow-train \
   --feature_maps_dim_disc $FEAT_DIM_DISC \
   --workers $WORKERS \
   --use_fp16
-```text
+```
+
 Run with: `bash config.local.sh`
 
 ## Monitoring Training Progress
@@ -1141,11 +1177,13 @@ Training metrics are automatically logged to `OUTPUT_FOLDER/graph/training_metri
 **Automatic diagram generation** (on each checkpoint save):
 ```bash
 python train.py --generate_diagrams ...
-```text
+```
+
 **Manual diagram generation**:
 ```bash
 python src/fluxflow_training/scripts/generate_training_graphs.py outputs/
-```text
+```
+
 Generated diagrams in `outputs/graph/`:
 - `training_losses.png` - VAE, Flow, Discriminator, Generator, LPIPS losses
 - `kl_loss.png` - KL divergence with beta warmup schedule
@@ -1160,11 +1198,11 @@ Generated diagrams in `outputs/graph/`:
 
 **Solutions:**
 1. Reduce batch size: `--batch_size 1`
-1. Reduce dimensions: `--vae_dim 32 --feature_maps_dim 32`
-1. Reduce image size: `--img_size 512`
-1. Enable FP16: `--use_fp16`
-1. Reduce workers: `--workers 1`
-1. Use gradient accumulation: `--batch_size 1 --training_steps 4`
+2. Reduce dimensions: `--vae_dim 32 --feature_maps_dim 32`
+3. Reduce image size: `--img_size 512`
+4. Enable FP16: `--use_fp16`
+5. Reduce workers: `--workers 1`
+6. Use gradient accumulation: `--batch_size 1 --training_steps 4`
 
 ### NaN Losses
 
@@ -1177,41 +1215,42 @@ Generated diagrams in `outputs/graph/`:
 **Example fix:**
 ```bash
 --lr 1e-6 --lambda_adv 0.3 --initial_clipping_norm 0.5 --kl_beta 0.0001
-```text
+```
+
 ### Mode Collapse (GAN)
 
 **Symptoms**: Generated images all look similar
 
 **Solutions:**
 1. Increase discriminator capacity: `--feature_maps_dim_disc 16`
-1. Reduce GAN weight: `--lambda_adv 0.3`
-1. Train without GAN first (omit `--gan_training`)
+2. Reduce GAN weight: `--lambda_adv 0.3`
+3. Train without GAN first (omit `--gan_training`)
 
 ### Poor Image Quality
 
 **Solutions:**
 1. Train VAE longer: `--n_epochs 100`
-1. Increase dimensions: `--vae_dim 256`
-1. Increase GAN weight: `--lambda_adv 0.9`
-1. Reduce KL beta: `--kl_beta 0.0001`
-1. Check sample images during training
+2. Increase dimensions: `--vae_dim 256`
+3. Increase GAN weight: `--lambda_adv 0.9`
+4. Reduce KL beta: `--kl_beta 0.0001`
+5. Check sample images during training
 
 ### Slow Training Speed
 
 **Solutions:**
 1. Enable FP16: `--use_fp16`
-1. Increase workers: `--workers 16`
-1. Increase batch size: `--batch_size 4`
-1. Reduce sample frequency: `--checkpoint_save_interval 200` or `--samples_per_checkpoint 5`
-1. Use TTI-2M streaming: `--use_tt2m`
+2. Increase workers: `--workers 16`
+3. Increase batch size: `--batch_size 4`
+4. Reduce sample frequency: `--checkpoint_save_interval 200` or `--samples_per_checkpoint 5`
+5. Use TTI-2M streaming: `--use_tt2m`
 
 ### Text Conditioning Not Working
 
 **Solutions:**
 1. Check captions file format (tab-separated)
-1. Verify tokenizer: `--tokenizer_name "distilbert-base-uncased"`
-1. Train flow model longer: `--n_epochs 200`
-1. Increase text embedding: `--text_embedding_dim 1024`
+2. Verify tokenizer: `--tokenizer_name "distilbert-base-uncased"`
+3. Train flow model longer: `--n_epochs 200`
+4. Increase text embedding: `--text_embedding_dim 1024`
 
 ## Performance Benchmarks
 
@@ -1261,10 +1300,10 @@ Generation: ~2-5 seconds per image (512x512, 50 steps)
 This guide covers all aspects of training FluxFlow models. Key takeaways:
 
 1. **Start with VAE training** (Stage 1) for 50-100 epochs
-1. **Then train the flow model** (Stage 2) for 100-200 epochs
-1. **Optionally fine-tune jointly** (Stage 3) for 20-50 epochs
-1. **Monitor losses and sample images** throughout training
-1. **Adjust hyperparameters** based on your GPU and dataset
-1. **Use the UI** for easier configuration and live monitoring
+2. **Then train the flow model** (Stage 2) for 100-200 epochs
+3. **Optionally fine-tune jointly** (Stage 3) for 20-50 epochs
+4. **Monitor losses and sample images** throughout training
+5. **Adjust hyperparameters** based on your GPU and dataset
+6. **Use the UI** for easier configuration and live monitoring
 
 For questions, refer to the troubleshooting section or check the existing documentation.

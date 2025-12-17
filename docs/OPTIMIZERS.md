@@ -20,7 +20,8 @@ optimizer_config:
     lr: 5e-7
     betas: [0.9, 0.95]
     weight_decay: 0.01
-```text
+```
+
 ### Optimizer Parameters Reference
 
 #### Lion Optimizer
@@ -44,7 +45,8 @@ Memory-efficient optimizer that uses sign-based updates. Recommended for flow mo
   "weight_decay": 0.01,
   "decoupled_weight_decay": true
 }
-```text
+```
+
 **Best for:** Flow models, memory-constrained training
 **Notes:** Uses less memory than Adam, often converges faster
 
@@ -71,7 +73,8 @@ Adam optimizer with decoupled weight decay. Excellent all-around optimizer.
   "eps": 1e-8,
   "amsgrad": false
 }
-```text
+```
+
 **Example with AMSGrad (for discriminator):**
 ```json
 {
@@ -81,7 +84,8 @@ Adam optimizer with decoupled weight decay. Excellent all-around optimizer.
   "weight_decay": 0.001,
   "amsgrad": true
 }
-```text
+```
+
 **Best for:** VAE, text encoder, discriminator
 **Notes:** More stable than Adam, handles weight decay correctly
 
@@ -106,7 +110,8 @@ Standard Adam optimizer. Good baseline choice.
   "weight_decay": 0.0,
   "eps": 1e-8
 }
-```text
+```
+
 **Best for:** General purpose, quick experimentation
 **Notes:** Prefer AdamW for better weight decay handling
 
@@ -132,7 +137,8 @@ Stochastic gradient descent with momentum and Nesterov acceleration.
   "weight_decay": 1e-4,
   "nesterov": true
 }
-```text
+```
+
 **Example (simple SGD without momentum):**
 ```json
 {
@@ -141,7 +147,8 @@ Stochastic gradient descent with momentum and Nesterov acceleration.
   "momentum": 0.0,
   "weight_decay": 0.0
 }
-```text
+```
+
 **Best for:** Fine-tuning, transfer learning, some discriminator training
 **Notes:** Requires careful learning rate tuning, benefits from momentum
 
@@ -170,7 +177,8 @@ Root mean square propagation optimizer. Adapts learning rates per parameter.
   "momentum": 0.0,
   "centered": false
 }
-```text
+```
+
 **Example with momentum:**
 ```json
 {
@@ -180,7 +188,8 @@ Root mean square propagation optimizer. Adapts learning rates per parameter.
   "momentum": 0.9,
   "centered": true
 }
-```text
+```
+
 **Best for:** RNNs, non-stationary objectives
 **Notes:** Less commonly used for image generation, try Adam/Lion first
 

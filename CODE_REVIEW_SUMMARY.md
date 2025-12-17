@@ -112,12 +112,13 @@ Comprehensive review and cleanup of FluxFlow Training codebase following the sta
 
 ## All Commits Pushed to `develop`
 
-```text
+```
 8004f6f refactor: Clean up text-image alignment loss logic in FlowTrainer
 1b96989 docs: Update CHANGELOG with post-release fixes and clarifications
 2addace docs: Update TRAINING.md with accurate metrics and alignment loss status
 9d2efa7 fix: Update train_refactored.py to handle FlowTrainer dict return
-```text
+```
+
 ---
 
 ## Known Limitations (Documented)
@@ -128,7 +129,7 @@ Comprehensive review and cleanup of FluxFlow Training codebase following the sta
    - Solution: Add projection layer + set `lambda_align > 0`
    - Documented in: CHANGELOG.md, TRAINING_GUIDE.md
 
-1. **Type checker warnings (pre-existing)**
+2. **Type checker warnings (pre-existing)**
    - Import warnings from `diffusers.DPMSolverMultistepScheduler`
    - Optional type mismatches in accelerator/optimizer
    - Do not affect runtime, only static analysis

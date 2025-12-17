@@ -20,7 +20,8 @@ pip install -e ".[dev]"
 
 # Install pre-commit hooks (automatic code quality checks)
 pre-commit install
-```text
+```
+
 ### 2. Development Workflow
 
 #### Before Making Changes
@@ -28,7 +29,8 @@ pre-commit install
 ```bash
 # Create a new branch
 git checkout -b feature/your-feature-name
-```text
+```
+
 #### During Development
 
 ```bash
@@ -43,7 +45,8 @@ mypy src/
 
 # Run tests
 make test
-```text
+```
+
 #### Before Committing
 
 Pre-commit hooks will automatically run when you commit. To run them manually:
@@ -51,7 +54,8 @@ Pre-commit hooks will automatically run when you commit. To run them manually:
 ```bash
 # Run all pre-commit checks
 pre-commit run --all-files
-```text
+```
+
 ### 3. Code Quality Standards
 
 FluxFlow uses several tools to maintain code quality:
@@ -70,7 +74,8 @@ make lint                      # Check linting
 mypy src/                      # Check types
 make test                      # Run tests
 pre-commit run --all-files     # Run all checks
-```text
+```
+
 ## Code Style Guidelines
 
 ### Python Code
@@ -110,7 +115,8 @@ def process_data(input_path: str, output_path: Optional[str] = None) -> dict[str
     logger.info(f"Processing data from {input_path}")
     # Implementation here
     return {"processed": 42}
-```text
+```
+
 ### Configuration Files
 
 - Use YAML for configuration (not shell scripts for new configs)
@@ -134,7 +140,8 @@ All new code should include tests:
 # Create test file in appropriate directory
 tests/unit/test_your_feature.py
 tests/integration/test_your_workflow.py
-```text
+```
+
 ### Test Structure
 
 ```python
@@ -157,7 +164,8 @@ class TestYourClass:
         """Test error handling."""
         with pytest.raises(ValueError):
             obj = YourClass(invalid_param="bad")
-```text
+```
+
 ### Running Tests
 
 ```bash
@@ -175,7 +183,8 @@ pytest tests/unit/test_your_feature.py -v
 
 # Specific test function
 pytest tests/unit/test_your_feature.py::test_function_name -v
-```text
+```
+
 ### Testing Pipeline Mode
 
 **Pipeline mode requires special testing** since it involves multi-step orchestration:
@@ -206,11 +215,13 @@ training:
         max_steps: 5
         train_vae: true
         gan_training: true
-```text
+```
+
 **Run:**
 ```bash
 fluxflow-train --config tests/test_pipeline.yaml
-```text
+```
+
 **Expected:** Training completes in ~30 seconds, creates step-specific checkpoints.
 
 #### Testing Checklist for Pipeline Changes
@@ -247,7 +258,8 @@ test -f tests/output/pipeline_test/graph/training_metrics_step1.jsonl || exit 1
 test -f tests/output/pipeline_test/graph/training_metrics_step2.jsonl || exit 1
 
 echo "✅ Pipeline smoke test passed"
-```text
+```
+
 #### Testing GAN-Only Mode
 
 When testing `train_reconstruction` parameter:
@@ -264,7 +276,8 @@ training:
         gan_training: true
         train_spade: true
         train_reconstruction: false  # GAN-only mode
-```text
+```
+
 **Verify:**
 - No reconstruction loss logged (`loss_recon` should be absent)
 - GAN losses present (`loss_gen`, `loss_disc`)
@@ -315,10 +328,11 @@ def test_two_step_pipeline(tmp_path):
     assert (tmp_path / "flxflow_step_step2_final.safetensors").exists()
     assert (tmp_path / "graph" / "training_metrics_step1.jsonl").exists()
     assert (tmp_path / "graph" / "training_metrics_step2.jsonl").exists()
-```text
+```
+
 ## Project Structure
 
-```text
+```
 fluxflow-training/
 ├── src/fluxflow_training/     # Main package source
 │   ├── scripts/               # CLI entry points (train, generate)
@@ -330,7 +344,8 @@ fluxflow-training/
 ├── pyproject.toml             # Package configuration
 ├── Makefile                   # Development targets
 └── config.example.yaml        # Configuration template
-```text
+```
+
 Install with pip:
 - `pip install -e ".[dev]"` - Development installation with dev dependencies
 - Note: Not yet published to PyPI
@@ -338,9 +353,9 @@ Install with pip:
 ## Pull Request Process
 
 1. **Create a branch** from `develop`
-1. **Make your changes** with tests and documentation
-1. **Run all checks**: `pre-commit run --all-files && make test`
-1. **Commit with clear messages**:
+2. **Make your changes** with tests and documentation
+3. **Run all checks**: `pre-commit run --all-files && make test`
+4. **Commit with clear messages**:
    ```bash
    git commit -m "Add feature: brief description
 
@@ -349,37 +364,37 @@ Install with pip:
    - Specific change 1
    - Specific change 2"
    ```
-1. **Push and create PR** on GitHub
-1. **Address review feedback** if any
+5. **Push and create PR** on GitHub
+6. **Address review feedback** if any
 
 ## Common Tasks
 
 ### Adding a New Feature
 
 1. Create feature branch: `git checkout -b feature/name`
-1. Add implementation in appropriate module
-1. Add type hints and docstrings
-1. Add tests for the feature
-1. Update documentation if user-facing
-1. Run `pre-commit run --all-files && make test` to verify quality
-1. Commit and create PR
+2. Add implementation in appropriate module
+3. Add type hints and docstrings
+4. Add tests for the feature
+5. Update documentation if user-facing
+6. Run `pre-commit run --all-files && make test` to verify quality
+7. Commit and create PR
 
 ### Fixing a Bug
 
 1. Create bugfix branch: `git checkout -b fix/issue-description`
-1. Add a test that reproduces the bug
-1. Fix the bug
-1. Verify the test passes
-1. Run `pre-commit run --all-files && make test`
-1. Commit and create PR
+2. Add a test that reproduces the bug
+3. Fix the bug
+4. Verify the test passes
+5. Run `pre-commit run --all-files && make test`
+6. Commit and create PR
 
 ### Adding Dependencies
 
 1. Add to appropriate section in `pyproject.toml`:
    - Core dependencies → `dependencies`
    - Dev dependencies → `optional-dependencies.dev`
-1. Update requirements.txt if needed for backward compatibility
-1. Document why the dependency is needed in your PR
+2. Update requirements.txt if needed for backward compatibility
+3. Document why the dependency is needed in your PR
 
 ## Requesting Contributor Access
 
@@ -388,8 +403,8 @@ Install with pip:
 Anyone can contribute via pull requests! Just:
 
 1. Fork the repository
-1. Make changes in your fork
-1. Submit a pull request to the `develop` branch
+2. Make changes in your fork
+3. Submit a pull request to the `develop` branch
 
 No special permissions needed!
 
@@ -398,9 +413,9 @@ No special permissions needed!
 If you want to contribute regularly:
 
 1. **Start by contributing** - Submit 1-3 quality PRs first
-1. **Open a discussion** at https://github.com/danny-mio/fluxflow-training/discussions
-1. **Use title**: `Request: Contributor Access for [Your Name]`
-1. **Include**: GitHub username, merged PRs, contribution areas, availability, experience
+2. **Open a discussion** at https://github.com/danny-mio/fluxflow-training/discussions
+3. **Use title**: `Request: Contributor Access for [Your Name]`
+4. **Include**: GitHub username, merged PRs, contribution areas, availability, experience
 
 Repository owner reviews requests within 7 days.
 
@@ -454,22 +469,24 @@ fluxflow-train --config test_config.yaml
 
 kill $NVIDIA_PID
 echo "Peak VRAM: $(sort -n memory_log.txt | tail -1) MB"
-```text
+```
+
 ### Reporting Memory Issues
 
 When reporting OOM or memory issues, include:
 1. GPU model and VRAM size
-1. Full config file
-1. Exact command run
-1. Peak VRAM usage (from `nvidia-smi`)
-1. FluxFlow version (`pip show fluxflow-training`)
-1. CUDA version (`nvcc --version` or `nvidia-smi`)
+2. Full config file
+3. Exact command run
+4. Peak VRAM usage (from `nvidia-smi`)
+5. FluxFlow version (`pip show fluxflow-training`)
+6. CUDA version (`nvcc --version` or `nvidia-smi`)
 
 Example:
-```text
+```
 GPU: NVIDIA A6000 (48GB)
 Peak VRAM: 47.4GB (triggered OOM)
 Config: batch_size=4, vae_dim=128, gan_training=true, use_lpips=true, train_spade=true
 Version: fluxflow-training 0.2.1
 CUDA: 12.1
-```text
+```
+

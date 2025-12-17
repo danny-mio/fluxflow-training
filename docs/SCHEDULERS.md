@@ -19,7 +19,8 @@ scheduler_config:
     start_factor: 1.0
     end_factor: 0.1
     total_iters: 1000
-```text
+```
+
 ### Scheduler Parameters Reference
 
 #### CosineAnnealingLR Scheduler
@@ -43,7 +44,7 @@ Cosine annealing learning rate schedule. Smoothly decreases LR following cosine 
   "type": "CosineAnnealingLR",
   "eta_min_factor": 0.1
 }
-```text
+```
 *LR decays from initial to 10% of initial (e.g., 1e-5 → 1e-6)*
 
 **Example (aggressive decay):**
@@ -52,7 +53,7 @@ Cosine annealing learning rate schedule. Smoothly decreases LR following cosine 
   "type": "CosineAnnealingLR",
   "eta_min_factor": 0.001
 }
-```text
+```
 *LR decays from initial to 0.1% of initial (e.g., 1e-5 → 1e-8)*
 
 **Example (minimal decay):**
@@ -61,7 +62,7 @@ Cosine annealing learning rate schedule. Smoothly decreases LR following cosine 
   "type": "CosineAnnealingLR",
   "eta_min_factor": 0.5
 }
-```text
+```
 *LR decays from initial to 50% of initial (e.g., 1e-5 → 5e-6)*
 
 **Best for:** Most training scenarios (default, recommended)
@@ -91,7 +92,7 @@ Linear learning rate decay from start_factor to end_factor.
   "end_factor": 1.0,
   "total_iters": 5000
 }
-```text
+```
 *LR increases from 10% to 100% over 5000 steps (warmup)*
 
 **Example (linear decay):**
@@ -102,7 +103,7 @@ Linear learning rate decay from start_factor to end_factor.
   "end_factor": 0.0,
   "total_iters": 50000
 }
-```text
+```
 *LR decreases from 100% to 0% over 50000 steps*
 
 **Example (partial decay):**
@@ -112,7 +113,7 @@ Linear learning rate decay from start_factor to end_factor.
   "start_factor": 1.0,
   "end_factor": 0.25
 }
-```text
+```
 *LR decreases from 100% to 25% over entire training*
 
 **Best for:** Warmup schedules, simple linear decay
@@ -138,7 +139,7 @@ Exponential learning rate decay. LR multiplied by gamma each step.
   "type": "ExponentialLR",
   "gamma": 0.9999
 }
-```text
+```
 *Very gradual decay, LR halves after ~7000 steps*
 
 **Example (medium decay):**
@@ -147,7 +148,7 @@ Exponential learning rate decay. LR multiplied by gamma each step.
   "type": "ExponentialLR",
   "gamma": 0.999
 }
-```text
+```
 *Moderate decay, LR halves after ~700 steps*
 
 **Example (fast decay):**
@@ -156,7 +157,7 @@ Exponential learning rate decay. LR multiplied by gamma each step.
   "type": "ExponentialLR",
   "gamma": 0.95
 }
-```text
+```
 *Aggressive decay, LR halves after ~14 steps*
 
 **Best for:** Fine-tuning, when you want faster initial decay
@@ -183,7 +184,7 @@ Constant learning rate with optional initial scaling.
   "type": "ConstantLR",
   "factor": 1.0
 }
-```text
+```
 *LR stays constant at initial value*
 
 **Example (reduced constant LR):**
@@ -193,7 +194,7 @@ Constant learning rate with optional initial scaling.
   "factor": 0.1,
   "total_iters": 10000
 }
-```text
+```
 *LR is 10% of initial for first 10k steps, then jumps to 100%*
 
 **Example (warmup):**
@@ -203,7 +204,7 @@ Constant learning rate with optional initial scaling.
   "factor": 0.01,
   "total_iters": 1000
 }
-```text
+```
 *LR is 1% of initial for first 1k steps (warmup), then jumps to 100%*
 
 **Best for:** No LR scheduling, warmup periods
@@ -231,7 +232,7 @@ Step-wise learning rate decay. Multiply LR by gamma every step_size steps.
   "step_size": 10000,
   "gamma": 0.5
 }
-```text
+```
 *Halve LR every 10,000 steps*
 
 **Example (aggressive stepping):**
@@ -241,7 +242,7 @@ Step-wise learning rate decay. Multiply LR by gamma every step_size steps.
   "step_size": 5000,
   "gamma": 0.1
 }
-```text
+```
 *Reduce LR to 10% every 5,000 steps*
 
 **Example (gentle stepping):**
@@ -251,7 +252,7 @@ Step-wise learning rate decay. Multiply LR by gamma every step_size steps.
   "step_size": 20000,
   "gamma": 0.8
 }
-```text
+```
 *Reduce LR to 80% every 20,000 steps*
 
 **Best for:** Training with known plateaus, milestone-based decay
@@ -283,7 +284,7 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
   "patience": 10,
   "threshold": 1e-4
 }
-```text
+```
 *Halve LR if loss doesn't improve by 0.0001 for 10 steps*
 
 **Example (reduce on metric plateau):**
@@ -295,7 +296,7 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
   "patience": 5,
   "threshold": 0.001
 }
-```text
+```
 *Reduce LR to 10% if metric doesn't improve by 0.001 for 5 steps*
 
 **Example (patient reduction):**
@@ -307,7 +308,7 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
   "patience": 20,
   "threshold": 1e-5
 }
-```text
+```
 *Reduce LR to 75% if no improvement for 20 steps*
 
 **Best for:** Validation metric-based training, uncertain convergence
@@ -347,7 +348,8 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
     }
   }
 }
-```text
+```
+
 **Example 2: Flow Training (Memory Efficient)**
 ```json
 {
@@ -377,7 +379,8 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
     }
   }
 }
-```text
+```
+
 **Example 3: Joint Training (Advanced)**
 ```json
 {
@@ -428,7 +431,8 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
     }
   }
 }
-```text
+```
+
 **Example 4: Experimental (SGD with Step Decay)**
 ```json
 {
@@ -449,7 +453,8 @@ Reduce learning rate when a metric plateaus. Requires metric monitoring.
     }
   }
 }
-```text
+```
+
 ---
 
 **Basic Usage:**
@@ -475,7 +480,8 @@ fluxflow-train \
   --captions_file /path/to/captions.txt \
   --train_vae \
   --n_epochs 50
-```text
+```
+
 **Example:**
 ```bash
 # VAE training with higher learning rate
@@ -486,7 +492,8 @@ fluxflow-train \
 
 # Resume with preserved learning rate
 --model_checkpoint checkpoint.safetensors --preserve_lr
-```text
+```
+
 #### Training Modes
 
 | Parameter | Type | Default | Description |
@@ -516,7 +523,8 @@ fluxflow-train \
 
 # Advanced: Joint training
 --train_vae --train_diff_full --train_spade
-```text
+```
+
 #### KL Divergence
 
 | Parameter | Type | Default | Description |
@@ -541,7 +549,8 @@ fluxflow-train \
 
 # Strong regularization for smooth latents
 --kl_beta 1.0 --kl_warmup_steps 20000
-```text
+```
+
 #### Output & Logging
 
 | Parameter | Type | Default | Description |
@@ -567,7 +576,8 @@ fluxflow-train \
 
 # Disable samples to speed up training
 --no_samples
-```text
+```
+
 ##### Sample Generation Behavior
 
 **When samples are generated:**
@@ -579,9 +589,10 @@ fluxflow-train \
   - `train_diff=True` or `train_diff_full=True`
 
 **Sample frequency calculation:**
-```text
+```
 Samples generated every: checkpoint_save_interval × samples_per_checkpoint batches
-```text
+```
+
 **Example:**
 - `checkpoint_save_interval=100` (checkpoint every 100 batches)
 - `samples_per_checkpoint=50` (sample every 50 checkpoints)
@@ -615,4 +626,5 @@ Samples generated every: checkpoint_save_interval × samples_per_checkpoint batc
 
 # Adjust GAN loss weight
 --lambda_adv 0.9
-```text
+```
+

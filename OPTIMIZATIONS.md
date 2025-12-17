@@ -35,7 +35,8 @@ grad_real = torch.autograd.grad(
     # retain_graph removed ✅
     only_inputs=True,
 )[0]
-```text
+```
+
 **Impact**: **Eliminates unbounded memory growth in GAN training**
 
 ---
@@ -52,7 +53,8 @@ grad_real = torch.autograd.grad(
 # After checkpoint saving
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
-```text
+```
+
 **Impact**: **Reduces memory fragmentation, prevents gradual memory creep**
 
 ---
@@ -79,7 +81,8 @@ for _ in trn_steps:
         # ... training ...
 
 global_step += 1  # ✅ Correct location
-```text
+```
+
 **Impact**: **Correct KL warmup schedule, proper training dynamics**
 
 ---
@@ -106,7 +109,8 @@ if torch.cuda.is_available() and out_imgs_rec.is_cuda:
 else:
     # Standard computation for MPS/CPU
     perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
-```text
+```
+
 **Impact**: **~500MB memory savings per batch on CUDA**, slight speed trade-off (negligible)
 
 ---
@@ -128,7 +132,8 @@ dataloader_kwargs = {
     "prefetch_factor": 2 if args.workers > 0 else None,  # ✅ NEW
     # ... other params ...
 }
-```text
+```
+
 **Impact**: **10-15% speedup** by keeping GPU fed with data
 
 ---
@@ -152,7 +157,8 @@ if torch.cuda.is_available():
         max_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         if mem_allocated_gb > max_memory_gb * 0.85:
             print(f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB")
-```text
+```
+
 **Impact**: **Real-time memory tracking**, early OOM warnings
 
 ---
@@ -206,14 +212,16 @@ All optimizations tested and compatible with:
 
 ### Training Logs
 **Before**:
-```text
+```
 [00:15:23] Epoch 5/100 | Batch 127/500 | 3.2s/batch | ETA: 02:15:30
-```text
+```
+
 **After**:
-```text
+```
 [00:15:23] Epoch 5/100 | Batch 127/500 | 2.8s/batch | GPU: 14.2GB | ETA: 01:58:45
 ⚠️  High memory usage: 18.7/22.0GB (85%+ used)  # If approaching limit
-```text
+```
+
 ---
 
 ## Migration Guide
@@ -225,14 +233,14 @@ All optimizations tested and compatible with:
    git pull
    ```
 
-1. **No config changes required** - all optimizations are automatic
+2. **No config changes required** - all optimizations are automatic
 
-1. **Monitor memory** in logs:
+3. **Monitor memory** in logs:
    - Look for "GPU: X.XGB" in output
    - Watch for high memory warnings
    - Memory should stabilize after ~500 batches
 
-1. **If you hit OOM**:
+4. **If you hit OOM**:
    - Check logs for memory usage trend
    - If growing: Report as bug (shouldn't happen)
    - If stable but too high: Reduce batch size or model dimensions
@@ -284,16 +292,16 @@ These were considered but deferred:
    - Requires extensive testing
    - May break on some model architectures
 
-1. **channels_last memory format** - Faster convolutions
+2. **channels_last memory format** - Faster convolutions
    - 5-10% speedup potential
    - Requires model-wide changes
    - Risk of bugs
 
-1. **Mixed precision training** - Already available via `--use_fp16`
+3. **Mixed precision training** - Already available via `--use_fp16`
    - No changes needed
    - Works well with accelerate
 
-1. **Gradient accumulation optimization** - Already works
+4. **Gradient accumulation optimization** - Already works
    - `training_steps` parameter handles this
    - No changes needed
 
@@ -313,5 +321,5 @@ Optimizations implemented based on:
 
 If you encounter issues:
 1. Run `python test_device_compatibility.py` to verify setup
-1. Check logs for memory warnings
-1. Report issues with full logs and device info
+2. Check logs for memory warnings
+3. Report issues with full logs and device info

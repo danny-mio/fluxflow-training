@@ -29,12 +29,14 @@ training:
         n_epochs: 20
         train_vae: true
         gan_training: true
-```text
+```
+
 ### Run Pipeline Training
 
 ```bash
 fluxflow-train --config config.yaml
-```text
+```
+
 Pipeline mode is automatically detected when `training.pipeline.steps` is present in config.
 
 ---
@@ -69,7 +71,8 @@ training:
       - name: "step2"
         n_epochs: 5
         # ... step config
-```text
+```
+
 ### Step Configuration
 
 #### Required Fields
@@ -97,7 +100,8 @@ training:
 train_vae: false          # Don't compute reconstruction loss  
 gan_training: true        # Train GAN discriminator
 train_spade: true         # Optional: SPADE conditioning
-```text
+```
+
 **Memory savings**: Skipping reconstruction loss saves ~8-12GB VRAM.
 
 **Reconstruction Training** (VAE only, no GAN):
@@ -105,7 +109,8 @@ train_spade: true         # Optional: SPADE conditioning
 train_vae: true
 gan_training: false
 use_lpips: true           # Optional: perceptual loss (adds ~6-8GB VRAM)
-```text
+```
+
 #### Model Freezing
 
 ```yaml
@@ -118,7 +123,8 @@ freeze:
 
 unfreeze:  # Explicit unfreeze (overrides freeze)
   - compressor
-```text
+```
+
 #### Loss Weights
 
 ```yaml
@@ -127,7 +133,8 @@ kl_warmup_steps: 5000     # Steps to reach full kl_beta
 kl_free_bits: 0.0         # Free bits threshold (nats)
 lambda_adv: 0.5           # GAN adversarial loss weight
 lambda_lpips: 0.1         # LPIPS perceptual loss weight
-```text
+```
+
 #### Optimization (Per-Step)
 
 ```yaml
@@ -157,7 +164,8 @@ optimization:
       type: "StepLR"
       step_size: 10
       gamma: 0.5
-```text
+```
+
 **Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`  
 **Supported Schedulers**: `CosineAnnealingLR`, `StepLR`, `ExponentialLR`, `ReduceLROnPlateau`
 
@@ -170,7 +178,8 @@ Control when to move to the next step:
 transition_on:
   mode: "epoch"
   # Automatically transitions after n_epochs completes
-```text
+```
+
 **Loss threshold**:
 ```yaml
 transition_on:
@@ -178,14 +187,16 @@ transition_on:
   metric: "vae_loss"       # Metric to monitor
   threshold: 0.05          # Transition when metric < threshold
   max_epochs: 50           # Safety limit (prevent infinite training)
-```text
+```
+
 **Supported metrics**: `vae_loss`, `kl_loss`, `flow_loss`, `g_loss`, `d_loss`
 
 #### Testing/Debugging
 
 ```yaml
 max_steps: 30             # Limit batches per epoch (for quick testing)
-```text
+```
+
 ---
 
 ## Architecture Components
@@ -242,15 +253,16 @@ Pipeline checkpoints include step-local state:
     }
   }
 }
-```text
+```
+
 ### Resume Behavior
 
 When resuming from a pipeline checkpoint:
 1. Loads step index, epoch, and batch from metadata
-1. Skips completed steps
-1. Resumes from mid-step if training was interrupted
-1. Recreates optimizers/schedulers for current step
-1. Applies correct freeze/unfreeze configuration
+2. Skips completed steps
+3. Resumes from mid-step if training was interrupted
+4. Recreates optimizers/schedulers for current step
+5. Applies correct freeze/unfreeze configuration
 
 **Example**:
 ```bash
@@ -261,7 +273,8 @@ fluxflow-train --config config.yaml
 # Resuming from checkpoint: step=2 (vae_gan), epoch=5, batch=127
 # Skipping steps: vae_warmup, vae_spade_off
 # Starting step: vae_gan, epoch 5, batch 127
-```text
+```
+
 ---
 
 ## Sample Naming Convention
@@ -271,21 +284,24 @@ Pipeline mode uses structured naming for samples:
 ### Format
 
 **Mid-epoch samples** (generated every `checkpoint_save_interval` batches):
-```text
+```
 {stepname}_{step:03d}_{epoch:03d}_{batch:05d}_{hash}-{suffix}.webp
-```text
+```
+
 **End-of-epoch samples**:
-```text
+```
 {stepname}_{step:03d}_{epoch:03d}_{hash}-{suffix}.webp
-```text
+```
+
 ### Examples
 
-```text
+```
 vae_warmup_001_001_00010_abc123-original.webp    # Step 1, epoch 1, batch 10
 vae_warmup_001_001_00020_abc123-ctx.webp         # Step 1, epoch 1, batch 20
 vae_warmup_001_001_abc123-nr_o.webp              # Step 1, epoch 1, end-of-epoch
 vae_gan_002_005_def456-original.webp             # Step 2, epoch 5, end-of-epoch
-```text
+```
+
 ### Suffix Meanings
 
 | Suffix | Description |
@@ -302,13 +318,15 @@ vae_gan_002_005_def456-original.webp             # Step 2, epoch 5, end-of-epoch
 
 ### Console Output Format
 
-```text
+```
 [HH:MM:SS] Step {name} ({idx}/{total}) | Epoch {e}/{n} | Batch {b}/{total} | VAE: X.XX | KL: X.XX | G: X.XX | D: X.XX | LPIPS: X.XX | Xs/batch
-```text
+```
+
 **Example**:
-```text
+```
 [00:15:23] Step vae_gan (2/4) | Epoch 5/20 | Batch 127/500 | VAE: 0.0234 | KL: 12.45 | G: 0.156 | D: 0.089 | LPIPS: 0.0812 | 3.2s/batch
-```text
+```
+
 ### Metrics Shown by Training Mode
 
 | Mode | Metrics Displayed |
@@ -321,11 +339,12 @@ vae_gan_002_005_def456-original.webp             # Step 2, epoch 5, end-of-epoch
 
 Pipeline mode creates step-specific metrics files:
 
-```text
+```
 outputs/flux/graph/training_metrics_vae_warmup.jsonl
 outputs/flux/graph/training_metrics_vae_gan.jsonl
 outputs/flux/graph/training_metrics_flow.jsonl
-```text
+```
+
 **Format**:
 ```json
 {
@@ -342,7 +361,8 @@ outputs/flux/graph/training_metrics_flow.jsonl
     "lpips_loss": 0.0812
   }
 }
-```text
+```
+
 ---
 
 ## Validation
@@ -351,7 +371,8 @@ Validate pipeline config before training:
 
 ```bash
 fluxflow-train --config pipeline.yaml --validate-pipeline
-```text
+```
+
 **Checks**:
 - ✅ YAML syntax valid
 - ✅ Required fields present (`name`, `n_epochs`)
@@ -364,7 +385,7 @@ fluxflow-train --config pipeline.yaml --validate-pipeline
 - ✅ Loss threshold metrics exist
 
 **Example Output**:
-```text
+```
 ✅ Pipeline validation passed!
 
 Pipeline Summary:
@@ -380,7 +401,8 @@ Step 2: vae_gan (20 epochs)
   Transition: loss_threshold (vae_loss < 0.05, max 50 epochs)
   
 ...
-```text
+```
+
 ---
 
 ## Complete Example
@@ -428,11 +450,13 @@ training:
               lr: 0.00005
         transition_on:
           mode: "epoch"
-```text
+```
+
 Run with:
 ```bash
 fluxflow-train --config test_pipeline_minimal.yaml
-```text
+```
+
 ---
 
 ## Implementation Notes
@@ -440,8 +464,8 @@ fluxflow-train --config test_pipeline_minimal.yaml
 ### Training Flow
 
 1. **Initialize**: Parse config, create checkpoint manager
-1. **Resume** (if checkpoint exists): Load step/epoch/batch from metadata
-1. **For each step**:
+2. **Resume** (if checkpoint exists): Load step/epoch/batch from metadata
+3. **For each step**:
    - Configure models (freeze/unfreeze)
    - Create optimizers from inline config
    - Create schedulers from inline config
@@ -453,7 +477,7 @@ fluxflow-train --config test_pipeline_minimal.yaml
      - Generate samples
    - Check transition criteria
    - If threshold not met and `max_epochs` reached, log warning and transition
-1. **Complete**: Save final checkpoint
+4. **Complete**: Save final checkpoint
 
 ### Gradient Flow in GAN-Only Mode
 
@@ -505,7 +529,8 @@ steps:
     freeze: [compressor, expander]
     # Auto-creates: flow_processor, text_encoder, compressor (for Flow)
     # Logs: "Auto-created flow_processor with feature_maps_dim=128"
-```text
+```
+
 #### User Impact
 
 - **Before (v0.3.0 and earlier)**: Crash with `AttributeError: 'NoneType' object has no attribute 'forward'`
@@ -516,9 +541,9 @@ steps:
 Models are created in `_ensure_required_models()` method (lines 579-713 in `pipeline_orchestrator.py`):
 
 1. **Before creating trainers** for each step
-1. **Only if missing** from `models` dict
-1. **With warnings logged**: `"Auto-created {model_name} with default parameters"`
-1. **On correct device**: Models moved to `args.device`
+2. **Only if missing** from `models` dict
+3. **With warnings logged**: `"Auto-created {model_name} with default parameters"`
+4. **On correct device**: Models moved to `args.device`
 
 #### Disabling Auto-Creation
 
@@ -532,7 +557,8 @@ flow_processor = FlowProcessor(
     # ... other custom params
 )
 models = {"flow_processor": flow_processor}
-```text
+```
+
 **Option 2**: Use first step to initialize:
 ```yaml
 steps:
@@ -543,7 +569,8 @@ steps:
   - name: actual_training
     n_epochs: 100
     train_diff_full: true
-```text
+```
+
 ---
 
 ## Troubleshooting
@@ -562,7 +589,8 @@ pipeline:
 pipeline:
   steps:
     - name: "step1"
-```text
+```
+
 ### "AttributeError: 'NoneType' object has no attribute 'update'" (EMA)
 
 **Cause**: Bug in versions < 0.2.0 where EMA wasn't created for GAN-only mode.
