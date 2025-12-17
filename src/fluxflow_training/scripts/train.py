@@ -1776,16 +1776,20 @@ def main():
     if args.tt2m_token and not args.webdataset_token:
         args.webdataset_token = args.tt2m_token
 
-    # Validate arguments
-    has_local_data = args.data_path and args.captions_file
-    has_webdataset = args.use_webdataset and args.webdataset_token
+    # Detect if we're using pipeline mode (skip validation if so)
+    is_pipeline_mode = config and detect_config_mode(config) == "pipeline"
 
-    if not has_local_data and not has_webdataset:
-        print(
-            "Error: Please provide --data_path and --captions_file, "
-            "or use --use_webdataset with --webdataset_token"
-        )
-        sys.exit(1)
+    # Validate arguments (only if NOT using pipeline mode with datasets defined)
+    if not is_pipeline_mode:
+        has_local_data = args.data_path and args.captions_file
+        has_webdataset = args.use_webdataset and args.webdataset_token
+
+        if not has_local_data and not has_webdataset:
+            print(
+                "Error: Please provide --data_path and --captions_file, "
+                "or use --use_webdataset with --webdataset_token"
+            )
+            sys.exit(1)
 
     # Detect training mode
     if config and detect_config_mode(config) == "pipeline":

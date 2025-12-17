@@ -390,6 +390,115 @@ class TrainingPipelineOrchestrator:
         print(f"\nTotal epochs: {total_epochs}")
         print("=" * 80 + "\n")
 
+    def _create_dataloader_for_dataset(self, dataset_config, dataset_name, args, config):
+        """
+        Create a dataloader for a specific dataset configuration.
+
+        Args:
+            dataset_config: DatasetConfig object with dataset settings
+            dataset_name: Name of the dataset (for logging)
+            args: Command-line arguments
+            config: Full config dictionary
+
+        Returns:
+            Tuple of (dataloader, sampler, dataset_size)
+        """
+        import torch
+        from functools import partial
+        from torch.utils.data import DataLoader
+
+        from ..data import (
+            StreamingWebDataset,
+            TextImageDataset,
+            ResumableDimensionSampler,
+            collate_fn_variable,
+            get_or_build_dimension_cache,
+            worker_init_fn,
+        )
+
+        # Prepare collate function
+        collate_fn = partial(
+            collate_fn_variable,
+            channels=args.channels,
+            img_size=args.img_size,
+            reduced_min_sizes=args.reduced_min_sizes,
+        )
+
+        # Get batch_size and workers (with fallback priority)
+        batch_size = dataset_config.batch_size or args.batch_size
+        workers = dataset_config.workers or args.workers
+
+        logger.info(f"  Batch size: {batch_size}, Workers: {workers}")
+
+        if dataset_config.type == "webdataset":
+            # WebDataset
+            logger.info(f"  WebDataset URL: {dataset_config.webdataset_url}")
+            dataset = StreamingWebDataset(
+                tokenizer_name=args.tokenizer_name,
+                token=dataset_config.webdataset_token,
+                url_pattern=dataset_config.webdataset_url,
+                channels=args.channels,
+                image_key=dataset_config.webdataset_image_key or "png",
+                label_key=dataset_config.webdataset_label_key or "json",
+                caption_key=dataset_config.webdataset_caption_key or "prompt",
+                dataset_size=dataset_config.webdataset_size or 10000,
+                samples_per_shard=dataset_config.webdataset_samples_per_shard or 1000,
+                fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
+            )
+            sampler = None
+            dataset_size = len(dataset)
+
+        elif dataset_config.type == "local":
+            # Local dataset
+            logger.info(f"  Image folder: {dataset_config.image_folder}")
+            logger.info(f"  Captions file: {dataset_config.captions_file}")
+            dataset = TextImageDataset(
+                data_path=dataset_config.image_folder,
+                captions_file=dataset_config.captions_file,
+                tokenizer_name=args.tokenizer_name,
+                transform=None,
+                fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
+            )
+
+            # Build dimension cache
+            dimension_cache = get_or_build_dimension_cache(
+                dataset,
+                cache_dir=args.output_path,
+                multiple=32,
+                rebuild=False,
+            )
+
+            # Create sampler
+            sampler = ResumableDimensionSampler(
+                dimension_cache=dimension_cache,
+                batch_size=batch_size,
+                seed=42,
+            )
+            dataset_size = len(dataset)
+        else:
+            raise ValueError(f"Unknown dataset type: {dataset_config.type}")
+
+        # Build DataLoader
+        dataloader_kwargs = {
+            "dataset": dataset,
+            "num_workers": workers,
+            "pin_memory": (not torch.backends.mps.is_available()),
+            "collate_fn": collate_fn,
+            "worker_init_fn": worker_init_fn,
+            "persistent_workers": workers > 0,
+        }
+
+        if sampler is not None:
+            dataloader_kwargs["batch_sampler"] = sampler
+        else:
+            dataloader_kwargs["batch_size"] = batch_size
+            dataloader_kwargs["shuffle"] = False
+
+        dataloader = DataLoader(**dataloader_kwargs)
+        dataloader = self.accelerator.prepare(dataloader)
+
+        return dataloader, sampler, dataset_size
+
     def _create_step_optimizers(self, step, models, args):
         """Create optimizers for current step from inline config or defaults."""
         from ..training.optimizer_factory import create_optimizer
@@ -996,6 +1105,33 @@ class TrainingPipelineOrchestrator:
             print(f"Duration: {step.n_epochs} epochs")
             print(f"{'='*80}\n")
 
+            # Switch dataset if needed for this step
+            current_dataset_name = step.dataset or self.config.default_dataset
+            if current_dataset_name and self.config.datasets:
+                dataset_config = self.config.datasets.get(current_dataset_name)
+                if dataset_config:
+                    logger.info(f"Dataset: {current_dataset_name} ({dataset_config.type})")
+                    print(f"Dataset: {current_dataset_name} ({dataset_config.type})")
+
+                    # Recreate dataloader for this dataset if it's different from previous step
+                    needs_new_dataloader = step_idx == start_step or (
+                        step_idx > 0
+                        and (self.config.steps[step_idx - 1].dataset or self.config.default_dataset)
+                        != current_dataset_name
+                    )
+
+                    if needs_new_dataloader:
+                        logger.info(f"Creating dataloader for dataset: {current_dataset_name}")
+                        dataloader, sampler, dataset_size = self._create_dataloader_for_dataset(
+                            dataset_config, current_dataset_name, args, config
+                        )
+                        batches_per_epoch = max(1, dataset_size // args.batch_size)
+                        logger.info(
+                            f"Dataset size: {dataset_size:,} samples, {batches_per_epoch} batches/epoch"
+                        )
+            else:
+                logger.info("Using default dataloader (no dataset specified for this step)")
+
             # Configure models for this step (freeze/unfreeze)
             self.configure_step_models(step, models)
 
@@ -1054,10 +1190,14 @@ class TrainingPipelineOrchestrator:
                     min(batches_per_epoch, step.max_steps) if step.max_steps else batches_per_epoch
                 )
 
+                # Show which dataset is being used
+                current_dataset_name = step.dataset or self.config.default_dataset
+                dataset_info = f", Dataset: {current_dataset_name}" if current_dataset_name else ""
+
                 print(
                     f"\nStep {step.name} ({step_idx+1}/{len(self.config.steps)}), "
                     f"Epoch {epoch+1}/{step.n_epochs}, "
-                    f"Batches 0/{epoch_total_batches}"
+                    f"Batches 0/{epoch_total_batches}{dataset_info}"
                 )
 
                 epoch_start_time = time.time()
