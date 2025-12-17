@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Provides better preview quality during training
   - Matches inference-time generation quality
   - Only applies to flow training (`train_diff` or `train_diff_full`)
-  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 895-905, 1154-1164)
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 927-928, 1192-1193)
   - **Requires**: fluxflow-core with CFG sample generation support
 
 #### Multi-Dataset Pipeline Support
@@ -88,15 +88,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - Preserves samples for all encoder/decoder training modes
     - Reduces I/O overhead (~2-5 seconds per checkpoint for multi-image test sets)
     - Sample generation now accurately reflects active training modes
-  - **Files**: `src/fluxflow_training/scripts/train.py:1152`
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 1168-1195)
 
-- **Sample filename numbering inconsistency**
-  - Changed from `epoch` to `global_step` for sample filenames
-  - Ensures consistent, sequential numbering across entire training run
-  - Prevents filename overwrites when multiple samples generated per epoch
-  - **Impact**: Sample files now have unique, sequential identifiers
-  - **Files**: `src/fluxflow_training/scripts/train.py:1153` (conditional), `1160, 1171` (global_step usage)
-  - **Format**: Sample files use `global_step` as step identifier (e.g., `vae_epoch_05000-abc123-original.webp`, `samples_epoch_10000_caption_0-0512.webp`)
+- **Sample generation decoupled from checkpointing**
+  - Sample generation now triggered by `sample_interval` based on `global_step` (independent of checkpoint frequency)
+  - Ensures consistent sample frequency across entire training run
+  - Prevents missed samples when checkpoint interval doesn't align with sample needs
+  - **Impact**: More reliable monitoring of training progress via samples
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 1168-1195)
+  - **Note**: Sample filenames still use `epoch` parameter (passed at lines 1178, 1187) for compatibility
 
 - **Linting errors** in pipeline configuration (trailing whitespace)
 - **Pre-commit hooks** now enforced (flake8, black, pytest)
