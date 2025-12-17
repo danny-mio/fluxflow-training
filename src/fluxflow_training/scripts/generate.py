@@ -144,7 +144,8 @@ def generate(args):
             for idx, image in enumerate(decoded_images):
                 file_name = os.path.splitext(file_names[idx])[0]
                 save_path = os.path.join(args.output_path, f"{file_name}_gen.webp")
-                save_image(image, save_path)
+                # Expander outputs in [-1, 1] range, normalize to [0, 1] for saving
+                save_image(image, save_path, normalize=True, value_range=(-1, 1))
                 print(f"Saved: {save_path}")
 
     print(f"Generation complete! Images saved to {args.output_path}")
