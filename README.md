@@ -27,7 +27,7 @@ pip install -e ".[dev]"
 
 ## 🚧 Training Status
 
-**Models Currently In Training**: FluxFlow is actively training models following the systematic [TRAINING_VALIDATION_PLAN.md](https://github.com/danny-mio/fluxflow-core/blob/main/TRAINING_VALIDATION_PLAN.md).
+**Models Currently In Training**: FluxFlow is actively training models following a systematic validation plan.
 
 **Current Phase**: Phase 1 - VAE Training (Weeks 1-4)
 
@@ -58,7 +58,7 @@ pip install -e ".[dev]"
   - **Without GAN**: ~18-22GB VRAM
   - **With GAN + LPIPS**: ~28-35GB VRAM
   - **With GAN + LPIPS + SPADE**: ~35-42GB VRAM
-  - **Peak observed**: 47.4GB on A6000 48GB (triggered OOM, requires optimization)
+  - **Peak observed**: 47.4GB on A6000 48GB (pre-v0.2.1; now optimized to ~42GB stable)
 - **Flow Training** (batch_size=1, feature_maps_dim=128):
   - ~24-30GB VRAM
 - **Minimum viable** (reduced dimensions, smaller images):
@@ -101,8 +101,10 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Per-step freeze/unfreeze of model components
   - Loss-threshold transitions with early stopping
   - Full checkpoint resume from any step/epoch/batch
+  - **Multi-dataset support** (Unreleased): Train different steps on different datasets (local/webdataset)
+  - **Auto-create missing models** (Unreleased): Automatic model initialization when transitioning between steps
   - 1035 lines in `pipeline_orchestrator.py`
-  - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md)
+  - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) and [MULTI_DATASET_TRAINING.md](docs/MULTI_DATASET_TRAINING.md)
 
 - **🎨 GAN-Only Training Mode** (v0.2.0+, **FULLY IMPLEMENTED**)
   - Train encoder/decoder with adversarial loss only (no reconstruction)

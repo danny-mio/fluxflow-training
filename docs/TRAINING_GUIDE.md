@@ -108,13 +108,110 @@ FluxFlow uses a unified training script (`packages/training/src/fluxflow_trainin
 
 The training process is highly configurable with parameters for data, model architecture, training behavior, and output.
 
+## Configuration Methods
+
+FluxFlow supports two configuration approaches:
+
+### 🎯 YAML Config Files (Recommended for Production)
+
+**Use when:**
+- Running multi-step training pipelines
+- Need reproducible, version-controlled configs
+- Want inline optimizer/scheduler customization per step
+- Training production models
+
+**Example:**
+```yaml
+# config.yaml
+data:
+  data_path: "/path/to/images"
+  captions_file: "/path/to/captions.txt"
+
+model:
+  vae_dim: 128
+  feature_maps_dim: 128
+
+training:
+  batch_size: 4
+  pipeline:
+    steps:
+      - name: "vae_training"
+        n_epochs: 50
+        train_vae: true
+        train_spade: true
+        optimizers:
+          vae:
+            optimizer_type: "AdamW"
+            lr: 0.0001
+            weight_decay: 0.01
+        schedulers:
+          vae:
+            scheduler_type: "CosineAnnealingLR"
+            eta_min_factor: 0.1
+
+output:
+  output_path: "outputs/vae"
+```
+
+**Run:** `fluxflow-train --config config.yaml`
+
+---
+
+### 🔧 CLI Arguments (For Quick Tests Only)
+
+**Use when:**
+- Running quick experiments
+- Testing single training modes (VAE-only or Flow-only)
+- Debugging or prototyping
+
+**Example:**
+```bash
+fluxflow-train \
+  --data_path /path/to/images \
+  --captions_file /path/to/captions.txt \
+  --train_vae \
+  --n_epochs 50 \
+  --batch_size 2 \
+  --lr 1e-5
+```
+
+**Limitations:**
+- ❌ No multi-step pipelines
+- ❌ No per-step optimizer customization
+- ❌ No inline YAML optimizer config
+- ❌ Hard to version control
+- ❌ Complex commands become unwieldy
+
+---
+
+### 📊 Feature Comparison
+
+| Feature | YAML Config | CLI Args |
+|---------|-------------|----------|
+| Multi-step pipelines | ✅ | ❌ |
+| Inline optimizer config | ✅ | ❌ (requires external JSON) |
+| Per-step freezing | ✅ | ❌ |
+| Loss-based transitions | ✅ | ❌ |
+| Version control friendly | ✅ | ⚠️ (must maintain scripts) |
+| Quick experiments | ⚠️ (requires YAML file) | ✅ |
+
+**Recommendation:**
+- **Beginners / Quick Tests:** Start with CLI args (see Quick Start below)
+- **Production / Serious Training:** Use YAML config + pipeline mode (see "Pipeline Training Mode" section)
+
+---
+
 ## Quick Start
 
-### 1. Prepare Your Data
+Choose your path based on your needs:
 
-**Option A: Local Dataset**
+### Path A: CLI Quick Test (5 Minutes) ⚡
+
+For quick experiments and learning, use CLI arguments:
+
+**Step 1: Prepare Data**
 ```bash
-# Your directory structure should be:
+# Your directory structure:
 # /path/to/images/
 #   ├── image1.jpg
 #   ├── image2.png
@@ -126,44 +223,88 @@ The training process is highly configurable with parameters for data, model arch
 # image2.png	an illustration of mountains at sunset
 ```
 
-**Option B: TTI-2M Streaming Dataset**
-```bash
-# Use the TTI-2M dataset from HuggingFace
-# Requires: HuggingFace token with access to the dataset
-```
-
-### 2. Basic Training Commands
-
-**Train VAE (Stage 1 - Recommended First)**
+**Step 2: Run Quick VAE Training**
 ```bash
 fluxflow-train \
   --data_path /path/to/images \
   --captions_file /path/to/captions.txt \
-  --output_path outputs/flux \
+  --output_path outputs/quick_test \
   --train_vae \
-  --train_spade \
-  --n_epochs 50 \
+  --n_epochs 5 \
   --batch_size 2 \
   --lr 1e-5 \
-  --vae_dim 128 \
-  --feature_maps_dim 128 \
-  --feature_maps_dim_disc 8
+  --vae_dim 64  # Reduced for speed
 ```
 
-**Train Flow Model (Stage 2)**
-```bash
-fluxflow-train \
-  --data_path /path/to/images \
-  --captions_file /path/to/captions.txt \
-  --output_path outputs/flux \
-  --model_checkpoint outputs/flux/flxflow_final.safetensors \
-  --train_diff_full \
-  --n_epochs 100 \
-  --batch_size 2 \
-  --lr 5e-7 \
-  --vae_dim 128 \
-  --feature_maps_dim 128
+**⚠️ When you're ready for serious training, switch to Path B (YAML Config).**
+
+---
+
+### Path B: YAML Config (Production-Ready) 🚀
+
+For reproducible, production-quality training with multi-step pipelines:
+
+**Step 1: Prepare Data** (same as Path A)
+
+**Step 2: Create `config.yaml`**
+```yaml
+data:
+  data_path: "/path/to/images"
+  captions_file: "/path/to/captions.txt"
+
+model:
+  vae_dim: 128
+  feature_maps_dim: 128
+
+training:
+  batch_size: 2
+  workers: 8
+  
+  pipeline:
+    steps:
+      # Step 1: VAE training with GAN
+      - name: "vae_training"
+        n_epochs: 50
+        train_vae: true
+        train_spade: true
+        gan_training: true
+        
+        optimizers:
+          vae:
+            optimizer_type: "AdamW"
+            lr: 0.00001  # Same as 1e-5
+            betas: [0.9, 0.999]
+            weight_decay: 0.01
+          discriminator:
+            optimizer_type: "AdamW"
+            lr: 0.00001
+            betas: [0.0, 0.9]
+            amsgrad: true
+        
+        schedulers:
+          vae:
+            scheduler_type: "CosineAnnealingLR"
+            eta_min_factor: 0.1
+          discriminator:
+            scheduler_type: "CosineAnnealingLR"
+            eta_min_factor: 0.1
+
+output:
+  output_path: "outputs/production"
 ```
+
+**Step 3: Run Training**
+```bash
+fluxflow-train --config config.yaml
+```
+
+**✅ Benefits:**
+- Reproducible configs (version control friendly)
+- Multi-step pipeline support
+- Per-step optimizer customization
+- No complex CLI commands
+
+**See "Pipeline Training Mode" section below for multi-stage training (VAE → Flow → Fine-tune).**
 
 ## Training Command Reference
 
@@ -336,756 +477,36 @@ FluxFlow supports advanced per-model optimizer and scheduler configuration via J
 
 ---
 
-### Optimizer Parameters Reference
+### Optimizer & Scheduler Configuration
 
-#### Lion Optimizer
+FluxFlow supports per-model optimizer and scheduler configuration for fine-grained control.
 
-Memory-efficient optimizer that uses sign-based updates. Recommended for flow models.
+**Supported Optimizers:** Lion (recommended for flow), AdamW, Adam, SGD, RMSprop
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "Lion" |
-| `lr` | float | 1e-4 | Learning rate |
-| `betas` | list[float, float] | [0.9, 0.99] | Coefficients for computing running averages |
-| `weight_decay` | float | 0.0 | Weight decay coefficient |
-| `decoupled_weight_decay` | bool | True | Use decoupled weight decay (recommended) |
+**Supported Schedulers:** CosineAnnealingLR, LinearLR, ExponentialLR, ConstantLR, StepLR, ReduceLROnPlateau
 
-**Example:**
-```json
-{
-  "type": "Lion",
-  "lr": 5e-7,
-  "betas": [0.9, 0.95],
-  "weight_decay": 0.01,
-  "decoupled_weight_decay": true
-}
-```
+**📚 Detailed References:**
+- **[OPTIMIZERS.md](OPTIMIZERS.md)** - Complete optimizer parameter reference with examples
+- **[SCHEDULERS.md](SCHEDULERS.md)** - Complete scheduler parameter reference with examples
 
-**Best for:** Flow models, memory-constrained training
-**Notes:** Uses less memory than Adam, often converges faster
+**Quick Example:**
 
-#### AdamW Optimizer
+```yaml
+optimizer_config:
+  flow_processor:
+    type: "Lion"
+    lr: 5e-7
+    betas: [0.9, 0.95]
+    weight_decay: 0.01
 
-Adam optimizer with decoupled weight decay. Excellent all-around optimizer.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "AdamW" |
-| `lr` | float | 1e-3 | Learning rate |
-| `betas` | list[float, float] | [0.9, 0.999] | Coefficients for computing running averages |
-| `weight_decay` | float | 0.0 | Weight decay coefficient (L2 penalty) |
-| `eps` | float | 1e-8 | Term added to denominator for numerical stability |
-| `amsgrad` | bool | False | Use AMSGrad variant for better convergence |
-
-**Example:**
-```json
-{
-  "type": "AdamW",
-  "lr": 1e-5,
-  "betas": [0.9, 0.95],
-  "weight_decay": 0.01,
-  "eps": 1e-8,
-  "amsgrad": false
-}
-```
-
-**Example with AMSGrad (for discriminator):**
-```json
-{
-  "type": "AdamW",
-  "lr": 5e-7,
-  "betas": [0.0, 0.9],
-  "weight_decay": 0.001,
-  "amsgrad": true
-}
-```
-
-**Best for:** VAE, text encoder, discriminator
-**Notes:** More stable than Adam, handles weight decay correctly
-
-#### Adam Optimizer
-
-Standard Adam optimizer. Good baseline choice.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "Adam" |
-| `lr` | float | 1e-3 | Learning rate |
-| `betas` | list[float, float] | [0.9, 0.999] | Coefficients for computing running averages |
-| `weight_decay` | float | 0.0 | Weight decay coefficient |
-| `eps` | float | 1e-8 | Term added to denominator for numerical stability |
-
-**Example:**
-```json
-{
-  "type": "Adam",
-  "lr": 1e-4,
-  "betas": [0.9, 0.999],
-  "weight_decay": 0.0,
-  "eps": 1e-8
-}
-```
-
-**Best for:** General purpose, quick experimentation
-**Notes:** Prefer AdamW for better weight decay handling
-
-#### SGD Optimizer
-
-Stochastic gradient descent with momentum and Nesterov acceleration.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "SGD" |
-| `lr` | float | Required | Learning rate |
-| `momentum` | float | 0.0 | Momentum factor (typically 0.9) |
-| `weight_decay` | float | 0.0 | Weight decay coefficient |
-| `dampening` | float | 0.0 | Dampening for momentum |
-| `nesterov` | bool | False | Enable Nesterov momentum |
-
-**Example:**
-```json
-{
-  "type": "SGD",
-  "lr": 0.01,
-  "momentum": 0.9,
-  "weight_decay": 1e-4,
-  "nesterov": true
-}
-```
-
-**Example (simple SGD without momentum):**
-```json
-{
-  "type": "SGD",
-  "lr": 0.001,
-  "momentum": 0.0,
-  "weight_decay": 0.0
-}
-```
-
-**Best for:** Fine-tuning, transfer learning, some discriminator training
-**Notes:** Requires careful learning rate tuning, benefits from momentum
-
-#### RMSprop Optimizer
-
-Root mean square propagation optimizer. Adapts learning rates per parameter.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "RMSprop" |
-| `lr` | float | 1e-2 | Learning rate |
-| `alpha` | float | 0.99 | Smoothing constant |
-| `eps` | float | 1e-8 | Term added to denominator for numerical stability |
-| `weight_decay` | float | 0.0 | Weight decay coefficient |
-| `momentum` | float | 0.0 | Momentum factor |
-| `centered` | bool | False | Compute centered RMSprop |
-
-**Example:**
-```json
-{
-  "type": "RMSprop",
-  "lr": 1e-4,
-  "alpha": 0.99,
-  "eps": 1e-8,
-  "weight_decay": 0.0,
-  "momentum": 0.0,
-  "centered": false
-}
-```
-
-**Example with momentum:**
-```json
-{
-  "type": "RMSprop",
-  "lr": 1e-3,
-  "alpha": 0.95,
-  "momentum": 0.9,
-  "centered": true
-}
-```
-
-**Best for:** RNNs, non-stationary objectives
-**Notes:** Less commonly used for image generation, try Adam/Lion first
-
----
-
-### Scheduler Parameters Reference
-
-#### CosineAnnealingLR Scheduler
-
-Cosine annealing learning rate schedule. Smoothly decreases LR following cosine curve.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "CosineAnnealingLR" |
-| `eta_min_factor` | float | 0.1 | Minimum LR as fraction of initial LR |
-
-**How it works:**
-- LR starts at initial value
-- Decreases following cosine curve over total training steps
-- Minimum LR = initial_lr × eta_min_factor
-- Smooth, gradual decay without sharp drops
-
-**Example (standard):**
-```json
-{
-  "type": "CosineAnnealingLR",
-  "eta_min_factor": 0.1
-}
-```
-*LR decays from initial to 10% of initial (e.g., 1e-5 → 1e-6)*
-
-**Example (aggressive decay):**
-```json
-{
-  "type": "CosineAnnealingLR",
-  "eta_min_factor": 0.001
-}
-```
-*LR decays from initial to 0.1% of initial (e.g., 1e-5 → 1e-8)*
-
-**Example (minimal decay):**
-```json
-{
-  "type": "CosineAnnealingLR",
-  "eta_min_factor": 0.5
-}
-```
-*LR decays from initial to 50% of initial (e.g., 1e-5 → 5e-6)*
-
-**Best for:** Most training scenarios (default, recommended)
-**Notes:** Smooth decay prevents training instability
-
-#### LinearLR Scheduler
-
-Linear learning rate decay from start_factor to end_factor.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "LinearLR" |
-| `start_factor` | float | 1.0 | Starting LR multiplier |
-| `end_factor` | float | 0.1 | Ending LR multiplier |
-| `total_iters` | int | auto | Number of steps for decay (defaults to total training steps) |
-
-**How it works:**
-- LR starts at initial_lr × start_factor
-- Linearly decreases to initial_lr × end_factor
-- Decay completes at total_iters steps
-
-**Example (warmup then decay):**
-```json
-{
-  "type": "LinearLR",
-  "start_factor": 0.1,
-  "end_factor": 1.0,
-  "total_iters": 5000
-}
-```
-*LR increases from 10% to 100% over 5000 steps (warmup)*
-
-**Example (linear decay):**
-```json
-{
-  "type": "LinearLR",
-  "start_factor": 1.0,
-  "end_factor": 0.0,
-  "total_iters": 50000
-}
-```
-*LR decreases from 100% to 0% over 50000 steps*
-
-**Example (partial decay):**
-```json
-{
-  "type": "LinearLR",
-  "start_factor": 1.0,
-  "end_factor": 0.25
-}
-```
-*LR decreases from 100% to 25% over entire training*
-
-**Best for:** Warmup schedules, simple linear decay
-**Notes:** Less common than cosine, but useful for warmup
-
-#### ExponentialLR Scheduler
-
-Exponential learning rate decay. LR multiplied by gamma each step.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "ExponentialLR" |
-| `gamma` | float | 0.95 | Multiplicative factor of LR decay |
-
-**How it works:**
-- Each step: new_lr = current_lr × gamma
-- Exponential decay (fast initially, slower later)
-- After N steps: lr = initial_lr × (gamma^N)
-
-**Example (slow decay):**
-```json
-{
-  "type": "ExponentialLR",
-  "gamma": 0.9999
-}
-```
-*Very gradual decay, LR halves after ~7000 steps*
-
-**Example (medium decay):**
-```json
-{
-  "type": "ExponentialLR",
-  "gamma": 0.999
-}
-```
-*Moderate decay, LR halves after ~700 steps*
-
-**Example (fast decay):**
-```json
-{
-  "type": "ExponentialLR",
-  "gamma": 0.95
-}
-```
-*Aggressive decay, LR halves after ~14 steps*
-
-**Best for:** Fine-tuning, when you want faster initial decay
-**Notes:** Gamma close to 1.0 = slow decay, far from 1.0 = fast decay
-
-#### ConstantLR Scheduler
-
-Constant learning rate with optional initial scaling.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "ConstantLR" |
-| `factor` | float | 1.0 | LR multiplication factor |
-| `total_iters` | int | auto | Number of steps to apply factor (then returns to 1.0) |
-
-**How it works:**
-- For first total_iters steps: lr = initial_lr × factor
-- After total_iters steps: lr = initial_lr × 1.0
-- Useful for warmup with constant LR period
-
-**Example (constant at 100%):**
-```json
-{
-  "type": "ConstantLR",
-  "factor": 1.0
-}
-```
-*LR stays constant at initial value*
-
-**Example (reduced constant LR):**
-```json
-{
-  "type": "ConstantLR",
-  "factor": 0.1,
-  "total_iters": 10000
-}
-```
-*LR is 10% of initial for first 10k steps, then jumps to 100%*
-
-**Example (warmup):**
-```json
-{
-  "type": "ConstantLR",
-  "factor": 0.01,
-  "total_iters": 1000
-}
-```
-*LR is 1% of initial for first 1k steps (warmup), then jumps to 100%*
-
-**Best for:** No LR scheduling, warmup periods
-**Notes:** Simple but less flexible than other schedulers
-
-#### StepLR Scheduler
-
-Step-wise learning rate decay. Multiply LR by gamma every step_size steps.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "StepLR" |
-| `step_size` | int | auto | Number of steps between LR decay |
-| `gamma` | float | 0.1 | Multiplicative factor of LR decay |
-
-**How it works:**
-- Every step_size steps: lr = lr × gamma
-- Piecewise constant LR with periodic drops
-- Creates "staircase" LR schedule
-
-**Example (decay every 10k steps):**
-```json
-{
-  "type": "StepLR",
-  "step_size": 10000,
-  "gamma": 0.5
-}
-```
-*Halve LR every 10,000 steps*
-
-**Example (aggressive stepping):**
-```json
-{
-  "type": "StepLR",
-  "step_size": 5000,
-  "gamma": 0.1
-}
-```
-*Reduce LR to 10% every 5,000 steps*
-
-**Example (gentle stepping):**
-```json
-{
-  "type": "StepLR",
-  "step_size": 20000,
-  "gamma": 0.8
-}
-```
-*Reduce LR to 80% every 20,000 steps*
-
-**Best for:** Training with known plateaus, milestone-based decay
-**Notes:** Can cause training instability at step boundaries
-
-#### ReduceLROnPlateau Scheduler
-
-Reduce learning rate when a metric plateaus. Requires metric monitoring.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `type` | str | - | Must be "ReduceLROnPlateau" |
-| `mode` | str | "min" | "min" (lower is better) or "max" (higher is better) |
-| `factor` | float | 0.1 | Factor by which LR is reduced: new_lr = lr × factor |
-| `patience` | int | 10 | Number of steps with no improvement before reducing LR |
-| `threshold` | float | 1e-4 | Threshold for measuring improvement |
-
-**How it works:**
-- Monitors validation metric (loss, accuracy, etc.)
-- If no improvement for `patience` steps, reduce LR by `factor`
-- Automatically adapts to training progress
-
-**Example (reduce on loss plateau):**
-```json
-{
-  "type": "ReduceLROnPlateau",
-  "mode": "min",
-  "factor": 0.5,
-  "patience": 10,
-  "threshold": 1e-4
-}
-```
-*Halve LR if loss doesn't improve by 0.0001 for 10 steps*
-
-**Example (reduce on metric plateau):**
-```json
-{
-  "type": "ReduceLROnPlateau",
-  "mode": "max",
-  "factor": 0.1,
-  "patience": 5,
-  "threshold": 0.001
-}
-```
-*Reduce LR to 10% if metric doesn't improve by 0.001 for 5 steps*
-
-**Example (patient reduction):**
-```json
-{
-  "type": "ReduceLROnPlateau",
-  "mode": "min",
-  "factor": 0.75,
-  "patience": 20,
-  "threshold": 1e-5
-}
-```
-*Reduce LR to 75% if no improvement for 20 steps*
-
-**Best for:** Validation metric-based training, uncertain convergence
-**Notes:** Requires external metric tracking, not commonly used in standard training script
-
----
-
-### Complete Configuration Examples
-
-**Example 1: VAE Training (High Quality)**
-```json
-{
-  "optimizers": {
-    "vae": {
-      "type": "AdamW",
-      "lr": 2e-5,
-      "betas": [0.9, 0.95],
-      "weight_decay": 0.01,
-      "eps": 1e-8
-    },
-    "discriminator": {
-      "type": "AdamW",
-      "lr": 2e-5,
-      "betas": [0.0, 0.9],
-      "weight_decay": 0.001,
-      "amsgrad": true
-    }
-  },
-  "schedulers": {
-    "vae": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    },
-    "discriminator": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    }
-  }
-}
-```
-
-**Example 2: Flow Training (Memory Efficient)**
-```json
-{
-  "optimizers": {
-    "flow": {
-      "type": "Lion",
-      "lr": 5e-7,
-      "betas": [0.9, 0.95],
-      "weight_decay": 0.01,
-      "decoupled_weight_decay": true
-    },
-    "vae": {
-      "type": "AdamW",
-      "lr": 5e-7,
-      "betas": [0.9, 0.95],
-      "weight_decay": 0.01
-    }
-  },
-  "schedulers": {
-    "flow": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    },
-    "vae": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    }
-  }
-}
-```
-
-**Example 3: Joint Training (Advanced)**
-```json
-{
-  "optimizers": {
-    "flow": {
-      "type": "Lion",
-      "lr": 1e-6,
-      "betas": [0.9, 0.95],
-      "weight_decay": 0.01,
-      "decoupled_weight_decay": true
-    },
-    "vae": {
-      "type": "AdamW",
-      "lr": 5e-6,
-      "betas": [0.9, 0.95],
-      "weight_decay": 0.01
-    },
-    "text_encoder": {
-      "type": "AdamW",
-      "lr": 1e-7,
-      "betas": [0.9, 0.99],
-      "weight_decay": 0.01
-    },
-    "discriminator": {
-      "type": "AdamW",
-      "lr": 5e-6,
-      "betas": [0.0, 0.9],
-      "weight_decay": 0.001,
-      "amsgrad": true
-    }
-  },
-  "schedulers": {
-    "flow": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    },
-    "vae": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    },
-    "text_encoder": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.001
-    },
-    "discriminator": {
-      "type": "CosineAnnealingLR",
-      "eta_min_factor": 0.1
-    }
-  }
-}
-```
-
-**Example 4: Experimental (SGD with Step Decay)**
-```json
-{
-  "optimizers": {
-    "vae": {
-      "type": "SGD",
-      "lr": 0.01,
-      "momentum": 0.9,
-      "weight_decay": 1e-4,
-      "nesterov": true
-    }
-  },
-  "schedulers": {
-    "vae": {
-      "type": "StepLR",
-      "step_size": 10000,
-      "gamma": 0.5
-    }
-  }
-}
+scheduler_config:
+  flow_processor:
+    type: "CosineAnnealingLR"
+    T_max: 100
+    eta_min_factor: 0.1
 ```
 
 ---
-
-**Basic Usage:**
-```bash
-# Create config file
-cat > optim_config.json << EOF
-{
-  "optimizers": {
-    "flow": {"type": "Lion", "lr": 5e-7, "weight_decay": 0.01},
-    "vae": {"type": "AdamW", "lr": 1e-5, "weight_decay": 0.01}
-  },
-  "schedulers": {
-    "flow": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1},
-    "vae": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1}
-  }
-}
-EOF
-
-# Use in training
-fluxflow-train \
-  --optim_sched_config optim_config.json \
-  --data_path /path/to/images \
-  --captions_file /path/to/captions.txt \
-  --train_vae \
-  --n_epochs 50
-```
-
-**Example:**
-```bash
-# VAE training with higher learning rate
---n_epochs 50 --batch_size 2 --lr 1e-5 --workers 8
-
-# Flow training with gradient accumulation
---n_epochs 100 --lr 5e-7 --training_steps 4 --use_fp16
-
-# Resume with preserved learning rate
---model_checkpoint checkpoint.safetensors --preserve_lr
-```
-
-#### Training Modes
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--train_vae` | flag | False | Train VAE (compressor + expander) |
-| `--gan_training` | flag | False | Enable GAN/discriminator training for VAE |
-| `--train_spade` | flag | False | Use SPADE spatial conditioning (better quality) |
-| `--train_diff` | flag | False | Train flow model with partial schedule |
-| `--train_diff_full` | flag | False | Train flow model with full schedule (recommended) |
-
-**Training Mode Combinations:**
-
-| Mode | Command | Use Case |
-|------|---------|----------|
-| VAE Only (with GAN) | `--train_vae --gan_training --train_spade` | Stage 1: Train autoencoder |
-| VAE Only (no GAN) | `--train_vae` | Fast VAE training, lower quality |
-| Flow Only | `--train_diff_full` | Stage 2: Train diffusion model |
-| Joint Training | `--train_vae --gan_training --train_diff_full --train_spade` | Advanced: Train both simultaneously |
-
-**Example:**
-```bash
-# Stage 1: Train VAE with SPADE and GAN
---train_vae --train_spade
-
-# Stage 2: Train flow model only
---train_diff_full
-
-# Advanced: Joint training
---train_vae --train_diff_full --train_spade
-```
-
-#### KL Divergence
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--kl_beta` | float | 0.0001 | Final KL divergence weight (regularization) |
-| `--kl_warmup_steps` | int | 5000 | Steps to linearly warm up KL weight from 0 to kl_beta |
-| `--kl_free_bits` | float | 0.0 | Free bits (nats) - minimum KL before penalty applies |
-
-**KL Divergence Tuning:**
-- **Low KL Beta (0.0001)**: More detail, less regularization, potential overfitting
-- **Medium KL Beta (0.001-0.01)**: Balanced detail and regularization
-- **High KL Beta (0.1-1.0)**: Strong regularization, smoother latents, less detail
-- **Free Bits**: Allows some KL divergence without penalty (e.g., 0.5 nats)
-
-**Example:**
-```bash
-# Low regularization for maximum detail
---kl_beta 0.0001 --kl_warmup_steps 5000
-
-# Balanced regularization
---kl_beta 0.01 --kl_warmup_steps 10000 --kl_free_bits 0.5
-
-# Strong regularization for smooth latents
---kl_beta 1.0 --kl_warmup_steps 20000
-```
-
-#### Output & Logging
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--output_path` | str | "outputs" | Directory for saving checkpoints and samples |
-| `--log_interval` | int | 10 | Print training metrics every N batches |
-| `--checkpoint_save_interval` | int | 50 | Save checkpoints every N batches |
-| `--samples_per_checkpoint` | int | 1 | Generate samples every N checkpoint saves |
-| `--no_samples` | flag | False | Disable sample generation during training |
-| `--test_image_address` | list | [] | List of test images for VAE reconstruction samples |
-| `--sample_captions` | list | ["A sample caption"] | Captions for generating flow model samples |
-
-**Example:**
-```bash
-# Standard logging and checkpointing
---output_path outputs/flux --log_interval 10 --checkpoint_save_interval 50
-
-# Less frequent samples (every 5 checkpoints = every 250 batches)
---checkpoint_save_interval 50 --samples_per_checkpoint 5
-
-# VAE reconstruction testing
---test_image_address test1.jpg test2.png --checkpoint_save_interval 100
-
-# Disable samples to speed up training
---no_samples
-```
-
-#### Miscellaneous
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `--tokenizer_name` | str | "distilbert-base-uncased" | HuggingFace tokenizer for text encoding |
-| `--img_size` | int | 1024 | Target image size (images resized to this) |
-| `--channels` | int | 3 | Number of image channels (3 for RGB) |
-| `--lambda_adv` | float | 0.5 | Adversarial (GAN) loss weight |
-
-**Example:**
-```bash
-# Use different tokenizer
---tokenizer_name "bert-base-uncased"
-
-# Train on smaller images
---img_size 512
-
-# Adjust GAN loss weight
---lambda_adv 0.9
-```
 
 ## Parameter Details
 
@@ -1129,6 +550,114 @@ The training script automatically saves:
 - `training_states.pt`: Optimizer, scheduler, EMA states
 - `sampler_state.pt`: Data sampler state
 
+### KL Divergence Normalization (v0.3.0+)
+
+**BREAKING CHANGE**: KL divergence is now normalized by dimensions (resolution-invariant).
+
+#### What Changed?
+
+**Before (v0.2.x and earlier)**:
+- KL divergence was computed by **summing** over all spatial and channel dimensions
+- This caused KL to scale with image resolution:
+  - 512×512 images: KL ≈ 150,000 (weighted: 0.0001 × 150K = 15.0)
+  - 1024×1024 images: KL ≈ 600,000 (weighted: 0.0001 × 600K = 60.0)
+- The weighted KL dominated training, causing latent collapse and high contrast reconstructions
+- Different `kl_beta` values needed for different resolutions
+
+**After (v0.3.0+)**:
+- KL divergence is computed by **averaging** over all dimensions
+- KL is now resolution-invariant:
+  - Any resolution: KL ≈ 1.2 (weighted: 0.001 × 1.2 = 0.0012)
+- Same `kl_beta` works across all resolutions
+- Better balance with reconstruction and perceptual losses
+
+#### Migration Guide
+
+If you're upgrading from v0.2.x to v0.3.0+:
+
+1. **Increase `kl_beta` by 10×**:
+   ```yaml
+   # OLD (v0.2.x)
+   kl_beta: 0.0001
+   
+   # NEW (v0.3.0+)
+   kl_beta: 0.001  # Increased 10× to compensate for normalized scale
+   ```
+
+2. **Start training from scratch** (do NOT resume from old checkpoints):
+   - Old checkpoints were trained with unnormalized KL
+   - Resuming with normalized KL will cause training instability
+   - You must train fresh VAE weights from scratch
+
+3. **Update monitoring expectations**:
+   ```
+   # OLD: Expected KL values
+   KL (raw): 100,000 - 200,000
+   KL (weighted): 10.0 - 20.0
+   
+   # NEW: Expected KL values
+   KL (raw): 1.0 - 2.0
+   KL (weighted): 0.001 - 0.002
+   ```
+
+#### New Contrast Regularization Loss
+
+v0.3.0 also adds explicit contrast regularization to prevent over-saturation:
+
+```python
+# Component 1: Global contrast (per-channel std matching)
+# Component 2: Local contrast (per-sample std preservation)
+contrast_loss = 0.0
+
+for c in [R, G, B]:
+    std_ratio = pred_std / target_std
+    contrast_loss += (std_ratio - 1.0)²
+
+contrast_loss += MSE(pred_std_per_sample, target_std_per_sample)
+```
+
+**Expected values**: 0.001 - 0.01 (logged as `Contrast`)
+
+**Training logs before**:
+```
+VAE: 0.0523 | KL: 126562.6031 | Bezier: 0.5020 | ColorStats: 0.0015 | Hist: 0.0199
+```
+
+**Training logs after**:
+```
+VAE: 0.0523 | KL: 1.2665 | Bezier: 0.0520 | ColorStats: 0.0015 | Hist: 0.0199 | Contrast: 0.0012
+```
+
+#### Why This Change Matters
+
+The old KL computation caused **high contrast** and **over-saturation** because:
+1. Massive KL loss (15.0) vs tiny reconstruction loss (0.05) → 300× imbalance
+2. Encoder learned to output near-zero latents (minimizing KL)
+3. Decoder forced to use extreme Bezier curves to extract any signal
+4. Result: High contrast, oversaturated reconstructions
+
+With normalized KL:
+- KL (0.0012) is properly balanced with reconstruction (0.05)
+- Encoder learns meaningful latent representations
+- Decoder uses moderate Bezier curves
+- Result: Natural contrast and saturation
+
+#### Backward Compatibility
+
+If you need legacy behavior (e.g., comparing with old experiments):
+
+```python
+# In src/fluxflow_training/training/vae_trainer.py, line ~615
+kl = kl_standard_normal(
+    mu, logvar,
+    free_bits_nats=self.kl_free_bits,
+    reduce="mean",
+    normalize_by_dims=False  # Set to False for legacy behavior
+)
+```
+
+**Note**: Legacy behavior will be removed in v0.4.0.
+
 ## Pipeline Training Mode
 
 **New in v0.2.0**: Multi-step pipeline training allows you to define sequential training phases with different configurations.
@@ -1148,11 +677,45 @@ Pipeline training breaks your training workflow into multiple sequential steps, 
 - **Staged training**: VAE warmup → GAN training → Flow training
 - **Selective freezing**: Train components independently
 - **Loss-based transitions**: Automatically move to next step when loss threshold is met
+- **Multi-dataset training**: Train different steps on different datasets (see `docs/MULTI_DATASET_TRAINING.md`)
 
 **Use standard training for:**
 - Simple single-mode training (VAE-only or Flow-only)
 - Quick experiments
 - Resume training with same configuration
+
+### Pipeline Resilience Features
+
+**Auto-Create Missing Models** (New in Unreleased):
+
+When transitioning between pipeline steps (e.g., VAE → Flow), required models are automatically created:
+
+```yaml
+steps:
+  - name: vae_warmup
+    train_vae: true
+    # Only creates: compressor, decoder
+  
+  - name: flow_training
+    train_diff: true
+    # Auto-creates: flow_processor, text_encoder ✨
+    # No manual initialization needed!
+```
+
+**Auto-created models:**
+- `flow_processor` - Created when `train_diff: true` or `train_diff_full: true`
+- `text_encoder` - Created for flow training
+- `compressor` (for Flow) - Created for flow training if missing
+- `expander` - Created for VAE with GAN
+- `D_img` (discriminator) - Created when `gan_training: true`
+
+**What you see:**
+```
+⚠️  Auto-created flow_processor with feature_maps_dim=128
+⚠️  Auto-created text_encoder with text_embedding_dim=512
+```
+
+This prevents crashes and makes pipeline mode more robust. See `docs/PIPELINE_ARCHITECTURE.md` for details.
 
 ### Quick Start: Pipeline Training
 
@@ -1452,7 +1015,8 @@ fluxflow-train \
 
 **Monitoring:**
 - Watch `loss_recon` (reconstruction loss): Should decrease to < 0.01
-- Watch `loss_kl` (KL divergence): Should stabilize around 10-50
+- Watch `loss_kl` (KL divergence): Should stabilize around 1.0-2.0 (v0.3.0+ normalized)
+- Watch `contrast_loss`: Should stabilize around 0.001-0.01
 - Check sample images: Should look similar to input images
 
 **Checkpoint**: `outputs/stage1_vae/flxflow_final.safetensors`
@@ -1838,7 +1402,7 @@ Generation: ~2-5 seconds per image (512x512, 50 steps)
 
 - **Example Config**: `config.example.sh`
 - **UI Guide**: Use the web UI at `http://localhost:7860` for visual training configuration
-- **Issues**: Report bugs at https://github.com/danny-mio/fluxflow/issues
+- **Issues**: Report bugs at https://github.com/danny-mio/fluxflow-training/issues
 
 ## Summary
 

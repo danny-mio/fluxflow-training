@@ -258,6 +258,16 @@ def initialize_models(args, config, device, checkpoint_manager):
             D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded D_img checkpoint")
 
+            # Validate discriminator weights for NaN/Inf
+            nan_found = False
+            for name, param in D_img.named_parameters():
+                if torch.isnan(param).any() or torch.isinf(param).any():
+                    print(f"  ⚠️  WARNING: NaN/Inf in D_img parameter: {name}")
+                    nan_found = True
+            if nan_found:
+                print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
+                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+
     # Move to device
     diffuser.to(device)
     text_encoder.to(device)
@@ -496,6 +506,7 @@ def train_legacy(args):
                 lr = {"lr": args.lr, "vae": args.lr}
 
     # Load training state from checkpoint if available
+    saved_last_sample_step = 0
     if os.path.exists(TRAINING_STATE_FILE):
         try:
             with open(TRAINING_STATE_FILE, "r") as f:
@@ -503,6 +514,7 @@ def train_legacy(args):
                 saved_global_step = training_state.get("global_step", 0)
                 saved_epoch = training_state.get("epoch", 0)
                 saved_batch_idx = training_state.get("batch_idx", 0)
+                saved_last_sample_step = training_state.get("last_sample_step", 0)
                 print(
                     f"Resuming from epoch {saved_epoch}, batch {saved_batch_idx}, global step: {saved_global_step}"
                 )
@@ -597,6 +609,16 @@ def train_legacy(args):
     if loaded_states.get("D_img"):
         D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded D_img checkpoint")
+
+        # Validate discriminator weights for NaN/Inf
+        nan_found = False
+        for name, param in D_img.named_parameters():
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                print(f"  ⚠️  WARNING: NaN/Inf in D_img parameter: {name}")
+                nan_found = True
+        if nan_found:
+            print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
+            D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
 
     diffuser.to(device)
     text_encoder.to(device)
@@ -902,10 +924,13 @@ def train_legacy(args):
                 args.sample_captions,
                 args.batch_size,
                 sample_sizes=parsed_sample_sizes,
+                use_cfg=True,
+                guidance_scale=5.0,
             )
 
     global_step = saved_global_step
-    checkpoint_count = 0
+    last_sample_step = saved_last_sample_step
+    sample_interval = args.checkpoint_save_interval * args.samples_per_checkpoint
 
     print(f"\nStarting training for {args.n_epochs} epochs...")
     print(f"Total batches: {total_batches}, Steps per epoch: {steps_per_epoch}")
@@ -1131,16 +1156,19 @@ def train_legacy(args):
                         ),
                         kl_warmup_steps=args.kl_warmup_steps,
                         kl_max_beta=args.kl_beta,
+                        last_sample_step=last_sample_step,
                     )
-
-                    checkpoint_count += 1
 
                     # Clear CUDA cache to prevent memory fragmentation
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
 
-                    # Generate samples every N checkpoint saves
-                    if not args.no_samples and checkpoint_count % args.samples_per_checkpoint == 0:
+                    # Generate samples based on step interval (decoupled from checkpoint count)
+                    if (
+                        not args.no_samples
+                        and global_step > 0
+                        and (global_step - last_sample_step) >= sample_interval
+                    ):
                         for img_addr in args.test_image_address:
                             safe_vae_sample(
                                 diffuser,
@@ -1161,7 +1189,10 @@ def train_legacy(args):
                                 args.sample_captions,
                                 args.batch_size,
                                 sample_sizes=parsed_sample_sizes,
+                                use_cfg=True,
+                                guidance_scale=5.0,
                             )
+                        last_sample_step = global_step
 
             except Exception as e:
                 print(f"Error in batch {i}: {e}")
@@ -1207,6 +1238,7 @@ def train_legacy(args):
             kl_beta_current=cosine_anneal_beta(global_step, args.kl_warmup_steps, args.kl_beta),
             kl_warmup_steps=args.kl_warmup_steps,
             kl_max_beta=args.kl_beta,
+            last_sample_step=last_sample_step,
         )
 
         model_saved = True
@@ -1744,16 +1776,20 @@ def main():
     if args.tt2m_token and not args.webdataset_token:
         args.webdataset_token = args.tt2m_token
 
-    # Validate arguments
-    has_local_data = args.data_path and args.captions_file
-    has_webdataset = args.use_webdataset and args.webdataset_token
+    # Detect if we're using pipeline mode (skip validation if so)
+    is_pipeline_mode = config and detect_config_mode(config) == "pipeline"
 
-    if not has_local_data and not has_webdataset:
-        print(
-            "Error: Please provide --data_path and --captions_file, "
-            "or use --use_webdataset with --webdataset_token"
-        )
-        sys.exit(1)
+    # Validate arguments (only if NOT using pipeline mode with datasets defined)
+    if not is_pipeline_mode:
+        has_local_data = args.data_path and args.captions_file
+        has_webdataset = args.use_webdataset and args.webdataset_token
+
+        if not has_local_data and not has_webdataset:
+            print(
+                "Error: Please provide --data_path and --captions_file, "
+                "or use --use_webdataset with --webdataset_token"
+            )
+            sys.exit(1)
 
     # Detect training mode
     if config and detect_config_mode(config) == "pipeline":

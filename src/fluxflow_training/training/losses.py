@@ -83,6 +83,7 @@ def kl_standard_normal(
     logvar: torch.Tensor,
     free_bits_nats: float = 0.0,
     reduce: str = "mean",
+    normalize_by_dims: bool = False,
 ) -> torch.Tensor:
     """
     KL divergence between learned Gaussian and standard normal.
@@ -94,6 +95,14 @@ def kl_standard_normal(
         logvar: Log variance tensor [B, D, H, W]
         free_bits_nats: Minimum KL in nats (0.0 = no constraint)
         reduce: 'mean' or 'sum' reduction over batch
+        normalize_by_dims: If True, normalize KL by number of dimensions (resolution-invariant).
+                          If False, sum over dimensions (legacy behavior).
+                          **Recommended: True for new training runs.**
+
+                          Why normalize?
+                          - Legacy (False): KL scales with image resolution (e.g., 512x512 → ~150K)
+                          - Normalized (True): KL is per-dimension (~1-2), resolution-invariant
+                          - With normalize=True, increase kl_beta by ~10× (e.g., 0.0001 → 0.001)
 
     Returns:
         KL divergence scalar or per-sample tensor
@@ -104,8 +113,12 @@ def kl_standard_normal(
     if free_bits_nats > 0.0:
         kl = torch.clamp(kl, min=free_bits_nats)
 
-    # Sum over spatial and channel dimensions
-    kl = kl.sum(dim=(1, 2, 3))
+    if normalize_by_dims:
+        # Mean over all dimensions (resolution-invariant, recommended for new training)
+        kl = kl.mean(dim=(1, 2, 3))
+    else:
+        # Sum over spatial and channel dimensions (legacy behavior)
+        kl = kl.sum(dim=(1, 2, 3))
 
     if reduce == "mean":
         return kl.mean()

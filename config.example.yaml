@@ -67,7 +67,11 @@ training:
   train_diff_full: false
 
   # KL divergence settings
-  kl_beta: 0.0001
+  # NOTE: KL is now normalized by dimensions (resolution-invariant)
+  # Old behavior: KL ~150K for 512x512, weighted by 0.0001 → effective weight 15.0
+  # New behavior: KL ~1.2 for any resolution, weighted by 0.001 → effective weight 0.0012
+  # If you need legacy behavior, set normalize_by_dims=False in vae_trainer.py
+  kl_beta: 0.001  # Increased 10× to compensate for normalized KL
   kl_warmup_steps: 5000
   kl_free_bits: 0.0
 

@@ -6,6 +6,105 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### 🚀 Added
+
+#### CFG-Enabled Training Sample Generation
+- **Training samples now use CFG by default** when generating flow model samples
+  - Automatically enables `use_cfg=True` with `guidance_scale=5.0`
+  - Provides better preview quality during training
+  - Matches inference-time generation quality
+  - Only applies to flow training (`train_diff` or `train_diff_full`)
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 927-928, 1192-1193)
+  - **Requires**: fluxflow-core with CFG sample generation support
+
+#### Multi-Dataset Pipeline Support
+- **Define multiple named datasets** for different pipeline steps
+  - Support for both local and webdataset sources in same pipeline
+  - Per-dataset configuration: `batch_size`, `workers`, image folders, URLs
+  - Assign specific datasets to individual steps via `dataset` field
+  - Optional `default_dataset` for steps without explicit assignment
+- **Use cases**:
+  - Progressive training: High-res local → Low-res webdataset
+  - Domain-specific: Train VAE on portraits, Flow on landscapes
+  - Resource optimization: Local SSD for warmup, cloud storage for main training
+- **Files**: `src/fluxflow_training/training/pipeline_config.py` (DatasetConfig, parsing, validation)
+- **Documentation**: `docs/MULTI_DATASET_TRAINING.md` (285 lines with examples)
+- **Example**: `examples/multi_dataset_pipeline.yaml`
+
+#### Auto-Create Missing Models in Pipeline Mode
+- **Automatic model initialization** when transitioning between pipeline steps
+  - Prevents crashes when moving from VAE → Flow training
+  - Auto-creates: `flow_processor`, `text_encoder`, `compressor`, `expander`, `D_img` (discriminator)
+  - Uses default parameters from args (`vae_dim`, `feature_maps_dim`, `text_embedding_dim`)
+  - Logs warnings when models are auto-created
+  - Moves models to correct device automatically
+- **User impact**: Pipeline mode now more resilient; no manual model initialization required
+- **Files**: `src/fluxflow_training/training/pipeline_orchestrator.py` (lines 579-713)
+
+#### Model Validation Before Training
+- **Pre-flight validation** checks required models exist before creating trainers
+- **Clear error messages** listing missing models if validation fails
+- Prevents cryptic AttributeError crashes during training
+- **Files**: `src/fluxflow_training/training/pipeline_orchestrator.py`
+
+### 🧪 Testing
+- **Added 21 comprehensive unit tests** for multi-dataset pipeline
+  - DatasetConfig dataclass tests (3 tests)
+  - Dataset parsing tests for local + webdataset (4 tests)
+  - Step dataset assignment tests (3 tests)
+  - Dataset validation tests (9 tests)
+  - Backward compatibility tests (2 tests)
+- **File**: `tests/unit/test_pipeline_multi_dataset.py`
+
+### 📚 Documentation
+- **Major TRAINING_GUIDE.md improvements** for YAML-first configuration
+  - Added "Configuration Methods" section comparing YAML vs CLI approaches
+  - Rewrote Quick Start with dual paths: "CLI Quick Test" vs "YAML Config (Production)"
+  - Clear recommendation: YAML config for production, CLI for quick tests only
+  - Feature comparison table showing YAML advantages
+  - Eliminates confusion about external JSON optimizer configs
+  - Emphasizes inline YAML optimizer configuration in pipeline mode
+  - **Impact**: Users now understand YAML is the recommended production approach
+  - **Files**: `docs/TRAINING_GUIDE.md` (lines 102-220)
+
+### 🐛 Fixed
+
+#### Logging and Sampling Bugs
+- **CRITICAL: Missing JSONL records on crash/interrupt**
+  - Added `f.flush()` to `progress_logger.log_metrics()` to force immediate disk writes
+  - Prevents data loss when training is interrupted or crashes
+  - **Impact**: All metrics are now guaranteed to be written to disk immediately
+  - **Files**: `src/fluxflow_training/training/progress_logger.py:189`
+
+- **VAE snapshots generated during Flow-only training**
+  - Fixed `safe_vae_sample()` being called during pure Flow training (no VAE, no GAN, no SPADE)
+  - Now generates VAE samples when encoder/decoder is being trained: `train_vae=True` OR `gan_training=True` OR `train_spade=True`
+  - Correctly handles all encoder/decoder training modes:
+    - VAE mode: Reconstruction loss training
+    - GAN-only mode: Adversarial loss training without reconstruction
+    - SPADE mode: Decoder SPADE conditioning training
+  - **Impact**: 
+    - Eliminates confusing VAE samples during Flow-only training
+    - Preserves samples for all encoder/decoder training modes
+    - Reduces I/O overhead (~2-5 seconds per checkpoint for multi-image test sets)
+    - Sample generation now accurately reflects active training modes
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 1168-1195)
+
+- **Sample generation decoupled from checkpointing**
+  - Sample generation now triggered by `sample_interval` based on `global_step` (independent of checkpoint frequency)
+  - Ensures consistent sample frequency across entire training run
+  - Prevents missed samples when checkpoint interval doesn't align with sample needs
+  - **Impact**: More reliable monitoring of training progress via samples
+  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 1168-1195)
+  - **Note**: Sample filenames still use `epoch` parameter (passed at lines 1178, 1187) for compatibility
+
+- **Linting errors** in pipeline configuration (trailing whitespace)
+- **Pre-commit hooks** now enforced (flake8, black, pytest)
+
+### 📝 Documentation
+- Added comprehensive multi-dataset training guide with use cases, examples, troubleshooting
+- Added example pipeline configuration with multiple datasets
+
 ## [0.3.1] - 2025-12-13
 
 ### 🔄 Dependencies

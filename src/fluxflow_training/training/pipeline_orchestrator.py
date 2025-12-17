@@ -17,6 +17,73 @@ from .pipeline_config import PipelineConfig, PipelineStepConfig
 logger = get_logger(__name__)
 
 
+class FastForwardDataLoader:
+    """
+    Wrapper that yields None for initial batches to enable fast resume without data processing.
+
+    When resuming training mid-epoch, this wrapper returns (None, None) for the first
+    `skip_batches` iterations without consuming from the underlying dataloader iterator.
+    This avoids downloading tar files and decoding images for batches that will be skipped.
+
+    CRITICAL Requirements for Training Loop:
+        1. MUST use enumerate() to preserve batch_idx semantics
+        2. MUST skip None batches: if imgs is None: continue
+        3. Only use for resume scenarios, not general-purpose iteration
+
+    Thread Safety: Not thread-safe. Do not share across processes.
+
+    Example:
+        >>> dataloader = DataLoader(dataset, batch_size=4)
+        >>> wrapper = FastForwardDataLoader(dataloader, skip_batches=1000)
+        >>> for batch_idx, (imgs, labels) in enumerate(wrapper):
+        ...     if imgs is None:
+        ...         continue  # Skip without processing
+        ...     # Training starts at batch_idx=1000
+    """
+
+    def __init__(self, dataloader, skip_batches=0):
+        """
+        Args:
+            dataloader: PyTorch DataLoader to wrap
+            skip_batches: Number of batches to skip (return None for these)
+                         If this exceeds dataloader length, no real data will be yielded.
+        """
+        self.dataloader = dataloader
+        self.skip_batches = skip_batches
+        self.batch_count = 0
+
+        # Warn if skip might exceed dataloader length
+        # Use try/except to handle IterableDatasets which may have __len__ but raise TypeError
+        try:
+            if hasattr(dataloader, "__len__") and skip_batches >= len(dataloader):
+                logger.warning(
+                    f"FastForwardDataLoader: skip_batches ({skip_batches}) >= dataloader length "
+                    f"({len(dataloader)}). This epoch may yield no training data."
+                )
+        except TypeError:
+            # IterableDataset - no length available, skip warning
+            pass
+
+    def __iter__(self):
+        self.batch_count = 0
+        self.iterator = iter(self.dataloader)
+        return self
+
+    def __next__(self):
+        # For skipped batches, return None without consuming from dataloader
+        if self.batch_count < self.skip_batches:
+            self.batch_count += 1
+            return None, None
+
+        # Past skip point - yield real data from dataloader
+        self.batch_count += 1
+        return next(self.iterator)
+
+    def __len__(self):
+        """Preserve original dataloader length."""
+        return len(self.dataloader) if hasattr(self.dataloader, "__len__") else 0
+
+
 class TrainingPipelineOrchestrator:
     """
     Orchestrates multi-step training pipelines.
@@ -390,6 +457,115 @@ class TrainingPipelineOrchestrator:
         print(f"\nTotal epochs: {total_epochs}")
         print("=" * 80 + "\n")
 
+    def _create_dataloader_for_dataset(self, dataset_config, dataset_name, args, config):
+        """
+        Create a dataloader for a specific dataset configuration.
+
+        Args:
+            dataset_config: DatasetConfig object with dataset settings
+            dataset_name: Name of the dataset (for logging)
+            args: Command-line arguments
+            config: Full config dictionary
+
+        Returns:
+            Tuple of (dataloader, sampler, dataset_size)
+        """
+        import torch
+        from functools import partial
+        from torch.utils.data import DataLoader
+
+        from ..data import (
+            StreamingWebDataset,
+            TextImageDataset,
+            ResumableDimensionSampler,
+            collate_fn_variable,
+            get_or_build_dimension_cache,
+        )
+        from ..training.utils import worker_init_fn
+
+        # Prepare collate function
+        collate_fn = partial(
+            collate_fn_variable,
+            channels=args.channels,
+            img_size=args.img_size,
+            reduced_min_sizes=args.reduced_min_sizes,
+        )
+
+        # Get batch_size and workers (with fallback priority)
+        batch_size = dataset_config.batch_size or args.batch_size
+        workers = dataset_config.workers or args.workers
+
+        logger.info(f"  Batch size: {batch_size}, Workers: {workers}")
+
+        if dataset_config.type == "webdataset":
+            # WebDataset
+            logger.info(f"  WebDataset URL: {dataset_config.webdataset_url}")
+            dataset = StreamingWebDataset(
+                tokenizer_name=args.tokenizer_name,
+                token=dataset_config.webdataset_token,
+                url_pattern=dataset_config.webdataset_url,
+                channels=args.channels,
+                image_key=dataset_config.webdataset_image_key or "png",
+                label_key=dataset_config.webdataset_label_key or "json",
+                caption_key=dataset_config.webdataset_caption_key or "prompt",
+                dataset_size=dataset_config.webdataset_size or 10000,
+                samples_per_shard=dataset_config.webdataset_samples_per_shard or 1000,
+                fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
+            )
+            sampler = None
+            dataset_size = len(dataset)
+
+        elif dataset_config.type == "local":
+            # Local dataset
+            logger.info(f"  Image folder: {dataset_config.image_folder}")
+            logger.info(f"  Captions file: {dataset_config.captions_file}")
+            dataset = TextImageDataset(
+                data_path=dataset_config.image_folder,
+                captions_file=dataset_config.captions_file,
+                tokenizer_name=args.tokenizer_name,
+                transform=None,
+                fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
+            )
+
+            # Build dimension cache
+            dimension_cache = get_or_build_dimension_cache(
+                dataset,
+                cache_dir=args.output_path,
+                multiple=32,
+                rebuild=False,
+            )
+
+            # Create sampler
+            sampler = ResumableDimensionSampler(
+                dimension_cache=dimension_cache,
+                batch_size=batch_size,
+                seed=42,
+            )
+            dataset_size = len(dataset)
+        else:
+            raise ValueError(f"Unknown dataset type: {dataset_config.type}")
+
+        # Build DataLoader
+        dataloader_kwargs = {
+            "dataset": dataset,
+            "num_workers": workers,
+            "pin_memory": (not torch.backends.mps.is_available()),
+            "collate_fn": collate_fn,
+            "worker_init_fn": worker_init_fn,
+            "persistent_workers": workers > 0,
+        }
+
+        if sampler is not None:
+            dataloader_kwargs["batch_sampler"] = sampler
+        else:
+            dataloader_kwargs["batch_size"] = batch_size
+            dataloader_kwargs["shuffle"] = False
+
+        dataloader = DataLoader(**dataloader_kwargs)
+        dataloader = self.accelerator.prepare(dataloader)
+
+        return dataloader, sampler, dataset_size
+
     def _create_step_optimizers(self, step, models, args):
         """Create optimizers for current step from inline config or defaults."""
         from ..training.optimizer_factory import create_optimizer
@@ -577,6 +753,49 @@ class TrainingPipelineOrchestrator:
         )
 
         if needs_vae_trainer and "vae" in optimizers:
+            # Auto-add missing VAE models if they don't exist
+            if "compressor" not in models or models["compressor"] is None:
+                from fluxflow import FluxCompressor
+
+                logger.warning(
+                    "Compressor not found in models dict, creating new FluxCompressor. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                # Get vae_dim from args or use default
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["compressor"] = FluxCompressor(
+                    d_model=vae_dim,
+                    use_attention=True,
+                    use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
+                ).to(self.device)
+
+            if "expander" not in models or models["expander"] is None:
+                from fluxflow import FluxExpander
+
+                logger.warning(
+                    "Expander not found in models dict, creating new FluxExpander. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["expander"] = FluxExpander(
+                    d_model=vae_dim,
+                    use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
+                ).to(self.device)
+
+            # Auto-add discriminator if GAN training enabled
+            if step.gan_training and ("D_img" not in models or models["D_img"] is None):
+                from fluxflow import PatchDiscriminator
+
+                logger.warning(
+                    "Discriminator 'D_img' not found but GAN training enabled, creating new PatchDiscriminator. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                channels = getattr(args, "channels", 3)
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["D_img"] = PatchDiscriminator(in_channels=channels, ctx_dim=vae_dim).to(
+                    self.device
+                )
+
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
                 expander=models["expander"],
@@ -628,6 +847,47 @@ class TrainingPipelineOrchestrator:
             logger.info(f"Created VAE trainer ({', '.join(modes)})")
 
         if (step.train_diff or step.train_diff_full) and "flow" in optimizers:
+            # Auto-add missing Flow models if they don't exist
+            if "flow_processor" not in models or models["flow_processor"] is None:
+                from fluxflow import FluxFlowProcessor
+
+                logger.warning(
+                    "FlowProcessor not found in models dict, creating new FluxFlowProcessor. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                feature_maps_dim = getattr(args, "feature_maps_dim", 512)
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["flow_processor"] = FluxFlowProcessor(
+                    d_model=feature_maps_dim, vae_dim=vae_dim
+                ).to(self.device)
+
+            if "text_encoder" not in models or models["text_encoder"] is None:
+                from fluxflow import BertTextEncoder
+
+                logger.warning(
+                    "TextEncoder not found in models dict, creating new BertTextEncoder. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                text_embedding_dim = getattr(args, "text_embedding_dim", 768)
+                pretrained_bert = getattr(args, "pretrained_bert_model", "bert-base-uncased")
+                models["text_encoder"] = BertTextEncoder(
+                    embed_dim=text_embedding_dim, pretrain_model=pretrained_bert
+                ).to(self.device)
+
+            if "compressor" not in models or models["compressor"] is None:
+                from fluxflow import FluxCompressor
+
+                logger.warning(
+                    "Compressor not found in models dict for Flow trainer, creating new FluxCompressor. "
+                    "This may not load from checkpoint - ensure models are initialized properly."
+                )
+                vae_dim = getattr(args, "vae_dim", 128)
+                models["compressor"] = FluxCompressor(
+                    d_model=vae_dim,
+                    use_attention=True,
+                    use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
+                ).to(self.device)
+
             trainers["flow"] = FlowTrainer(
                 flow_processor=models["flow_processor"],
                 text_encoder=models["text_encoder"],
@@ -912,6 +1172,33 @@ class TrainingPipelineOrchestrator:
             print(f"Duration: {step.n_epochs} epochs")
             print(f"{'='*80}\n")
 
+            # Switch dataset if needed for this step
+            current_dataset_name = step.dataset or self.config.default_dataset
+            if current_dataset_name and self.config.datasets:
+                dataset_config = self.config.datasets.get(current_dataset_name)
+                if dataset_config:
+                    logger.info(f"Dataset: {current_dataset_name} ({dataset_config.type})")
+                    print(f"Dataset: {current_dataset_name} ({dataset_config.type})")
+
+                    # Recreate dataloader for this dataset if it's different from previous step
+                    needs_new_dataloader = step_idx == start_step or (
+                        step_idx > 0
+                        and (self.config.steps[step_idx - 1].dataset or self.config.default_dataset)
+                        != current_dataset_name
+                    )
+
+                    if needs_new_dataloader:
+                        logger.info(f"Creating dataloader for dataset: {current_dataset_name}")
+                        dataloader, sampler, dataset_size = self._create_dataloader_for_dataset(
+                            dataset_config, current_dataset_name, args, config
+                        )
+                        batches_per_epoch = max(1, dataset_size // args.batch_size)
+                        logger.info(
+                            f"Dataset size: {dataset_size:,} samples, {batches_per_epoch} batches/epoch"
+                        )
+            else:
+                logger.info("Using default dataloader (no dataset specified for this step)")
+
             # Configure models for this step (freeze/unfreeze)
             self.configure_step_models(step, models)
 
@@ -960,17 +1247,37 @@ class TrainingPipelineOrchestrator:
             # Training loop for this step
             step_start_time = time.time()
 
+            # Initialize epoch and batch_idx in case loop exits early (e.g., max_steps < batches_per_epoch)
+            epoch = start_epoch if step_idx == start_step else 0
+            batch_idx = 0
+
             for epoch in range(start_epoch if step_idx == start_step else 0, step.n_epochs):
                 # Calculate total batches for this epoch (considering max_steps)
                 epoch_total_batches = (
                     min(batches_per_epoch, step.max_steps) if step.max_steps else batches_per_epoch
                 )
 
+                # Show which dataset is being used
+                current_dataset_name = step.dataset or self.config.default_dataset
+                dataset_info = f", Dataset: {current_dataset_name}" if current_dataset_name else ""
+
                 print(
                     f"\nStep {step.name} ({step_idx+1}/{len(self.config.steps)}), "
                     f"Epoch {epoch+1}/{step.n_epochs}, "
-                    f"Batches 0/{epoch_total_batches}"
+                    f"Batches 0/{epoch_total_batches}{dataset_info}"
                 )
+
+                # Wrap dataloader with fast-forward if resuming mid-epoch
+                # This allows batch_idx to increment correctly without downloading/processing skipped batches
+                dataloader_for_epoch = dataloader
+                if step_idx == start_step and epoch == start_epoch and start_batch > 0:
+                    logger.info(
+                        f"Fast-forwarding to batch {start_batch} "
+                        f"(skipping without downloading/processing)"
+                    )
+                    dataloader_for_epoch = FastForwardDataLoader(
+                        dataloader, skip_batches=start_batch
+                    )
 
                 epoch_start_time = time.time()
 
@@ -981,18 +1288,26 @@ class TrainingPipelineOrchestrator:
                 g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
                 d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
                 lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
+                bezier_reg_errors = FloatBuffer(
+                    max(args.log_interval * 2, 10)
+                )  # Bezier regularization
+                color_stats_errors = FloatBuffer(
+                    max(args.log_interval * 2, 10)
+                )  # Color statistics loss
+                hist_loss_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Histogram loss
+                contrast_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Contrast loss
                 batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
-                for batch_idx, (imgs, input_ids) in enumerate(dataloader):
+                for batch_idx, (imgs, input_ids) in enumerate(dataloader_for_epoch):
+                    # Skip None batches from FastForwardDataLoader (fast-forward mode)
+                    if imgs is None:
+                        continue
+
                     batch_start_time = time.time()
                     # Break if max_steps reached (for quick testing)
                     if step.max_steps is not None and batch_idx >= step.max_steps:
                         logger.info(f"Reached max_steps={step.max_steps}, ending epoch early")
                         break
-
-                    # Skip batches if resuming mid-epoch
-                    if step_idx == start_step and epoch == start_epoch and batch_idx < start_batch:
-                        continue
 
                     self.global_step += 1
                     input_ids = input_ids.to(self.device)
@@ -1015,6 +1330,16 @@ class TrainingPipelineOrchestrator:
                                 d_errors.add_item(vae_losses["discriminator"])
                             if "lpips" in vae_losses:
                                 lpips_errors.add_item(vae_losses["lpips"])
+
+                            # Track VAE regularization losses if available
+                            if "bezier_reg" in vae_losses:
+                                bezier_reg_errors.add_item(vae_losses["bezier_reg"])
+                            if "color_stats" in vae_losses:
+                                color_stats_errors.add_item(vae_losses["color_stats"])
+                            if "hist_loss" in vae_losses:
+                                hist_loss_errors.add_item(vae_losses["hist_loss"])
+                            if "contrast_loss" in vae_losses:
+                                contrast_errors.add_item(vae_losses["contrast_loss"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
@@ -1099,6 +1424,15 @@ class TrainingPipelineOrchestrator:
                             # Add LPIPS if active
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
+                            # Add VAE regularization losses if available
+                            if len(bezier_reg_errors._items) > 0:
+                                log_msg += f" | Bezier: {bezier_reg_errors.average:.4f}"
+                            if len(color_stats_errors._items) > 0:
+                                log_msg += f" | ColorStats: {color_stats_errors.average:.4f}"
+                            if len(hist_loss_errors._items) > 0:
+                                log_msg += f" | Hist: {hist_loss_errors.average:.4f}"
+                            if len(contrast_errors._items) > 0:
+                                log_msg += f" | Contrast: {contrast_errors.average:.4f}"
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
@@ -1121,6 +1455,15 @@ class TrainingPipelineOrchestrator:
                             # Add LPIPS metrics
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 metrics["lpips_loss"] = lpips_errors.average
+                            # Add VAE regularization metrics
+                            if len(bezier_reg_errors._items) > 0:
+                                metrics["bezier_reg"] = bezier_reg_errors.average
+                            if len(color_stats_errors._items) > 0:
+                                metrics["color_stats"] = color_stats_errors.average
+                            if len(hist_loss_errors._items) > 0:
+                                metrics["hist_loss"] = hist_loss_errors.average
+                            if len(contrast_errors._items) > 0:
+                                metrics["contrast_loss"] = contrast_errors.average
 
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average

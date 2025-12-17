@@ -7,10 +7,36 @@ across training interruptions.
 """
 
 import json
+import logging
+import math
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _sanitize_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize metrics to handle NaN/Inf values.
+
+    Args:
+        metrics: Dictionary of metrics
+
+    Returns:
+        Sanitized metrics dictionary with NaN/Inf replaced by None
+    """
+    sanitized = {}
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                sanitized[key] = None
+            else:
+                sanitized[key] = value
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 class TrainingProgressLogger:
@@ -24,13 +50,21 @@ class TrainingProgressLogger:
     - Tracks session metadata
     """
 
-    def __init__(self, output_path: str, step_name: Optional[str] = None):
+    def __init__(
+        self,
+        output_path: str,
+        step_name: Optional[str] = None,
+        flush_policy: str = "immediate",
+        flush_interval: int = 50,
+    ):
         """
         Initialize the progress logger.
 
         Args:
             output_path: Base output path for training artifacts
             step_name: Optional pipeline step name for file naming
+            flush_policy: Flush policy ("immediate", "periodic", "buffered")
+            flush_interval: Number of writes before flush (for periodic policy)
         """
         self.output_path = Path(output_path)
         self.graph_dir = self.output_path / "graph"
@@ -38,6 +72,11 @@ class TrainingProgressLogger:
 
         # Track current step for pipeline mode
         self.current_step_name = step_name
+
+        # Flush policy configuration
+        self.flush_policy = flush_policy
+        self.flush_interval = flush_interval
+        self._write_count = 0
 
         # File paths (will be updated if step_name changes)
         self._update_file_paths()
@@ -175,7 +214,7 @@ class TrainingProgressLogger:
             "epoch": epoch,
             "batch": batch,
             "global_step": global_step,
-            "metrics": metrics,
+            "metrics": _sanitize_metrics(metrics),
         }
 
         if learning_rates:
@@ -184,9 +223,34 @@ class TrainingProgressLogger:
         if extras:
             log_entry["extras"] = extras
 
-        # Append to metrics file (JSON Lines format)
-        with open(self.metrics_file, "a") as f:
-            f.write(json.dumps(log_entry) + "\n")
+        try:
+            json_str = json.dumps(log_entry, allow_nan=False)
+            with open(self.metrics_file, "a") as f:
+                f.write(json_str + "\n")
+                self._apply_flush_policy(f)
+        except (IOError, OSError) as e:
+            logger.error(f"Failed to write metrics: {e}")
+            try:
+                print(f"FALLBACK_METRIC: {json_str}", file=sys.stderr)
+            except Exception:
+                pass
+        except (ValueError, TypeError) as e:
+            logger.error(f"Failed to serialize metrics: {e}")
+
+    def _apply_flush_policy(self, f):
+        """Apply the configured flush policy to file handle.
+
+        Args:
+            f: Open file handle
+        """
+        if self.flush_policy == "immediate":
+            f.flush()
+        elif self.flush_policy == "periodic":
+            self._write_count += 1
+            if self._write_count >= self.flush_interval:
+                f.flush()
+                self._write_count = 0
+        # "buffered" does nothing - relies on OS buffering
 
     def mark_resumed(self):
         """Mark this session as resumed (called when training is restarted)."""

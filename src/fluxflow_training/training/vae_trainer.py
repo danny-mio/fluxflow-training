@@ -7,6 +7,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from fluxflow.utils import get_logger
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
@@ -237,6 +238,139 @@ class VAETrainer:
 
         return loss_lf + alpha * loss_hf
 
+    def _bezier_regularization_loss(self):
+        """
+        Regularize Bezier control points to prevent extreme curves.
+
+        Encourages control points to form a smooth, near-linear curve
+        which prevents high contrast and saturation issues.
+
+        Returns:
+            Regularization loss for Bezier parameters
+        """
+        loss = 0.0
+
+        # Find RGB Bezier activation in expander
+        if hasattr(self.expander, "rgb_activation"):
+            rgb_bezier = self.expander.rgb_activation
+
+            # Regularize control points to stay near linear interpolation
+            # For a linear curve from p0=-1 to p3=1:
+            # p1 should be near -0.33, p2 should be near 0.33
+            linear_p1 = -0.33
+            linear_p2 = 0.33
+
+            # L2 penalty for deviation from linear
+            if hasattr(rgb_bezier, "p1") and hasattr(rgb_bezier, "p2"):
+                loss += torch.mean((rgb_bezier.p1 - linear_p1) ** 2)
+                loss += torch.mean((rgb_bezier.p2 - linear_p2) ** 2)
+
+                # Additionally, penalize large differences between p1 and p2
+                # (prevents S-curves that cause contrast expansion)
+                p_diff = torch.abs(rgb_bezier.p2 - rgb_bezier.p1)
+                # Ideal difference for linear curve is 0.66
+                loss += torch.mean((p_diff - 0.66) ** 2)
+
+        return loss
+
+    def _histogram_matching_loss(self, pred, target, bins=64):
+        """
+        Encourage matching color distribution between pred and target.
+
+        Prevents contrast expansion and color shifts by matching
+        the histogram of each color channel.
+
+        Args:
+            pred: Predicted images [B, C, H, W]
+            target: Target images [B, C, H, W]
+            bins: Number of histogram bins
+
+        Returns:
+            Histogram matching loss
+        """
+        loss = 0.0
+        for c in range(3):  # R, G, B channels
+            # Flatten spatial dimensions for histogram
+            pred_c = pred[:, c].reshape(-1)
+            target_c = target[:, c].reshape(-1)
+
+            # Compute normalized histograms
+            pred_hist = torch.histc(pred_c, bins=bins, min=-1.0, max=1.0)
+            target_hist = torch.histc(target_c, bins=bins, min=-1.0, max=1.0)
+
+            # Normalize to probability distribution
+            pred_hist = pred_hist / (pred_hist.sum() + 1e-8)
+            target_hist = target_hist / (target_hist.sum() + 1e-8)
+
+            # Use Earth Mover's Distance (more stable than KL divergence)
+            # Compute cumulative distributions
+            pred_cdf = torch.cumsum(pred_hist, dim=0)
+            target_cdf = torch.cumsum(target_hist, dim=0)
+
+            # L1 distance between CDFs (Wasserstein-1 distance)
+            loss += torch.mean(torch.abs(pred_cdf - target_cdf))
+
+        return loss / 3.0  # Average over channels
+
+    def _color_statistics_loss(self, pred, target):
+        """
+        Match mean and std of each color channel.
+
+        Simple but effective way to prevent contrast/saturation issues.
+
+        Args:
+            pred: Predicted images [B, C, H, W]
+            target: Target images [B, C, H, W]
+
+        Returns:
+            Color statistics matching loss
+        """
+        loss = 0.0
+
+        for c in range(3):  # R, G, B channels
+            # Mean matching
+            pred_mean = pred[:, c].mean()
+            target_mean = target[:, c].mean()
+            loss += (pred_mean - target_mean) ** 2
+
+            # Std matching (prevents contrast expansion)
+            pred_std = pred[:, c].std()
+            target_std = target[:, c].std()
+            loss += (pred_std - target_std) ** 2
+
+        return loss / 3.0  # Average over channels
+
+    def _contrast_regularization_loss(
+        self, pred: torch.Tensor, target: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Contrast regularization loss to prevent over-saturation.
+
+        Matches both global (per-channel std) and local (per-sample std) contrast.
+
+        Args:
+            pred: Predicted images [B, 3, H, W]
+            target: Target images [B, 3, H, W]
+
+        Returns:
+            Scalar contrast loss
+        """
+        loss = 0.0
+
+        # Component 1: Per-channel std ratio (global contrast preservation)
+        for c in range(3):
+            pred_std = pred[:, c].std()
+            target_std = target[:, c].std()
+            std_ratio = pred_std / (target_std + 1e-8)
+            loss += (std_ratio - 1.0) ** 2
+
+        # Component 2: Per-sample std (local contrast preservation)
+        pred_std_per_sample = pred.reshape(pred.size(0), -1).std(dim=1)
+        target_std_per_sample = target.reshape(target.size(0), -1).std(dim=1)
+        loss += F.mse_loss(pred_std_per_sample, target_std_per_sample)
+
+        return loss / 4.0  # Average over 3 channels + 1 local component
+
     def _compute_adaptive_weight(self, loss_type):
         """Balance losses based on magnitude using inverse weighting."""
         if not self.adaptive_weights:
@@ -274,6 +408,7 @@ class VAETrainer:
         self.expander.train()
 
         losses = {}
+        discriminator_was_stepped = False
 
         # Train discriminator first if using GAN
         if self.use_gan and self.discriminator is not None:
@@ -286,6 +421,7 @@ class VAETrainer:
             d_loss = self._train_discriminator(real_imgs, global_step)
             losses["discriminator"] = d_loss
             self.d_loss_buffer.add_item(d_loss)
+            discriminator_was_stepped = True
 
         # Train VAE generator
         gen_losses = self._train_generator(real_imgs, global_step)
@@ -301,28 +437,40 @@ class VAETrainer:
         if self.use_lpips:
             losses["lpips"] = gen_losses["lpips"]
 
-        # Update EMA (if available)
-        if self.ema is not None:
+        # Color/contrast regularization metrics
+        losses["bezier_reg"] = gen_losses.get("bezier_reg", 0.0)
+        losses["color_stats"] = gen_losses.get("color_stats", 0.0)
+        losses["hist_loss"] = gen_losses.get("hist_loss", 0.0)
+        losses["contrast_loss"] = gen_losses.get("contrast_loss", 0.0)
+
+        # Check if optimizer was actually stepped (could be skipped due to NaN)
+        optimizer_was_stepped = gen_losses.pop("_optimizer_stepped", True)
+
+        # Update EMA only if optimizer was stepped
+        if optimizer_was_stepped and self.ema is not None:
             self.ema.update()
 
-        # Step schedulers (ReduceLROnPlateau requires metric, others don't)
-        total_loss = gen_losses["vae"]  # Use recon_loss for scheduler
+        # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
+        # Only step if: 1) optimizer was actually stepped, and 2) not the very first step
+        if optimizer_was_stepped and global_step > 0:
+            total_loss = gen_losses["vae"]  # Use recon_loss for scheduler
 
-        # Get the underlying scheduler (may be wrapped by accelerator)
-        base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
-        if isinstance(base_scheduler, ReduceLROnPlateau):
-            self.scheduler.step(float(total_loss))  # type: ignore[arg-type]
-        else:
-            self.scheduler.step()  # type: ignore[call-arg]
-
-        if self.use_gan and self.discriminator_scheduler is not None:
-            base_d_scheduler = getattr(
-                self.discriminator_scheduler, "scheduler", self.discriminator_scheduler
-            )
-            if isinstance(base_d_scheduler, ReduceLROnPlateau):
-                self.discriminator_scheduler.step(float(losses.get("discriminator", 0.0)))  # type: ignore[arg-type]
+            # Get the underlying scheduler (may be wrapped by accelerator)
+            base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
+            if isinstance(base_scheduler, ReduceLROnPlateau):
+                self.scheduler.step(float(total_loss))  # type: ignore[arg-type]
             else:
-                self.discriminator_scheduler.step()  # type: ignore[call-arg]
+                self.scheduler.step()  # type: ignore[call-arg]
+
+            # Step discriminator scheduler only if discriminator was actually trained this step
+            if discriminator_was_stepped and self.discriminator_scheduler is not None:
+                base_d_scheduler = getattr(
+                    self.discriminator_scheduler, "scheduler", self.discriminator_scheduler
+                )
+                if isinstance(base_d_scheduler, ReduceLROnPlateau):
+                    self.discriminator_scheduler.step(float(losses.get("discriminator", 0.0)))  # type: ignore[arg-type]
+                else:
+                    self.discriminator_scheduler.step()  # type: ignore[call-arg]
 
         # Add comprehensive metrics
         vae_params = list(self.compressor.parameters()) + list(self.expander.parameters())
@@ -425,9 +573,56 @@ class VAETrainer:
         """
         self.optimizer.zero_grad(set_to_none=True)
 
+        # Check input for NaN/Inf
+        if check_for_nan(real_imgs, "input_images", logger):
+            logger.error("NaN detected in input images - skipping batch")
+            return {
+                "vae": 0.0,
+                "kl": 0.0,
+                "generator": 0.0,
+                "lpips": 0.0,
+                "recon": 0.0,
+                "_optimizer_stepped": False,
+            }
+
         # Forward pass with reparameterization
         packed_rec, mu, logvar = self.compressor(real_imgs, training=True)
+
+        # Early NaN detection after compression
+        if (
+            check_for_nan(packed_rec, "packed_rec", logger)
+            or check_for_nan(mu, "mu", logger)
+            or check_for_nan(logvar, "logvar", logger)
+        ):
+            logger.error("NaN detected in compressor output - skipping batch")
+            logger.error(
+                f"  Input image stats: min={real_imgs.min().item():.4f}, max={real_imgs.max().item():.4f}, mean={real_imgs.mean().item():.4f}"
+            )
+            return {
+                "vae": 0.0,
+                "kl": 0.0,
+                "generator": 0.0,
+                "lpips": 0.0,
+                "recon": 0.0,
+                "_optimizer_stepped": False,
+            }
+
         out_imgs_rec = self.expander(packed_rec, use_context=self.use_spade)
+
+        # Early NaN detection after expansion
+        if check_for_nan(out_imgs_rec, "out_imgs_rec", logger):
+            logger.error("NaN detected in expander output - skipping batch")
+            logger.error(
+                f"  packed_rec stats: min={packed_rec.min().item():.4f}, max={packed_rec.max().item():.4f}"
+            )
+            return {
+                "vae": 0.0,
+                "kl": 0.0,
+                "generator": 0.0,
+                "lpips": 0.0,
+                "recon": 0.0,
+                "_optimizer_stepped": False,
+            }
 
         # Reconstruction loss (skip if train_reconstruction=False)
         recon_loss = torch.tensor(0.0, device=real_imgs.device)
@@ -435,7 +630,8 @@ class VAETrainer:
 
         if self.train_reconstruction:
             # Reconstruction loss with frequency-aware weighting
-            recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=1.0)
+            # Reduced alpha from 1.0 to 0.5 to prevent over-sharpening and high contrast
+            recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.5)
             recon_mse = self.reconstruction_loss_min_fn(out_imgs_rec, real_imgs)
             recon_loss = recon_l1 + self.mse_weight * recon_mse
 
@@ -449,7 +645,9 @@ class VAETrainer:
 
         # KL divergence with beta annealing (still compute even if not training reconstruction)
         beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
-        kl = kl_standard_normal(mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean")
+        kl = kl_standard_normal(
+            mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean", normalize_by_dims=True
+        )
 
         # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
@@ -466,8 +664,34 @@ class VAETrainer:
 
             out_imgs_gan = self.expander(packed_rec_for_gan, use_context=self.use_spade)
             ctx_vec_rec = packed_rec_for_gan[:, :-1, :].contiguous().mean(dim=1)
-            g_real_logits = self.discriminator(out_imgs_gan, ctx_vec_rec)
-            G_img_loss = self.lambda_adv * g_hinge_loss(g_real_logits)
+
+            # Check inputs to discriminator
+            if check_for_nan(out_imgs_gan, "out_imgs_gan", logger):
+                logger.error("NaN in discriminator input images")
+                G_img_loss = torch.tensor(0.0, device=real_imgs.device)
+            elif check_for_nan(ctx_vec_rec, "ctx_vec_rec", logger):
+                logger.error("NaN in discriminator context vector")
+                G_img_loss = torch.tensor(0.0, device=real_imgs.device)
+            else:
+                g_real_logits = self.discriminator(out_imgs_gan, ctx_vec_rec)
+
+                # Check discriminator output
+                if check_for_nan(g_real_logits, "g_real_logits", logger):
+                    logger.error("NaN in discriminator output logits")
+                    logger.error(
+                        f"  out_imgs_gan stats: min={out_imgs_gan.min().item():.4f}, max={out_imgs_gan.max().item():.4f}, mean={out_imgs_gan.mean().item():.4f}"
+                    )
+                    logger.error(
+                        f"  ctx_vec_rec stats: min={ctx_vec_rec.min().item():.4f}, max={ctx_vec_rec.max().item():.4f}, mean={ctx_vec_rec.mean().item():.4f}"
+                    )
+                    # Check discriminator weights for NaN
+                    for name, param in self.discriminator.named_parameters():
+                        if torch.isnan(param).any():
+                            logger.error(f"  NaN in discriminator weight: {name}")
+                            break
+                    G_img_loss = torch.tensor(0.0, device=real_imgs.device)
+                else:
+                    G_img_loss = self.lambda_adv * g_hinge_loss(g_real_logits)
 
         # Update loss history for adaptive weighting
         if self.train_reconstruction:
@@ -481,6 +705,24 @@ class VAETrainer:
         w_kl = self._compute_adaptive_weight("kl")
         w_gan = self._compute_adaptive_weight("gan") if self.use_gan else 0.0
 
+        # Color/contrast regularization losses
+        bezier_reg = self._bezier_regularization_loss()
+        color_stats_loss = (
+            self._color_statistics_loss(out_imgs_rec, real_imgs)
+            if self.train_reconstruction
+            else torch.tensor(0.0, device=real_imgs.device)
+        )
+        hist_loss = (
+            self._histogram_matching_loss(out_imgs_rec, real_imgs)
+            if self.train_reconstruction
+            else torch.tensor(0.0, device=real_imgs.device)
+        )
+        contrast_loss = (
+            self._contrast_regularization_loss(out_imgs_rec, real_imgs)
+            if self.train_reconstruction
+            else torch.tensor(0.0, device=real_imgs.device)
+        )
+
         # Total loss with adaptive weighting
         total_loss = w_kl * beta * kl
         if self.train_reconstruction:
@@ -488,15 +730,41 @@ class VAETrainer:
         if self.use_gan:
             total_loss = total_loss + w_gan * G_img_loss
 
-        # Check for NaN/Inf in loss
+        # Add regularization (small weights to not dominate main losses)
+        total_loss = total_loss + 0.05 * bezier_reg  # Prevent extreme Bezier curves (increased)
+        total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
+        total_loss = total_loss + 0.02 * hist_loss  # Match color distributions
+        total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation (new)
+
+        # Check for NaN/Inf in loss with detailed diagnostics
         if check_for_nan(total_loss, "vae_total_loss", logger):
             logger.error("Skipping batch due to NaN in VAE loss")
+            # Detailed diagnostics
+            logger.error(
+                f"  recon_loss: {recon_loss.item() if not check_for_nan(recon_loss, 'recon', logger) else 'NaN'}"
+            )
+            logger.error(f"  kl: {kl.item() if not check_for_nan(kl, 'kl', logger) else 'NaN'}")
+            logger.error(
+                f"  G_img_loss: {G_img_loss.item() if not check_for_nan(G_img_loss, 'gan', logger) else 'NaN'}"
+            )
+            logger.error(f"  w_recon: {w_recon}, w_kl: {w_kl}, w_gan: {w_gan}, beta: {beta}")
+            logger.error(
+                f"  mu stats: min={mu.min().item():.4f}, max={mu.max().item():.4f}, mean={mu.mean().item():.4f}"
+            )
+            logger.error(
+                f"  logvar stats: min={logvar.min().item():.4f}, max={logvar.max().item():.4f}, mean={logvar.mean().item():.4f}"
+            )
+            if self.train_reconstruction:
+                logger.error(
+                    f"  out_imgs_rec stats: min={out_imgs_rec.min().item():.4f}, max={out_imgs_rec.max().item():.4f}"
+                )
             return {
                 "vae": 0.0,
                 "kl": 0.0,
                 "generator": 0.0,
                 "lpips": 0.0,
                 "recon": 0.0,
+                "_optimizer_stepped": False,  # Signal that optimizer was not stepped
             }
 
         # CRITICAL: Clear cache before backward to prevent OOM
@@ -530,6 +798,11 @@ class VAETrainer:
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
             "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
             "recon": float(recon_loss.detach().item()),
+            "bezier_reg": float(bezier_reg.detach().item()),
+            "color_stats": float(color_stats_loss.detach().item()),
+            "hist_loss": float(hist_loss.detach().item()),
+            "contrast_loss": float(contrast_loss.detach().item()),
+            "_optimizer_stepped": True,  # Signal that optimizer was stepped
         }
 
     def get_average_losses(self) -> dict[str, float]:
