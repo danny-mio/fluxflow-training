@@ -413,8 +413,8 @@ class TrainingPipelineOrchestrator:
             ResumableDimensionSampler,
             collate_fn_variable,
             get_or_build_dimension_cache,
-            worker_init_fn,
         )
+        from ..training.utils import worker_init_fn
 
         # Prepare collate function
         collate_fn = partial(
