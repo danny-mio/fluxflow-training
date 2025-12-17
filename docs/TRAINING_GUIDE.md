@@ -550,6 +550,114 @@ The training script automatically saves:
 - `training_states.pt`: Optimizer, scheduler, EMA states
 - `sampler_state.pt`: Data sampler state
 
+### KL Divergence Normalization (v0.3.0+)
+
+**BREAKING CHANGE**: KL divergence is now normalized by dimensions (resolution-invariant).
+
+#### What Changed?
+
+**Before (v0.2.x and earlier)**:
+- KL divergence was computed by **summing** over all spatial and channel dimensions
+- This caused KL to scale with image resolution:
+  - 512×512 images: KL ≈ 150,000 (weighted: 0.0001 × 150K = 15.0)
+  - 1024×1024 images: KL ≈ 600,000 (weighted: 0.0001 × 600K = 60.0)
+- The weighted KL dominated training, causing latent collapse and high contrast reconstructions
+- Different `kl_beta` values needed for different resolutions
+
+**After (v0.3.0+)**:
+- KL divergence is computed by **averaging** over all dimensions
+- KL is now resolution-invariant:
+  - Any resolution: KL ≈ 1.2 (weighted: 0.001 × 1.2 = 0.0012)
+- Same `kl_beta` works across all resolutions
+- Better balance with reconstruction and perceptual losses
+
+#### Migration Guide
+
+If you're upgrading from v0.2.x to v0.3.0+:
+
+1. **Increase `kl_beta` by 10×**:
+   ```yaml
+   # OLD (v0.2.x)
+   kl_beta: 0.0001
+   
+   # NEW (v0.3.0+)
+   kl_beta: 0.001  # Increased 10× to compensate for normalized scale
+   ```
+
+2. **Start training from scratch** (do NOT resume from old checkpoints):
+   - Old checkpoints were trained with unnormalized KL
+   - Resuming with normalized KL will cause training instability
+   - You must train fresh VAE weights from scratch
+
+3. **Update monitoring expectations**:
+   ```
+   # OLD: Expected KL values
+   KL (raw): 100,000 - 200,000
+   KL (weighted): 10.0 - 20.0
+   
+   # NEW: Expected KL values
+   KL (raw): 1.0 - 2.0
+   KL (weighted): 0.001 - 0.002
+   ```
+
+#### New Contrast Regularization Loss
+
+v0.3.0 also adds explicit contrast regularization to prevent over-saturation:
+
+```python
+# Component 1: Global contrast (per-channel std matching)
+# Component 2: Local contrast (per-sample std preservation)
+contrast_loss = 0.0
+
+for c in [R, G, B]:
+    std_ratio = pred_std / target_std
+    contrast_loss += (std_ratio - 1.0)²
+
+contrast_loss += MSE(pred_std_per_sample, target_std_per_sample)
+```
+
+**Expected values**: 0.001 - 0.01 (logged as `Contrast`)
+
+**Training logs before**:
+```
+VAE: 0.0523 | KL: 126562.6031 | Bezier: 0.5020 | ColorStats: 0.0015 | Hist: 0.0199
+```
+
+**Training logs after**:
+```
+VAE: 0.0523 | KL: 1.2665 | Bezier: 0.0520 | ColorStats: 0.0015 | Hist: 0.0199 | Contrast: 0.0012
+```
+
+#### Why This Change Matters
+
+The old KL computation caused **high contrast** and **over-saturation** because:
+1. Massive KL loss (15.0) vs tiny reconstruction loss (0.05) → 300× imbalance
+2. Encoder learned to output near-zero latents (minimizing KL)
+3. Decoder forced to use extreme Bezier curves to extract any signal
+4. Result: High contrast, oversaturated reconstructions
+
+With normalized KL:
+- KL (0.0012) is properly balanced with reconstruction (0.05)
+- Encoder learns meaningful latent representations
+- Decoder uses moderate Bezier curves
+- Result: Natural contrast and saturation
+
+#### Backward Compatibility
+
+If you need legacy behavior (e.g., comparing with old experiments):
+
+```python
+# In src/fluxflow_training/training/vae_trainer.py, line ~615
+kl = kl_standard_normal(
+    mu, logvar,
+    free_bits_nats=self.kl_free_bits,
+    reduce="mean",
+    normalize_by_dims=False  # Set to False for legacy behavior
+)
+```
+
+**Note**: Legacy behavior will be removed in v0.4.0.
+
 ## Pipeline Training Mode
 
 **New in v0.2.0**: Multi-step pipeline training allows you to define sequential training phases with different configurations.
@@ -907,7 +1015,8 @@ fluxflow-train \
 
 **Monitoring:**
 - Watch `loss_recon` (reconstruction loss): Should decrease to < 0.01
-- Watch `loss_kl` (KL divergence): Should stabilize around 10-50
+- Watch `loss_kl` (KL divergence): Should stabilize around 1.0-2.0 (v0.3.0+ normalized)
+- Watch `contrast_loss`: Should stabilize around 0.001-0.01
 - Check sample images: Should look similar to input images
 
 **Checkpoint**: `outputs/stage1_vae/flxflow_final.safetensors`

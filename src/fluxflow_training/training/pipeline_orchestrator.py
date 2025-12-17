@@ -1295,6 +1295,7 @@ class TrainingPipelineOrchestrator:
                     max(args.log_interval * 2, 10)
                 )  # Color statistics loss
                 hist_loss_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Histogram loss
+                contrast_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Contrast loss
                 batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader_for_epoch):
@@ -1337,6 +1338,8 @@ class TrainingPipelineOrchestrator:
                                 color_stats_errors.add_item(vae_losses["color_stats"])
                             if "hist_loss" in vae_losses:
                                 hist_loss_errors.add_item(vae_losses["hist_loss"])
+                            if "contrast_loss" in vae_losses:
+                                contrast_errors.add_item(vae_losses["contrast_loss"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
@@ -1428,6 +1431,8 @@ class TrainingPipelineOrchestrator:
                                 log_msg += f" | ColorStats: {color_stats_errors.average:.4f}"
                             if len(hist_loss_errors._items) > 0:
                                 log_msg += f" | Hist: {hist_loss_errors.average:.4f}"
+                            if len(contrast_errors._items) > 0:
+                                log_msg += f" | Contrast: {contrast_errors.average:.4f}"
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
@@ -1457,6 +1462,8 @@ class TrainingPipelineOrchestrator:
                                 metrics["color_stats"] = color_stats_errors.average
                             if len(hist_loss_errors._items) > 0:
                                 metrics["hist_loss"] = hist_loss_errors.average
+                            if len(contrast_errors._items) > 0:
+                                metrics["contrast_loss"] = contrast_errors.average
 
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average

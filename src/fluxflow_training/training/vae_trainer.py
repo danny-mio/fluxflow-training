@@ -7,6 +7,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from fluxflow.utils import get_logger
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
@@ -339,6 +340,37 @@ class VAETrainer:
 
         return loss / 3.0  # Average over channels
 
+    def _contrast_regularization_loss(
+        self, pred: torch.Tensor, target: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Contrast regularization loss to prevent over-saturation.
+
+        Matches both global (per-channel std) and local (per-sample std) contrast.
+
+        Args:
+            pred: Predicted images [B, 3, H, W]
+            target: Target images [B, 3, H, W]
+
+        Returns:
+            Scalar contrast loss
+        """
+        loss = 0.0
+
+        # Component 1: Per-channel std ratio (global contrast preservation)
+        for c in range(3):
+            pred_std = pred[:, c].std()
+            target_std = target[:, c].std()
+            std_ratio = pred_std / (target_std + 1e-8)
+            loss += (std_ratio - 1.0) ** 2
+
+        # Component 2: Per-sample std (local contrast preservation)
+        pred_std_per_sample = pred.reshape(pred.size(0), -1).std(dim=1)
+        target_std_per_sample = target.reshape(target.size(0), -1).std(dim=1)
+        loss += F.mse_loss(pred_std_per_sample, target_std_per_sample)
+
+        return loss / 4.0  # Average over 3 channels + 1 local component
+
     def _compute_adaptive_weight(self, loss_type):
         """Balance losses based on magnitude using inverse weighting."""
         if not self.adaptive_weights:
@@ -612,7 +644,9 @@ class VAETrainer:
 
         # KL divergence with beta annealing (still compute even if not training reconstruction)
         beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
-        kl = kl_standard_normal(mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean")
+        kl = kl_standard_normal(
+            mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean", normalize_by_dims=True
+        )
 
         # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
@@ -682,6 +716,11 @@ class VAETrainer:
             if self.train_reconstruction
             else torch.tensor(0.0, device=real_imgs.device)
         )
+        contrast_loss = (
+            self._contrast_regularization_loss(out_imgs_rec, real_imgs)
+            if self.train_reconstruction
+            else torch.tensor(0.0, device=real_imgs.device)
+        )
 
         # Total loss with adaptive weighting
         total_loss = w_kl * beta * kl
@@ -691,9 +730,10 @@ class VAETrainer:
             total_loss = total_loss + w_gan * G_img_loss
 
         # Add regularization (small weights to not dominate main losses)
-        total_loss = total_loss + 0.01 * bezier_reg  # Prevent extreme Bezier curves
+        total_loss = total_loss + 0.05 * bezier_reg  # Prevent extreme Bezier curves (increased)
         total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
         total_loss = total_loss + 0.02 * hist_loss  # Match color distributions
+        total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation (new)
 
         # Check for NaN/Inf in loss with detailed diagnostics
         if check_for_nan(total_loss, "vae_total_loss", logger):
@@ -760,6 +800,7 @@ class VAETrainer:
             "bezier_reg": float(bezier_reg.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
+            "contrast_loss": float(contrast_loss.detach().item()),
             "_optimizer_stepped": True,  # Signal that optimizer was stepped
         }
 
