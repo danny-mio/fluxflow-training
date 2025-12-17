@@ -1069,6 +1069,13 @@ class TrainingPipelineOrchestrator:
                 g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
                 d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
                 lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
+                bezier_reg_errors = FloatBuffer(
+                    max(args.log_interval * 2, 10)
+                )  # Bezier regularization
+                color_stats_errors = FloatBuffer(
+                    max(args.log_interval * 2, 10)
+                )  # Color statistics loss
+                hist_loss_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Histogram loss
                 batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader):
@@ -1103,6 +1110,14 @@ class TrainingPipelineOrchestrator:
                                 d_errors.add_item(vae_losses["discriminator"])
                             if "lpips" in vae_losses:
                                 lpips_errors.add_item(vae_losses["lpips"])
+
+                            # Track VAE regularization losses if available
+                            if "bezier_reg" in vae_losses:
+                                bezier_reg_errors.add_item(vae_losses["bezier_reg"])
+                            if "color_stats" in vae_losses:
+                                color_stats_errors.add_item(vae_losses["color_stats"])
+                            if "hist_loss" in vae_losses:
+                                hist_loss_errors.add_item(vae_losses["hist_loss"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
@@ -1187,6 +1202,13 @@ class TrainingPipelineOrchestrator:
                             # Add LPIPS if active
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
+                            # Add VAE regularization losses if available
+                            if len(bezier_reg_errors._items) > 0:
+                                log_msg += f" | Bezier: {bezier_reg_errors.average:.4f}"
+                            if len(color_stats_errors._items) > 0:
+                                log_msg += f" | ColorStats: {color_stats_errors.average:.4f}"
+                            if len(hist_loss_errors._items) > 0:
+                                log_msg += f" | Hist: {hist_loss_errors.average:.4f}"
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
@@ -1209,6 +1231,13 @@ class TrainingPipelineOrchestrator:
                             # Add LPIPS metrics
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 metrics["lpips_loss"] = lpips_errors.average
+                            # Add VAE regularization metrics
+                            if len(bezier_reg_errors._items) > 0:
+                                metrics["bezier_reg"] = bezier_reg_errors.average
+                            if len(color_stats_errors._items) > 0:
+                                metrics["color_stats"] = color_stats_errors.average
+                            if len(hist_loss_errors._items) > 0:
+                                metrics["hist_loss"] = hist_loss_errors.average
 
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average
