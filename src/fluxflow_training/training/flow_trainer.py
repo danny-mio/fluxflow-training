@@ -257,11 +257,12 @@ class FlowTrainer:
         # Update EMA
         self.ema.update()
 
+        # Get loss value for metrics and schedulers
+        loss_value = float(total_loss.detach().item())
+
         # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
         # Skip first step to avoid PyTorch warning about calling scheduler before first optimizer step
         if not self._first_step:
-            loss_value = float(total_loss.detach().item())
-
             # Get the underlying scheduler (may be wrapped by accelerator)
             base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
             if isinstance(base_scheduler, ReduceLROnPlateau):
