@@ -310,6 +310,22 @@ def initialize_models(args, config, device, checkpoint_manager):
     image_encoder.to(device)
     D_img.to(device)
 
+    # Auto-load text encoder if available and not already loaded from checkpoint
+    # Text encoder is shared between Bezier and Baseline models
+    if not (args.model_checkpoint and os.path.exists(args.model_checkpoint)):
+        # Look for standalone text_encoder.safetensors in output directory
+        if args.output_path:
+            text_encoder_path = Path(args.output_path) / "text_encoder.safetensors"
+            if text_encoder_path.exists():
+                try:
+                    from safetensors.torch import load_file
+
+                    text_encoder_state = load_file(str(text_encoder_path))
+                    text_encoder.load_state_dict(text_encoder_state, strict=False)
+                    print(f"✓ Auto-loaded text encoder from {text_encoder_path}")
+                except Exception as e:
+                    print(f"⚠️  Failed to auto-load text encoder: {e}")
+
     return {
         "diffuser": diffuser,
         "compressor": compressor,
