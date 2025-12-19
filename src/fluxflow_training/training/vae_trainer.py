@@ -798,7 +798,11 @@ class VAETrainer:
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
             "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
             "recon": float(recon_loss.detach().item()),
-            "bezier_reg": float(bezier_reg.detach().item()),
+            "bezier_reg": (
+                float(bezier_reg.detach().item())
+                if isinstance(bezier_reg, torch.Tensor)
+                else float(bezier_reg)
+            ),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),
