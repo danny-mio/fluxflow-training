@@ -251,7 +251,7 @@ class VAETrainer:
         loss = 0.0
 
         # Find RGB Bezier activation in expander
-        if hasattr(self.expander, "rgb_activation"):
+        if False and hasattr(self.expander, "rgb_activation"):
             rgb_bezier = self.expander.rgb_activation
 
             # Regularize control points to stay near linear interpolation
