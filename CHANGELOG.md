@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-12-23
+
+### 🔒 Dependencies
+- **Updated fluxflow dependency** to `>=0.5.0,<0.6.0`
+  - Aligns with fluxflow-core v0.5.0 release
+  - Includes gradient checkpointing compatibility fixes
+  - Bezier activation optimizations (JIT disabled for checkpoint compat)
+  - Baseline model architecture support
+  - Enhanced documentation and system requirements
+
+### 📝 Notes
+- This release updates the fluxflow-core dependency to v0.5.0
+- All training features from v0.4.0 remain unchanged
+- See v0.4.0 release notes below for major CFG and multi-dataset features
+
 ## [0.4.0] - 2025-12-17
 
 ### 🚀 Added

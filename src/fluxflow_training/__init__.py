@@ -1,6 +1,6 @@
 """FluxFlow Training: Training tools and scripts for FluxFlow models."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 # Training modules are available for import
 # Users can import specific components like:
