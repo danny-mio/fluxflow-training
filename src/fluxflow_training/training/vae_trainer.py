@@ -238,41 +238,6 @@ class VAETrainer:
 
         return loss_lf + alpha * loss_hf
 
-    def _bezier_regularization_loss(self):
-        """
-        Regularize Bezier control points to prevent extreme curves.
-
-        Encourages control points to form a smooth, near-linear curve
-        which prevents high contrast and saturation issues.
-
-        Returns:
-            Regularization loss for Bezier parameters
-        """
-        loss = 0.0
-
-        # Find RGB Bezier activation in expander
-        if False and hasattr(self.expander, "rgb_activation"):
-            rgb_bezier = self.expander.rgb_activation
-
-            # Regularize control points to stay near linear interpolation
-            # For a linear curve from p0=-1 to p3=1:
-            # p1 should be near -0.33, p2 should be near 0.33
-            linear_p1 = -0.33
-            linear_p2 = 0.33
-
-            # L2 penalty for deviation from linear
-            if hasattr(rgb_bezier, "p1") and hasattr(rgb_bezier, "p2"):
-                loss += torch.mean((rgb_bezier.p1 - linear_p1) ** 2)
-                loss += torch.mean((rgb_bezier.p2 - linear_p2) ** 2)
-
-                # Additionally, penalize large differences between p1 and p2
-                # (prevents S-curves that cause contrast expansion)
-                p_diff = torch.abs(rgb_bezier.p2 - rgb_bezier.p1)
-                # Ideal difference for linear curve is 0.66
-                loss += torch.mean((p_diff - 0.66) ** 2)
-
-        return loss
-
     def _histogram_matching_loss(self, pred, target, bins=64):
         """
         Encourage matching color distribution between pred and target.
@@ -706,7 +671,6 @@ class VAETrainer:
         w_gan = self._compute_adaptive_weight("gan") if self.use_gan else 0.0
 
         # Color/contrast regularization losses
-        bezier_reg = self._bezier_regularization_loss()
         color_stats_loss = (
             self._color_statistics_loss(out_imgs_rec, real_imgs)
             if self.train_reconstruction
@@ -731,10 +695,9 @@ class VAETrainer:
             total_loss = total_loss + w_gan * G_img_loss
 
         # Add regularization (small weights to not dominate main losses)
-        total_loss = total_loss + 0.05 * bezier_reg  # Prevent extreme Bezier curves (increased)
         total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
         total_loss = total_loss + 0.02 * hist_loss  # Match color distributions
-        total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation (new)
+        total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation
 
         # Check for NaN/Inf in loss with detailed diagnostics
         if check_for_nan(total_loss, "vae_total_loss", logger):
@@ -798,11 +761,6 @@ class VAETrainer:
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
             "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
             "recon": float(recon_loss.detach().item()),
-            "bezier_reg": (
-                float(bezier_reg.detach().item())
-                if isinstance(bezier_reg, torch.Tensor)
-                else float(bezier_reg)
-            ),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),
