@@ -963,8 +963,6 @@ class TrainingPipelineOrchestrator:
             args: Training arguments
             parsed_sample_sizes: List of sample size tuples
         """
-        import os
-
         if args.no_samples:
             return
 
