@@ -1259,16 +1259,12 @@ class TrainingPipelineOrchestrator:
                 contrast_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Contrast loss
                 batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
-                # Track actual processed batch count (excludes skipped None batches from FastForwardDataLoader)
-                processed_batch_count = 0
-
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader_for_epoch):
                     # Skip None batches from FastForwardDataLoader (fast-forward mode)
                     if imgs is None:
                         continue
 
                     batch_start_time = time.time()
-                    processed_batch_count += 1
                     # Break if max_steps reached (for quick testing)
                     if step.max_steps is not None and batch_idx >= step.max_steps:
                         logger.info(f"Reached max_steps={step.max_steps}, ending epoch early")
@@ -1371,7 +1367,7 @@ class TrainingPipelineOrchestrator:
                         log_msg = (
                             f"[{elapsed_str}] Step {step.name} ({step_idx+1}/{len(self.config.steps)}) | "
                             f"Epoch {epoch+1}/{step.n_epochs} | "
-                            f"Batch {processed_batch_count}/{epoch_total_batches}"
+                            f"Batch {batch_idx}/{epoch_total_batches}"
                         )
 
                         # Console logging (show metrics if VAE trainer ran)
@@ -1429,7 +1425,7 @@ class TrainingPipelineOrchestrator:
 
                         progress_logger.log_metrics(
                             epoch=epoch,
-                            batch=processed_batch_count,
+                            batch=batch_idx,
                             global_step=self.global_step,
                             metrics=metrics,
                             learning_rates={},

@@ -3,7 +3,6 @@
 import pytest
 import torch
 import torch.nn as nn
-from pathlib import Path
 
 from fluxflow_training.training.utils import EMA
 
