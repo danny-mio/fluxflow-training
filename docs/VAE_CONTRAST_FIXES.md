@@ -1,5 +1,7 @@
 # VAE High Contrast / Oversaturation - Training Fixes
 
+> **⚠️ DEPRECATED:** Bezier regularization (#1) has been removed as of Dec 2025. It was found to be unhelpful and added unnecessary complexity. The remaining color statistics, histogram matching, and contrast regularization losses are still active.
+
 ## Problem
 VAE reconstructions show:
 - **High contrast**: Dark areas become too dark/black, bright areas become vivid
@@ -11,23 +13,17 @@ The `TrainableBezier` RGB activation in the VAE decoder learns control points th
 
 ## Training-Side Solutions (No Model Changes)
 
-### 1. Bezier Regularization Loss ✅ IMPLEMENTED
+### 1. Bezier Regularization Loss ❌ REMOVED
 
-**What it does:**
-Penalizes Bezier control points that deviate from a linear curve.
+> **REMOVED:** This feature was removed in Dec 2025 as it was found to be unhelpful.
 
-**Implementation:**
-```python
-def _bezier_regularization_loss(self):
-    """Prevent extreme Bezier curves."""
-    # Encourages p1 ≈ -0.33, p2 ≈ 0.33 (linear curve)
-    # Also penalizes large p2-p1 differences (prevents S-curves)
-```
+**What it did:**
+Penalized Bezier control points that deviated from a linear curve.
 
-**Weight:** `0.01 * bezier_reg` added to total loss
-
-**Effect:**
-- Keeps RGB activation near-linear (minimal color distortion)
+**Why it was removed:**
+- Did not provide meaningful improvements to image quality
+- Added unnecessary complexity to the loss function
+- Bezier activations work better without this constraint
 - Allows gradual learning of color correction
 - Prevents sudden contrast expansion
 
@@ -95,34 +91,34 @@ recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.5)
 **Total VAE Loss:**
 ```python
 total_loss = (
-    w_kl * beta * kl +                    # KL divergence (latent regularization)
-    w_recon * recon_loss +                # Reconstruction (L1 + MSE + LPIPS)
+    w_kl * beta * kl +                    # KL divergence
+    w_recon * recon_loss +                # Reconstruction loss
     w_gan * G_img_loss +                  # GAN generator loss
-    0.01 * bezier_reg +                   # NEW: Bezier regularization
-    0.05 * color_stats_loss +             # NEW: Color statistics matching
-    0.02 * hist_loss                      # NEW: Histogram matching
+    0.05 * color_stats_loss +             # Color statistics matching
+    0.02 * hist_loss +                    # Histogram matching
+    0.1 * contrast_loss                   # Contrast regularization
 )
 ```
 
 **Weights Explanation:**
-- `0.01` for Bezier: Small but prevents extreme curves
-- `0.05` for color stats: More important, directly prevents contrast expansion
-- `0.02` for histogram: Moderate, refines tonal distribution
+- `0.05` for color stats: Directly prevents contrast expansion
+- `0.02` for histogram: Refines tonal distribution
+- `0.1` for contrast: Prevents over-saturation
 
 ## Monitoring
 
 The training logs now include:
 ```
 [Step 1000] VAE: 0.0523 | KL: 8461.29 | ...
-  bezier_reg: 0.0023  ← Should decrease over time
-  color_stats: 0.0145  ← Should be low (<0.05)
-  hist_loss: 0.0089   ← Should be low (<0.02)
+  ColorStats: 0.0145  ← Should be low (<0.05)
+  Hist: 0.0089        ← Should be low (<0.02)
+  Contrast: 0.0032    ← Should be low (<0.05)
 ```
 
 **What to watch:**
-- `bezier_reg` decreasing → Bezier converging to good curve
-- `color_stats` staying low → No contrast expansion
-- `hist_loss` staying low → Good tonal matching
+- `ColorStats` staying low → No contrast expansion
+- `Hist` staying low → Good tonal matching
+- `Contrast` staying low → No over-saturation
 
 ## Tuning Guide
 
@@ -130,29 +126,18 @@ The training logs now include:
 
 **Increase regularization weights:**
 ```python
-# In vae_trainer.py, line ~670
-total_loss = total_loss + 0.02 * bezier_reg      # Was 0.01
+# In vae_trainer.py
 total_loss = total_loss + 0.10 * color_stats_loss  # Was 0.05
-total_loss = total_loss + 0.05 * hist_loss       # Was 0.02
-```
-
-**Further reduce high-freq weight:**
-```python
-# Line ~601
-recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.3)  # Was 0.5
+total_loss = total_loss + 0.05 * hist_loss         # Was 0.02
+total_loss = total_loss + 0.15 * contrast_loss     # Was 0.1
 ```
 
 ### If losing detail:
 
 **Reduce regularization:**
 ```python
-total_loss = total_loss + 0.005 * bezier_reg     # Reduce from 0.01
 total_loss = total_loss + 0.02 * color_stats_loss  # Reduce from 0.05
-```
-
-**Increase high-freq weight:**
-```python
-recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.7)  # Increase from 0.5
+total_loss = total_loss + 0.05 * contrast_loss     # Reduce from 0.1
 ```
 
 ### If colors look washed out:
@@ -160,11 +145,6 @@ recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.7)  # 
 **Reduce histogram loss:**
 ```python
 total_loss = total_loss + 0.01 * hist_loss  # Reduce from 0.02
-```
-
-**Allow more Bezier freedom:**
-```python
-total_loss = total_loss + 0.005 * bezier_reg  # Reduce from 0.01
 ```
 
 ## Alternative: Enable LPIPS Earlier
@@ -204,10 +184,9 @@ use_lpips_from_start = True  # Enable in step 1
 ```
 
 **This combination:**
-- ✅ Prevents extreme Bezier curves
 - ✅ Matches color statistics (no contrast expansion)
 - ✅ Matches tonal distribution (no posterization)
-- ✅ Reduces over-sharpening
+- ✅ Prevents over-saturation
 - ✅ Adds perceptual guidance early
 
 ## Testing Reconstructions
@@ -228,19 +207,18 @@ After implementing these fixes:
 
 ## Performance Impact
 
-- **Bezier reg:** ~0% overhead (just param regularization)
 - **Color stats:** ~1% overhead (cheap statistics)
 - **Histogram:** ~3-5% overhead (histc operation)
-- **Total:** ~4-6% slower per batch
+- **Contrast reg:** ~1% overhead (simple calculations)
+- **Total:** ~5-7% slower per batch
 
 **Worth it?** Yes! Much better visual quality for minimal slowdown.
 
 ## Summary
 
 All fixes are **training-only** (no model architecture changes):
-1. ✅ Bezier regularization → prevents extreme curves
-2. ✅ Color statistics matching → prevents contrast expansion
-3. ✅ Histogram matching → prevents tonal distortion
-4. ✅ Reduced high-freq weight → prevents over-sharpening
+1. ✅ Color statistics matching → prevents contrast expansion
+2. ✅ Histogram matching → prevents tonal distortion
+3. ✅ Contrast regularization → prevents over-saturation
 
 **Result:** Natural-looking reconstructions with proper contrast and saturation.

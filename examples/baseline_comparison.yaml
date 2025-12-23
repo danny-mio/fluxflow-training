@@ -1,0 +1,96 @@
+# Baseline Model Configuration (for comparison with Bezier)
+# This config creates a baseline FluxFlow model using standard activations (SiLU/GELU)
+# instead of BezierActivation for comparative evaluation.
+#
+# CRITICAL: This is for research only - baseline models should NOT be used in production.
+# Branch: experimental/baseline-no-bezier
+
+model:
+  # Set model type to "baseline" (default is "bezier")
+  model_type: "baseline"
+  
+  # Core dimensions (MUST match Bezier for fair comparison)
+  vae_dim: 128
+  feature_maps_dim: 512  # Flow d_model
+  feature_maps_dim_disc: 8
+  text_embedding_dim: 1024
+  pretrained_bert_model: null
+  
+  # Baseline-specific parameters
+  baseline_activation: "silu"  # Options: "silu", "gelu"
+  baseline_vae_width_mult: 4.5  # 4.5× width, 1 layer (matches Bezier params)
+  baseline_vae_depth_mult: 1.0
+  baseline_flow_blocks: 17  # 17 blocks @ 198K params/block vs Bezier's 12 @ 282K
+  baseline_flow_ffn_expansion: 4.0
+
+data:
+  # Use same dataset as Bezier model for direct comparison
+  data_path: "/path/to/your/images"
+  captions_file: "/path/to/your/captions.txt"
+  
+  img_size: 1024
+  channels: 3
+  tokenizer_name: "distilbert-base-uncased"
+  
+  # Multi-scale training (optional)
+  reduced_min_sizes: [128, 256, 512]
+
+training:
+  # Follow same training protocol as Bezier (see plans/EVALUATION_PROTOCOL.md)
+  n_epochs: 100
+  batch_size: 1
+  workers: 8
+  lr: 0.00001
+  lr_min: 0.01
+  training_steps: 1
+  use_fp16: false
+  initial_clipping_norm: 1.0
+  preserve_lr: true
+  
+  # Phase 1: VAE training (SPADE off)
+  train_vae: true
+  gan_training: true
+  use_lpips: true
+  train_spade: false
+  train_diff: false
+  train_diff_full: false
+  
+  # KL divergence settings
+  kl_beta: 0.001
+  kl_warmup_steps: 5000
+  kl_free_bits: 0.0
+  
+  # GAN settings
+  lambda_adv: 0.5
+  lambda_lpips: 0.1
+
+optimization:
+  optim_sched_config: null
+
+output:
+  output_path: "outputs/baseline"  # Separate output directory
+  log_interval: 10
+  checkpoint_save_interval: 50
+  samples_per_checkpoint: 1
+  no_samples: false
+  test_image_address:
+    - "template.png"
+  sample_captions:
+    - "illustration of a boy playing guitar in the forest in autumn"
+    - "photo of a girl elf with blue Santa costume by a cottage in the snow"
+    - "on a yellow background, a blue triangle on the bottom"
+    - "an orange banana"
+  sample_sizes:
+    - 256
+    - 384
+    - 512
+    - 1024
+  log_level: "INFO"
+  log_file: "outputs/baseline/training.log"
+
+model_checkpoint: null
+
+# Usage:
+# python train.py --config examples/baseline_comparison.yaml
+#
+# For 4-phase pipeline training, see plans/EVALUATION_PROTOCOL.md
