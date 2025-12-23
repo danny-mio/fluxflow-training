@@ -25,6 +25,7 @@ from fluxflow.models import (
     FluxPipeline,
     ImageEncoder,
     PatchDiscriminator,
+    create_models_from_config,
 )
 from fluxflow.utils import (
     format_duration,
@@ -209,25 +210,60 @@ def initialize_models(args, config, device, checkpoint_manager):
     """
     channels = args.channels
 
-    # Initialize models
-    text_encoder = BertTextEncoder(
-        embed_dim=args.text_embedding_dim, pretrain_model=args.pretrained_bert_model
-    )
-    image_encoder = ImageEncoder(
-        channels,
-        text_embedding_dim=args.text_embedding_dim,
-        feature_maps=args.feature_maps_dim_disc,
-    )
+    # Check if using factory-based model creation (for baseline/bezier selection)
+    use_factory = config and "model" in config and config["model"].get("model_type")
 
-    compressor = FluxCompressor(
-        d_model=args.vae_dim,
-        use_attention=True,
-        use_gradient_checkpointing=args.use_gradient_checkpointing,
-    )
-    expander = FluxExpander(
-        d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing
-    )
-    flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
+    if use_factory:
+        # Use factory to create models based on model_type in config
+        from fluxflow.config import ModelConfig
+
+        # Build ModelConfig from config dict
+        model_config = ModelConfig(**config["model"])
+
+        print(f"Creating models using factory (model_type={model_config.model_type})...")
+        compressor, expander, flow_processor, text_encoder = create_models_from_config(model_config)
+
+        # Apply gradient checkpointing if requested
+        if args.use_gradient_checkpointing:
+            if hasattr(compressor, "use_gradient_checkpointing"):
+                compressor.use_gradient_checkpointing = True
+            if hasattr(expander, "use_gradient_checkpointing"):
+                expander.use_gradient_checkpointing = True
+
+        # Create image encoder separately (not part of factory)
+        image_encoder = ImageEncoder(
+            channels,
+            text_embedding_dim=args.text_embedding_dim,
+            feature_maps=args.feature_maps_dim_disc,
+        )
+
+        print(f"✓ Created {model_config.model_type} model")
+        print(f"  - Compressor: {type(compressor).__name__}")
+        print(f"  - Expander: {type(expander).__name__}")
+        print(f"  - Flow: {type(flow_processor).__name__}")
+        print(f"  - Text Encoder: {type(text_encoder).__name__}")
+    else:
+        # Legacy: Direct model instantiation (default Bezier)
+        text_encoder = BertTextEncoder(
+            embed_dim=args.text_embedding_dim, pretrain_model=args.pretrained_bert_model
+        )
+        image_encoder = ImageEncoder(
+            channels,
+            text_embedding_dim=args.text_embedding_dim,
+            feature_maps=args.feature_maps_dim_disc,
+        )
+
+        compressor = FluxCompressor(
+            d_model=args.vae_dim,
+            use_attention=True,
+            use_gradient_checkpointing=args.use_gradient_checkpointing,
+        )
+        expander = FluxExpander(
+            d_model=args.vae_dim, use_gradient_checkpointing=args.use_gradient_checkpointing
+        )
+        flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
+
+    # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
     # Discriminators
@@ -273,6 +309,22 @@ def initialize_models(args, config, device, checkpoint_manager):
     text_encoder.to(device)
     image_encoder.to(device)
     D_img.to(device)
+
+    # Auto-load text encoder if available and not already loaded from checkpoint
+    # Text encoder is shared between Bezier and Baseline models
+    if not (args.model_checkpoint and os.path.exists(args.model_checkpoint)):
+        # Look for standalone text_encoder.safetensors in output directory
+        if args.output_path:
+            text_encoder_path = Path(args.output_path) / "text_encoder.safetensors"
+            if text_encoder_path.exists():
+                try:
+                    from safetensors.torch import load_file
+
+                    text_encoder_state = load_file(str(text_encoder_path))
+                    text_encoder.load_state_dict(text_encoder_state, strict=False)
+                    print(f"✓ Auto-loaded text encoder from {text_encoder_path}")
+                except Exception as e:
+                    print(f"⚠️  Failed to auto-load text encoder: {e}")
 
     return {
         "diffuser": diffuser,

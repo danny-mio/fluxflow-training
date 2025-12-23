@@ -963,9 +963,6 @@ class TrainingPipelineOrchestrator:
             args: Training arguments
             parsed_sample_sizes: List of sample size tuples
         """
-        import glob
-        import os
-
         if args.no_samples:
             return
 
@@ -995,7 +992,7 @@ class TrainingPipelineOrchestrator:
         if args.test_image_address and len(args.test_image_address) > 0:
             for img_addr in args.test_image_address:
                 try:
-                    # Generate samples with epoch number (legacy naming)
+                    # Generate samples with custom filename prefix
                     safe_vae_sample(
                         diffuser,
                         img_addr,
@@ -1003,25 +1000,8 @@ class TrainingPipelineOrchestrator:
                         args.output_path,
                         sample_epoch,
                         self.device,
+                        filename_prefix=sample_prefix,
                     )
-
-                    # Rename files to include step/epoch info
-                    # Pattern: vae_epoch_0031-{hash}-{suffix}.webp → {prefix}_{hash}-{suffix}.webp
-                    pattern = os.path.join(args.output_path, f"vae_epoch_{sample_epoch:04d}-*.webp")
-                    for old_file in glob.glob(pattern):
-                        old_filename = os.path.basename(old_file)
-                        # Extract hash and suffix: "vae_epoch_0031-cd7a10...-ctx.webp"
-                        # Split on first '-' after epoch number
-                        parts = old_filename.replace(f"vae_epoch_{sample_epoch:04d}-", "")
-                        # parts = "cd7a10...-ctx.webp"
-                        hash_suffix = parts.replace(".webp", "")
-
-                        # New filename: stepname_step_epoch_hash-suffix.webp
-                        new_filename = f"{sample_prefix}_{hash_suffix}.webp"
-                        new_file = os.path.join(args.output_path, new_filename)
-
-                        os.rename(old_file, new_file)
-                        logger.debug(f"Renamed: {old_filename} → {new_filename}")
 
                 except Exception as e:
                     logger.warning(f"Failed to generate VAE sample from {img_addr}: {e}")
@@ -1030,7 +1010,7 @@ class TrainingPipelineOrchestrator:
         if (step.train_diff or step.train_diff_full) and text_encoder:
             if args.sample_captions and len(args.sample_captions) > 0:
                 try:
-                    # Generate samples with epoch number (legacy naming)
+                    # Generate samples with custom filename prefix
                     save_sample_images(
                         diffuser,
                         text_encoder,
@@ -1041,25 +1021,8 @@ class TrainingPipelineOrchestrator:
                         args.sample_captions,
                         args.batch_size,
                         sample_sizes=parsed_sample_sizes,
+                        filename_prefix=f"{sample_prefix}_caption",
                     )
-
-                    # Rename files to include step/epoch/batch info
-                    # Pattern: sample_epoch_<N>_<caption_idx>_<size>.png
-                    pattern = os.path.join(args.output_path, f"sample_epoch_{sample_epoch}_*.png")
-                    for old_file in glob.glob(pattern):
-                        old_filename = os.path.basename(old_file)
-                        # Extract caption index and size: "sample_epoch_247_0_512x512.png"
-                        parts = old_filename.replace(f"sample_epoch_{sample_epoch}_", "").replace(
-                            ".png", ""
-                        )
-                        # parts = "0_512x512" or just "0"
-
-                        # New filename: stepname_step_epoch_batch_captionidx_size.png
-                        new_filename = f"{sample_prefix}_{parts}.png"
-                        new_file = os.path.join(args.output_path, new_filename)
-
-                        os.rename(old_file, new_file)
-                        logger.debug(f"Renamed: {old_filename} → {new_filename}")
 
                 except Exception as e:
                     logger.warning(f"Failed to generate flow samples: {e}")
@@ -1289,9 +1252,6 @@ class TrainingPipelineOrchestrator:
                 g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
                 d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
                 lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
-                bezier_reg_errors = FloatBuffer(
-                    max(args.log_interval * 2, 10)
-                )  # Bezier regularization
                 color_stats_errors = FloatBuffer(
                     max(args.log_interval * 2, 10)
                 )  # Color statistics loss
@@ -1333,8 +1293,6 @@ class TrainingPipelineOrchestrator:
                                 lpips_errors.add_item(vae_losses["lpips"])
 
                             # Track VAE regularization losses if available
-                            if "bezier_reg" in vae_losses:
-                                bezier_reg_errors.add_item(vae_losses["bezier_reg"])
                             if "color_stats" in vae_losses:
                                 color_stats_errors.add_item(vae_losses["color_stats"])
                             if "hist_loss" in vae_losses:
@@ -1426,8 +1384,6 @@ class TrainingPipelineOrchestrator:
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
                             # Add VAE regularization losses if available
-                            if len(bezier_reg_errors._items) > 0:
-                                log_msg += f" | Bezier: {bezier_reg_errors.average:.4f}"
                             if len(color_stats_errors._items) > 0:
                                 log_msg += f" | ColorStats: {color_stats_errors.average:.4f}"
                             if len(hist_loss_errors._items) > 0:
@@ -1457,8 +1413,6 @@ class TrainingPipelineOrchestrator:
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 metrics["lpips_loss"] = lpips_errors.average
                             # Add VAE regularization metrics
-                            if len(bezier_reg_errors._items) > 0:
-                                metrics["bezier_reg"] = bezier_reg_errors.average
                             if len(color_stats_errors._items) > 0:
                                 metrics["color_stats"] = color_stats_errors.average
                             if len(hist_loss_errors._items) > 0:
