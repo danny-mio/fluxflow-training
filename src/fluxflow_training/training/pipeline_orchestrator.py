@@ -1221,6 +1221,30 @@ class TrainingPipelineOrchestrator:
                     min(batches_per_epoch, step.max_steps) if step.max_steps else batches_per_epoch
                 )
 
+                # Adjust start position if resuming beyond this epoch
+                if (
+                    step_idx == start_step
+                    and epoch == start_epoch
+                    and start_batch >= epoch_total_batches
+                ):
+                    if epoch + 1 >= step.n_epochs:
+                        # Step is complete, advance to next step
+                        logger.info(
+                            f"Resuming beyond end of step {step.name}, advancing to next step"
+                        )
+                        start_step = step_idx + 1
+                        start_epoch = 0
+                        start_batch = 0
+                        break  # Break epoch loop to go to next step
+                    else:
+                        # Advance to next epoch within this step
+                        logger.info(
+                            f"Resuming beyond end of epoch {epoch+1}, advancing to next epoch"
+                        )
+                        start_epoch = epoch + 1
+                        start_batch = 0
+                        continue
+
                 # Show which dataset is being used
                 current_dataset_name = step.dataset or self.config.default_dataset
                 dataset_info = f", Dataset: {current_dataset_name}" if current_dataset_name else ""
@@ -1268,6 +1292,10 @@ class TrainingPipelineOrchestrator:
                     # Break if max_steps reached (for quick testing)
                     if step.max_steps is not None and batch_idx >= step.max_steps:
                         logger.info(f"Reached max_steps={step.max_steps}, ending epoch early")
+                        break
+
+                    # Break at end of epoch (when all expected batches processed)
+                    if batch_idx >= epoch_total_batches:
                         break
 
                     self.global_step += 1

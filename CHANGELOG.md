@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2025-12-24
+
+### 🐛 Fixes
+- **Fixed pipeline training epoch switching**: Added missing break condition in batch processing loop to prevent infinite epochs
+- **Fixed resume logic for invalid batch positions**: Added automatic advancement to next step/epoch when resume batch index exceeds epoch boundaries
+- **Prevented training continuation beyond dataset bounds**: Pipeline training now properly stops at expected epoch boundaries
+
+### 📝 Notes
+- Patch release fixing critical training loop issues in pipeline mode
+- Improves resume behavior for interrupted training sessions
+- All existing functionality preserved
+
 ## [0.5.0] - 2025-12-23
 
 ### 🔒 Dependencies

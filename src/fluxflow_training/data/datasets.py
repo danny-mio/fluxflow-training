@@ -604,7 +604,7 @@ class ResumableDimensionSampler(Sampler):
             resume_state: State dict from previous run (for resume)
         """
         self.batch_size = batch_size
-        self.seed = seed if seed is not None else random.randint(0, 2**32 - 1)
+        self.base_seed = seed if seed is not None else random.randint(0, 2**32 - 1)
         self.dimension_cache = dimension_cache
 
         # Extract size groups
@@ -621,10 +621,12 @@ class ResumableDimensionSampler(Sampler):
         if resume_state is not None:
             self._load_state_dict(resume_state)
         else:
+            self.current_epoch = 0
+            self.seed = self.base_seed  # Use base seed for epoch 0
             self._initialize_new_epoch()
 
     def _initialize_new_epoch(self):
-        """Create new epoch ordering."""
+        """Create new epoch ordering with current seed."""
         rng = random.Random(self.seed)
 
         # Create balanced batches from size groups
@@ -670,9 +672,10 @@ class ResumableDimensionSampler(Sampler):
             self.current_epoch = 0
 
     def set_epoch(self, epoch: int):
-        """Set epoch number and re-initialize for new epoch."""
+        """Set epoch number and re-initialize for new epoch with deterministic seed."""
         self.current_epoch = epoch
-        self.seed = (self.seed + epoch * 12345) % (2**32)
+        # Generate deterministic seed for this epoch based on base seed
+        self.seed = (self.base_seed + epoch * 12345) % (2**32)
         self._initialize_new_epoch()
 
     def __iter__(self):
@@ -695,6 +698,7 @@ class ResumableDimensionSampler(Sampler):
         This makes resume nearly instantaneous.
         """
         return {
+            "base_seed": self.base_seed,
             "seed": self.seed,
             "position": self.position,
             "current_epoch": self.current_epoch,
@@ -718,6 +722,9 @@ class ResumableDimensionSampler(Sampler):
         Regenerates epoch_batches deterministically from seed,
         then fast-forwards to saved position.
         """
+        self.base_seed = state.get(
+            "base_seed", state["seed"]
+        )  # Fallback for backward compatibility
         self.seed = state["seed"]
         self.batch_size = state["batch_size"]
         self.current_epoch = state.get("current_epoch", 0)
@@ -728,8 +735,6 @@ class ResumableDimensionSampler(Sampler):
 
         # Fast-forward to saved position (set after _initialize_new_epoch to avoid reset)
         self.position = state["position"]
-        # Ensure current_epoch is preserved after _initialize_new_epoch
-        self.current_epoch = state.get("current_epoch", 0)
 
     def get_progress_info(self) -> dict[str, int | float]:
         """Return progress information for logging."""
