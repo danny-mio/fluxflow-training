@@ -1304,7 +1304,7 @@ class TrainingPipelineOrchestrator:
 
                     # Train on all resolutions
                     for ri in imgs:
-                        real_imgs = ri.to(self.device).detach()
+                        real_imgs = ri.to(self.device).requires_grad_(True)
 
                         # VAE/GAN/SPADE training (runs if trainer exists, even with train_vae=false)
                         if trainers.get("vae"):
