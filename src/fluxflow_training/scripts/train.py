@@ -27,11 +27,7 @@ from fluxflow.models import (
     PatchDiscriminator,
     create_models_from_config,
 )
-from fluxflow.utils import (
-    format_duration,
-    safe_vae_sample,
-    save_sample_images,
-)
+from fluxflow.utils import format_duration, safe_vae_sample, save_sample_images
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import AutoTokenizer
 
@@ -220,7 +216,9 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Build ModelConfig from config dict
         model_config = ModelConfig(**config["model"])
 
-        print(f"Creating models using factory (model_type={model_config.model_type})...")
+        print(
+            f"Creating models using factory (model_type={model_config.model_type}, model_version={model_config.model_version})..."
+        )
         compressor, expander, flow_processor, text_encoder = create_models_from_config(model_config)
 
         # Apply gradient checkpointing if requested
@@ -237,7 +235,7 @@ def initialize_models(args, config, device, checkpoint_manager):
             feature_maps=args.feature_maps_dim_disc,
         )
 
-        print(f"✓ Created {model_config.model_type} model")
+        print(f"✓ Created {model_config.model_type} v{model_config.model_version} model")
         print(f"  - Compressor: {type(compressor).__name__}")
         print(f"  - Expander: {type(expander).__name__}")
         print(f"  - Flow: {type(flow_processor).__name__}")
@@ -263,11 +261,23 @@ def initialize_models(args, config, device, checkpoint_manager):
         )
         flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
 
+        print("✓ Created bezier v0.3.0 model (legacy mode)")
+        print(f"  - Compressor: {type(compressor).__name__}")
+        print(f"  - Expander: {type(expander).__name__}")
+        print(f"  - Flow: {type(flow_processor).__name__}")
+        print(f"  - Text Encoder: {type(text_encoder).__name__}")
+
     # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators
-    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+    # Discriminators - Optimized lightweight version (98% parameter reduction)
+    D_img = PatchDiscriminator(
+        in_channels=args.channels,
+        base_ch=32,  # Reduced from 64 (50% less channels)
+        depth=3,  # Reduced from 4 (25% less depth)
+        ctx_dim=args.vae_dim,
+        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+    )
 
     # Load checkpoints if resuming
     if args.model_checkpoint and os.path.exists(args.model_checkpoint):

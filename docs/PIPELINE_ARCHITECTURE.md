@@ -24,7 +24,7 @@ training:
         n_epochs: 10
         train_vae: true
         gan_training: false
-        
+
       - name: "vae_gan"
         n_epochs: 20
         train_vae: true
@@ -50,7 +50,7 @@ training:
   # Global training settings
   batch_size: 4
   workers: 8
-  
+
   pipeline:
     # Optional: Global defaults for all steps
     defaults:
@@ -61,13 +61,13 @@ training:
           vae:
             type: "AdamW"
             lr: 0.0001
-    
+
     # Required: List of training steps
     steps:
       - name: "step1"
         n_epochs: 10
         # ... step config
-      
+
       - name: "step2"
         n_epochs: 5
         # ... step config
@@ -97,7 +97,7 @@ training:
 
 **GAN-Only Mode** (train encoder/decoder with adversarial loss, no reconstruction):
 ```yaml
-train_vae: false          # Don't compute reconstruction loss  
+train_vae: false          # Don't compute reconstruction loss
 gan_training: true        # Train GAN discriminator
 train_spade: true         # Optional: SPADE conditioning
 ```
@@ -155,7 +155,7 @@ optimization:
       type: "SGD"
       lr: 0.00001
       momentum: 0.9
-  
+
   schedulers:
     vae:
       type: "CosineAnnealingLR"
@@ -166,7 +166,7 @@ optimization:
       gamma: 0.5
 ```
 
-**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`  
+**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`
 **Supported Schedulers**: `CosineAnnealingLR`, `StepLR`, `ExponentialLR`, `ReduceLROnPlateau`
 
 #### Transition Criteria
@@ -240,7 +240,7 @@ Pipeline checkpoints include step-local state:
   "optimizers": {...},      # Optimizer state
   "schedulers": {...},      # Scheduler state
   "ema": {...},            # EMA state
-  
+
   # Pipeline-specific metadata
   "pipeline_metadata": {
     "current_step": 2,                  # Step index (0-based)
@@ -391,15 +391,15 @@ fluxflow-train --config pipeline.yaml --validate-pipeline
 Pipeline Summary:
   Total steps: 4
   Total epochs: 85
-  
+
 Step 1: vae_warmup (10 epochs)
   Training: VAE
   Freeze: flow_processor, text_encoder
-  
+
 Step 2: vae_gan (20 epochs)
   Training: VAE, GAN
   Transition: loss_threshold (vae_loss < 0.05, max 50 epochs)
-  
+
 ...
 ```
 
@@ -413,7 +413,7 @@ See `test_pipeline_minimal.yaml` for a working minimal example:
 training:
   batch_size: 2
   workers: 1
-  
+
   pipeline:
     steps:
       - name: "vae_only"
@@ -431,7 +431,7 @@ training:
               lr: 0.0001
         transition_on:
           mode: "epoch"
-      
+
       - name: "vae_gan"
         n_epochs: 2
         max_steps: 2
@@ -523,7 +523,7 @@ steps:
     train_vae: true
     gan_training: false
     # Models: compressor, decoder (auto-created by VAE trainer)
-  
+
   - name: flow_training
     train_diff: true
     freeze: [compressor, expander]
@@ -565,7 +565,7 @@ steps:
   - name: init_models
     n_epochs: 1
     train_diff: true  # Creates flow_processor with defaults
-  
+
   - name: actual_training
     n_epochs: 100
     train_diff_full: true
@@ -632,6 +632,6 @@ See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) "Limited VRAM Strategy" for more.
 
 ---
 
-**Last Updated**: 2025-12-11  
-**Version**: 0.2.1  
+**Last Updated**: 2025-12-11
+**Version**: 0.2.1
 **Implementation**: ✅ Fully operational (1035 lines in pipeline_orchestrator.py)

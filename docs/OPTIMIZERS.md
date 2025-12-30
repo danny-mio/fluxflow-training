@@ -194,4 +194,3 @@ Root mean square propagation optimizer. Adapts learning rates per parameter.
 **Notes:** Less commonly used for image generation, try Adam/Lion first
 
 ---
-

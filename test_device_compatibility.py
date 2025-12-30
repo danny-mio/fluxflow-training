@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Test device compatibility for optimizations."""
 
-import torch
 import sys
+
+import torch
 
 
 def test_cuda_features():

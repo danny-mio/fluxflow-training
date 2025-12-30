@@ -259,7 +259,7 @@ model:
 training:
   batch_size: 2
   workers: 8
-  
+
   pipeline:
     steps:
       # Step 1: VAE training with GAN
@@ -268,7 +268,7 @@ training:
         train_vae: true
         train_spade: true
         gan_training: true
-        
+
         optimizers:
           vae:
             optimizer_type: "AdamW"
@@ -280,7 +280,7 @@ training:
             lr: 0.00001
             betas: [0.0, 0.9]
             amsgrad: true
-        
+
         schedulers:
           vae:
             scheduler_type: "CosineAnnealingLR"
@@ -579,7 +579,7 @@ If you're upgrading from v0.2.x to v0.3.0+:
    ```yaml
    # OLD (v0.2.x)
    kl_beta: 0.0001
-   
+
    # NEW (v0.3.0+)
    kl_beta: 0.001  # Increased 10× to compensate for normalized scale
    ```
@@ -594,7 +594,7 @@ If you're upgrading from v0.2.x to v0.3.0+:
    # OLD: Expected KL values
    KL (raw): 100,000 - 200,000
    KL (weighted): 10.0 - 20.0
-   
+
    # NEW: Expected KL values
    KL (raw): 1.0 - 2.0
    KL (weighted): 0.001 - 0.002
@@ -695,7 +695,7 @@ steps:
   - name: vae_warmup
     train_vae: true
     # Only creates: compressor, decoder
-  
+
   - name: flow_training
     train_diff: true
     # Auto-creates: flow_processor, text_encoder ✨
@@ -730,7 +730,7 @@ data:
 training:
   batch_size: 4
   output_path: "outputs/pipeline_training"
-  
+
   pipeline:
     steps:
       - name: "vae_warmup"
@@ -738,7 +738,7 @@ training:
         train_vae: true
         gan_training: false
         lr: 1e-5
-        
+
       - name: "vae_with_gan"
         n_epochs: 40
         train_vae: true
@@ -759,7 +759,7 @@ fluxflow-train --config config.yaml
 ```yaml
 training:
   batch_size: 2
-  
+
   pipeline:
     steps:
       # Step 1: VAE warmup with Adam
@@ -768,7 +768,7 @@ training:
         train_vae: true
         gan_training: false
         optim_sched_config: "configs/adam_warmup.json"
-        
+
       # Step 2: GAN training with Lion
       - name: "gan_training"
         n_epochs: 30
@@ -776,7 +776,7 @@ training:
         gan_training: true
         train_spade: true
         optim_sched_config: "configs/lion_gan.json"
-        
+
       # Step 3: Flow training
       - name: "flow_training"
         n_epochs: 100
@@ -880,7 +880,7 @@ training:
   workers: 8
   output_path: "outputs/full_pipeline"
   checkpoint_save_interval: 100
-  
+
   pipeline:
     steps:
       # Step 1: VAE reconstruction warmup (no GAN)
@@ -894,7 +894,7 @@ training:
         stop_condition:
           loss_name: "loss_recon"
           threshold: 0.02  # Exit when reconstruction is good
-        
+
       # Step 2: Add SPADE and GAN
       - name: "vae_spade_gan"
         n_epochs: 40
@@ -905,7 +905,7 @@ training:
         lambda_adv: 0.9
         kl_beta: 0.001
         optim_sched_config: "configs/lion_gan.json"
-        
+
       # Step 3: Flow training (freeze VAE)
       - name: "flow_training"
         n_epochs: 100

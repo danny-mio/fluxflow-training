@@ -358,7 +358,9 @@ class TestGANStabilityTechniques:
 
     def test_spectral_normalization_active(self):
         """Discriminator should use spectral normalization."""
-        disc = PatchDiscriminator(in_channels=3, base_ch=32, depth=3, ctx_dim=0)
+        disc = PatchDiscriminator(
+            in_channels=3, base_ch=32, depth=3, ctx_dim=0, use_spectral_norm=True
+        )
 
         # Check for spectral norm
         has_spectral_norm = False

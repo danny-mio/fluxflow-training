@@ -212,22 +212,22 @@ fb9bfbc docs: add comprehensive CFG documentation and example config
 ## References
 
 ### Papers
-1. **Classifier-Free Diffusion Guidance** (Ho & Salimans, 2022)  
+1. **Classifier-Free Diffusion Guidance** (Ho & Salimans, 2022)
    https://arxiv.org/abs/2207.12598
 
-2. **High-Resolution Image Synthesis with Latent Diffusion Models** (Rombach et al., 2022)  
-   https://arxiv.org/abs/2112.10752  
+2. **High-Resolution Image Synthesis with Latent Diffusion Models** (Rombach et al., 2022)
+   https://arxiv.org/abs/2112.10752
    (Stable Diffusion)
 
-3. **Hierarchical Text-Conditional Image Generation with CLIP Latents** (Ramesh et al., 2022)  
-   https://arxiv.org/abs/2204.06125  
+3. **Hierarchical Text-Conditional Image Generation with CLIP Latents** (Ramesh et al., 2022)
+   https://arxiv.org/abs/2204.06125
    (DALL-E 2)
 
-4. **Photorealistic Text-to-Image Diffusion Models** (Saharia et al., 2022)  
-   https://arxiv.org/abs/2205.11487  
+4. **Photorealistic Text-to-Image Diffusion Models** (Saharia et al., 2022)
+   https://arxiv.org/abs/2205.11487
    (Imagen)
 
-5. **Flux.1 Technical Report** (Black Forest Labs, 2024)  
+5. **Flux.1 Technical Report** (Black Forest Labs, 2024)
    https://blackforestlabs.ai/flux-1-tools/
 
 ### Key Implementation Details

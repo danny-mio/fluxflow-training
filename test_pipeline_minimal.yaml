@@ -19,7 +19,7 @@ training:
   lr: 0.0001
   use_fp16: false
   initial_clipping_norm: 1.0
-  
+
   # Pipeline mode
   pipeline:
     steps:
@@ -32,13 +32,13 @@ training:
         train_diff: false
         gan_training: false  # No GAN for simplicity
         use_lpips: false  # No LPIPS for speed
-        
+
         freeze: ["flow_processor", "text_encoder"]
-        
+
         kl_beta: 0.0001
         kl_warmup_steps: 100
         kl_free_bits: 0.0
-        
+
         optimization:
           optimizers:
             vae:
@@ -46,7 +46,7 @@ training:
               lr: 0.0001
               betas: [0.9, 0.999]
               weight_decay: 0.01
-          
+
           schedulers:
             vae:
               type: "CosineAnnealingLR"

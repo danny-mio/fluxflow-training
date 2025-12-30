@@ -135,13 +135,13 @@ If you encounter OOM during flow training, the culprits are likely:
 
 1. **EMA (Exponential Moving Average)**: +14.4 GB
    - Solution: Set `use_ema: false` in config
-   
+
 2. **Large batch size**: +10-15 GB per additional sample
    - Solution: Reduce `batch_size` to 1
-   
+
 3. **DataLoader prefetching**: +4-8 GB
    - Solution: Already disabled in current implementation
-   
+
 4. **LPIPS loss**: +3-5 GB (only in VAE stages)
    - Solution: Set `use_lpips: false` (only affects VAE quality)
 

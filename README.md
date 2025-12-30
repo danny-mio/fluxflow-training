@@ -146,7 +146,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Real-time batch timing (seconds/batch)
   - Comprehensive loss display (VAE, KL, G, D, LPIPS)
   - Step/epoch/batch progress tracking
-  
+
 - **Step-Specific Metrics** (Pipeline Mode)
   - Separate JSONL files per training step
   - Automatic graph generation per step
@@ -185,14 +185,14 @@ training:
         freeze:
           - flow_processor
           - text_encoder
-      
+
       # Step 2: Add GAN
       - name: "vae_gan"
         n_epochs: 20
         train_vae: true
         gan_training: true
         use_lpips: true
-        
+
       # Step 3: Flow training
       - name: "flow"
         n_epochs: 30
@@ -243,14 +243,14 @@ training:
   pipeline:
     steps:
       # Stage 1-2: VAE training (see config.cfg.example.yaml)
-      
+
       # Stage 3: Flow with CFG ✨
       - name: "flow_cfg"
         n_epochs: 100
         train_diff: true
         cfg_dropout_prob: 0.10  # 10% null conditioning (common setting)
         use_ema: true
-        
+
         freeze:
           - compressor  # Freeze VAE
           - expander
@@ -369,11 +369,11 @@ vae_warmup_001_005_abc123-original.webp
   - `vae_trainer.py` - VAE/GAN training logic
   - `flow_trainer.py` - Flow model training
   - `checkpoint_manager.py` - Checkpoint save/resume
-  
+
 - `fluxflow_training.data` - Dataset implementations and transforms
   - `datasets.py` - Image/caption datasets with WebDataset support
   - `transforms.py` - Data augmentation pipelines
-  
+
 - `fluxflow_training.scripts` - CLI scripts for training and generation
   - `train.py` - Main training script (legacy + pipeline mode)
   - `generate_training_graphs.py` - Visualization generation
@@ -427,7 +427,7 @@ See `test_pipeline_minimal.yaml` or `config.example.yaml` for complete examples.
 training:
   batch_size: 4
   workers: 8
-  
+
   pipeline:
     steps:
       - name: "step1"

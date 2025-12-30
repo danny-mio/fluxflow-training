@@ -2,17 +2,30 @@
 # Copy this file to config.yaml and customize for your needs
 
 model:
+  # Model architecture type: "bezier" (default) or "baseline" (for comparison)
+  model_type: "bezier"  # Options: "bezier", "baseline"
+  # Model version: "0.3.0" (default) or "0.6.0"
+  model_version: "0.3.0"  # Options: "0.3.0", "0.6.0"
+
+  # Core dimensions
   vae_dim: 128  # VAE latent dimension (32 for limited GPU, 128/256 for better quality)
   feature_maps_dim: 128  # Flow processor feature dimension
   feature_maps_dim_disc: 8  # Discriminator feature dimension
   text_embedding_dim: 1024
   pretrained_bert_model: null  # Path to pretrained BERT checkpoint (optional)
 
+  # Baseline-specific parameters (only used when model_type: "baseline")
+  baseline_activation: "silu"  # Options: "silu", "gelu", "relu"
+  baseline_vae_width_mult: 4.5  # VAE width multiplier
+  baseline_vae_depth_mult: 1.0  # VAE depth multiplier
+  baseline_flow_blocks: 17  # Number of flow transformer blocks
+  baseline_flow_ffn_expansion: 4.0  # Flow FFN expansion factor
+
 data:
   # Local dataset (choose this OR webdataset)
   data_path: "/path/to/your/images"
   captions_file: "/path/to/your/captions.txt"  # Format: image_name<tab>caption
-  
+
   # Optional fixed text to prepend to all prompts during training
   # Example: "style anime" will convert "a girl running" to "style anime. a girl running"
   # Use this to ensure specific styles/types are always included in fine-tuning
@@ -27,11 +40,11 @@ data:
   webdataset_caption_key: "prompt"  # Key for caption text within the JSON (e.g., "prompt", "caption")
   webdataset_size: 2000000      # Total samples (TTI-2M has ~2M). If null, estimates from shard count.
   webdataset_samples_per_shard: 10000  # Samples per shard for estimation
-  
+
   # Legacy aliases (deprecated, use webdataset_* instead)
   # use_tt2m: false  # Use use_webdataset instead
   # tt2m_token: null  # Use webdataset_token instead
-  
+
   # WebDataset error recovery settings
   dataloader_max_retries: 5      # Max retries per batch on errors
   dataloader_retry_delay: 5.0    # Base delay between retries (seconds)
@@ -40,7 +53,7 @@ data:
   img_size: 1024
   channels: 3
   tokenizer_name: "distilbert-base-uncased"
-  
+
   # Multi-scale training: train on reduced versions of images
   # For each size smaller than image's min dimension, creates a downscaled version
   # Example: [128, 256, 512] - a 1024px image trains at 128, 256, 512, and 1024
@@ -77,7 +90,7 @@ training:
 
   # GAN settings
   lambda_adv: 0.5
-  
+
   # LPIPS perceptual loss settings
   # Lower weight = sharper outputs (prioritizes pixel accuracy)
   # Higher weight = smoother outputs (prioritizes perceptual similarity)
@@ -88,24 +101,24 @@ training:
   # ============================================================================
   # Uncomment this section to enable pipeline mode.
   # When 'pipeline' is present, legacy training modes above are ignored.
-  
+
   # pipeline:
   #   mode: "sequential"  # Currently only 'sequential' is supported
-  #   
+  #
   #   steps:
   #     # Step 1: VAE training with SPADE OFF
   #     - name: "vae_spade_off"
   #       description: "Train VAE without SPADE conditioning (hypothesis: learn base reconstruction first)"
   #       duration_epochs: 50
   #       max_steps: null        # Optional: limit batches per epoch for quick testing (e.g., max_steps: 10)
-  #       
+  #
   #       # Training modes for this step
   #       train_vae: true
   #       train_spade: false  # SPADE OFF
   #       train_flow: false
   #       gan_training: true
   #       use_lpips: true
-  #       
+  #
   #       # Freeze/unfreeze modules (optional)
   #       freeze_modules:
   #         flow_processor: true   # Freeze flow during VAE training
@@ -113,7 +126,7 @@ training:
   #         expander: false
   #         text_encoder: true     # Freeze text encoder during VAE
   #         discriminator: false
-  #       
+  #
   #       # Inline optimizer configs (no external JSON needed)
   #       optimizers:
   #         vae:
@@ -127,7 +140,7 @@ training:
   #           lr: 0.0001
   #           betas: [0.9, 0.999]
   #           weight_decay: 0.01
-  #       
+  #
   #       # Inline scheduler configs
   #       schedulers:
   #         vae:
@@ -136,7 +149,7 @@ training:
   #         discriminator:
   #           scheduler_type: "CosineAnnealingLR"
   #           eta_min_factor: 0.01
-  #       
+  #
   #       # Transition criteria (optional - enables early exit)
   #       transition_criteria:
   #         min_epochs: 20          # Run at least 20 epochs
@@ -144,25 +157,25 @@ training:
   #         loss_threshold: 0.05    # Move to next step if loss < 0.05
   #         metric_name: "vae_loss" # Which metric to monitor
   #         patience: 5             # Wait 5 epochs before transitioning
-  #     
+  #
   #     # Step 2: VAE training with SPADE ON
   #     - name: "vae_spade_on"
   #       description: "Enable SPADE conditioning (hypothesis: refine with spatial conditioning)"
   #       duration_epochs: 50
-  #       
+  #
   #       train_vae: true
   #       train_spade: true   # SPADE ON
   #       train_flow: false
   #       gan_training: true
   #       use_lpips: true
-  #       
+  #
   #       freeze_modules:
   #         flow_processor: true
   #         compressor: false
   #         expander: false
   #         text_encoder: true
   #         discriminator: false
-  #       
+  #
   #       optimizers:
   #         vae:
   #           optimizer_type: "AdamW"
@@ -174,7 +187,7 @@ training:
   #           lr: 0.00005
   #           betas: [0.9, 0.999]
   #           weight_decay: 0.01
-  #       
+  #
   #       schedulers:
   #         vae:
   #           scheduler_type: "CosineAnnealingLR"
@@ -182,32 +195,32 @@ training:
   #         discriminator:
   #           scheduler_type: "CosineAnnealingLR"
   #           eta_min_factor: 0.01
-  #       
+  #
   #       transition_criteria:
   #         min_epochs: 20
   #         max_epochs: 50
   #         loss_threshold: 0.03
   #         metric_name: "vae_loss"
   #         patience: 5
-  #     
+  #
   #     # Step 3: Flow training with frozen VAE
   #     - name: "flow_frozen_vae"
   #       description: "Train flow processor with frozen VAE"
   #       duration_epochs: 100
-  #       
+  #
   #       train_vae: false
   #       train_spade: false
   #       train_flow: true
   #       gan_training: false
   #       use_lpips: false
-  #       
+  #
   #       freeze_modules:
   #         flow_processor: false
   #         compressor: true    # Freeze VAE
   #         expander: true      # Freeze VAE
   #         text_encoder: false # Train text encoder with flow
   #         discriminator: true
-  #       
+  #
   #       optimizers:
   #         flow:
   #           optimizer_type: "AdamW"
@@ -219,7 +232,7 @@ training:
   #           lr: 0.000001  # Lower LR for text encoder
   #           betas: [0.9, 0.999]
   #           weight_decay: 0.01
-  #       
+  #
   #       schedulers:
   #         flow:
   #           scheduler_type: "CosineAnnealingLR"
