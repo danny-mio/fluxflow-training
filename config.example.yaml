@@ -76,6 +76,7 @@ training:
   gan_training: true
   use_lpips: true  # Enable LPIPS perceptual loss (improves visual quality, reduces blur)
   train_spade: true
+  spade_training_mode: full  # "full" (always on) or "alternate" (alternate on/off per step)
   train_diff: false
   train_diff_full: false
 
@@ -164,7 +165,8 @@ training:
   #       duration_epochs: 50
   #
   #       train_vae: true
-  #       train_spade: true   # SPADE ON
+  #       train_spade: true
+   spade_training_mode: full  # "full" (always on) or "alternate" (alternate on/off per step)   # SPADE ON
   #       train_flow: false
   #       gan_training: true
   #       use_lpips: true

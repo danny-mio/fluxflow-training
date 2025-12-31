@@ -938,6 +938,7 @@ def train_legacy(args):
             reconstruction_loss_fn=nn.L1Loss(),
             reconstruction_loss_min_fn=nn.MSELoss(),
             use_spade=args.train_spade,
+            spade_training_mode=args.spade_training_mode,
             kl_beta=args.kl_beta,
             kl_warmup_steps=args.kl_warmup_steps,
             kl_free_bits=args.kl_free_bits,
@@ -1518,6 +1519,12 @@ def parse_args():
         "--use_lpips", action="store_true", help="Enable LPIPS perceptual loss for VAE"
     )
     parser.add_argument("--train_spade", action="store_true", help="Use SPADE conditioning")
+    parser.add_argument(
+        "--spade_training_mode",
+        choices=["full", "alternate"],
+        default="full",
+        help="SPADE training mode: 'full' (always on) or 'alternate' (alternate on/off)",
+    )
     parser.add_argument("--train_diff", action="store_true", help="Train flow model")
     parser.add_argument(
         "--train_diff_full", action="store_true", help="Train flow with full schedule"
@@ -1742,6 +1749,11 @@ def parse_args():
                 args.use_lpips = config["training"]["use_lpips"]
             if "train_spade" in config["training"] and "train_spade" not in cli_provided:
                 args.train_spade = config["training"]["train_spade"]
+            if (
+                "spade_training_mode" in config["training"]
+                and "spade_training_mode" not in cli_provided
+            ):
+                args.spade_training_mode = config["training"]["spade_training_mode"]
             if "train_diff" in config["training"] and "train_diff" not in cli_provided:
                 args.train_diff = config["training"]["train_diff"]
             if "train_diff_full" in config["training"] and "train_diff_full" not in cli_provided:

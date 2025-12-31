@@ -108,6 +108,7 @@ class PipelineStepConfig:
     gan_training: bool = False
     use_lpips: bool = False
     train_spade: bool = False
+    spade_training_mode: Literal["full", "alternate"] = "full"
     train_diff: bool = False
     train_diff_full: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
@@ -566,6 +567,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         gan_training=step_dict.get("gan_training", False),
         use_lpips=step_dict.get("use_lpips", False),
         train_spade=step_dict.get("train_spade", False),
+        spade_training_mode=step_dict.get("spade_training_mode", "full"),
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
         use_ema=step_dict.get("use_ema", True),

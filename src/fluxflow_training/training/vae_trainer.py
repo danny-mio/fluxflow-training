@@ -3,7 +3,7 @@
 Handles VAE (compressor + expander) training with optional GAN discriminator.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
@@ -84,6 +84,7 @@ class VAETrainer:
         reconstruction_loss_fn: nn.Module,
         reconstruction_loss_min_fn: nn.Module,
         use_spade: bool = True,
+        spade_training_mode: Literal["full", "alternate"] = "full",
         train_reconstruction: bool = True,  # NEW: Control reconstruction loss
         kl_beta: float = 0.0001,
         kl_warmup_steps: int = 5000,
@@ -117,6 +118,7 @@ class VAETrainer:
             reconstruction_loss_fn: L1 loss
             reconstruction_loss_min_fn: MSE loss
             use_spade: Use SPADE conditioning in decoder
+            spade_training_mode: SPADE training mode ("full" or "alternate")
             train_reconstruction: Compute reconstruction loss (L1+MSE+LPIPS). Set to False for
                 GAN-only or SPADE-only training without VAE reconstruction (default: True)
             kl_beta: Final KL divergence weight
@@ -143,6 +145,8 @@ class VAETrainer:
         self.reconstruction_loss_fn = reconstruction_loss_fn
         self.reconstruction_loss_min_fn = reconstruction_loss_min_fn
         self.use_spade = use_spade
+        self.spade_training_mode = spade_training_mode
+
         self.train_reconstruction = train_reconstruction
 
         # KL settings
@@ -154,12 +158,11 @@ class VAETrainer:
         self.use_gan = use_gan
         if use_gan:
             if discriminator is None:
-                raise ValueError("discriminator is required when use_gan=True")
+                raise ValueError("discriminator must be provided when use_gan=True")
             if discriminator_optimizer is None:
-                raise ValueError(
-                    "discriminator_optimizer is required when use_gan=True. "
-                    "Ensure pipeline config includes optimization.optimizers.discriminator section."
-                )
+                raise ValueError("discriminator_optimizer must be provided when use_gan=True")
+            if discriminator_scheduler is None:
+                raise ValueError("discriminator_scheduler must be provided when use_gan=True")
 
         self.discriminator = discriminator
         self.discriminator_optimizer = discriminator_optimizer
@@ -168,18 +171,68 @@ class VAETrainer:
         self.r1_interval = r1_interval
         self.r1_gamma = r1_gamma
 
+        # Training settings
         self.gradient_clip_norm = gradient_clip_norm
+        self.use_lpips = use_lpips
+        self.lambda_lpips = lambda_lpips
         self.instance_noise_std = instance_noise_std
         self.instance_noise_decay = instance_noise_decay
         self.adaptive_weights = adaptive_weights
         self.mse_weight = mse_weight
         self.accelerator = accelerator
 
+        # Initialize LPIPS if needed
+        if self.use_lpips:
+            try:
+                import lpips
+
+                self.lpips_fn = lpips.LPIPS(net="vgg")
+                self.lpips_fn.eval()
+                for param in self.lpips_fn.parameters():
+                    param.requires_grad = False
+            except ImportError:
+                raise ImportError("LPIPS not available. Install with: pip install lpips")
+
+        # Metrics buffers
+        self.vae_loss_buffer = FloatBuffer(max_items=20)
+        self.kl_loss_buffer = FloatBuffer(max_items=20)
+        self.d_loss_buffer = FloatBuffer(max_items=20)
+        self.g_loss_buffer = FloatBuffer(max_items=20)
+        self.lpips_loss_buffer = FloatBuffer(max_items=20)
+
+        # Loss history for adaptive weighting
+        self.loss_history = {
+            "recon": FloatBuffer(100),
+            "kl": FloatBuffer(100),
+            "gan": FloatBuffer(100),
+            "lpips": FloatBuffer(100),
+        }
+
+    def _get_effective_spade_usage(self, global_step: int) -> bool:
+        """
+        Determine whether to use SPADE conditioning for the current training step.
+
+        Args:
+            global_step: Current training step number
+
+        Returns:
+            True if SPADE should be used, False otherwise
+        """
+        if not self.use_spade:
+            return False
+
+        if self.spade_training_mode == "full":
+            return True
+        elif self.spade_training_mode == "alternate":
+            return global_step % 2 == 0  # Alternate every step (even steps use SPADE)
+        else:
+            raise ValueError(f"Unknown SPADE training mode: {self.spade_training_mode}")
+
         # LPIPS perceptual loss
-        self.use_lpips = use_lpips
-        self.lambda_lpips = lambda_lpips
+        self.use_lpips = use_lpips  # noqa: F821
+        self.lambda_lpips = lambda_lpips  # noqa: F821
         self.lpips_fn = None
-        if use_lpips:
+        if self.use_lpips:
             import warnings
 
             import lpips
@@ -190,8 +243,8 @@ class VAETrainer:
                 warnings.filterwarnings("ignore", category=FutureWarning)
                 self.lpips_fn = lpips.LPIPS(net="vgg").eval()
             # Move to device and freeze
-            if accelerator:
-                self.lpips_fn = accelerator.prepare(self.lpips_fn)
+            if self.accelerator:
+                self.lpips_fn = self.accelerator.prepare(self.lpips_fn)
             for param in self.lpips_fn.parameters():
                 param.requires_grad = False
 
@@ -485,7 +538,9 @@ class VAETrainer:
             ctx_vec = img_seq.mean(dim=1)
 
             # Generate reconstructions (VAE doesn't receive gradients here)
-            out_imgs_for_D = self.expander(packed, use_context=self.use_spade)
+            out_imgs_for_D = self.expander(
+                packed, use_context=self._get_effective_spade_usage(global_step)
+            )
 
         # Discriminator step
         self.discriminator_optimizer.zero_grad(set_to_none=True)
@@ -572,7 +627,9 @@ class VAETrainer:
                 "_optimizer_stepped": False,
             }
 
-        out_imgs_rec = self.expander(packed_rec, use_context=self.use_spade)
+        out_imgs_rec = self.expander(
+            packed_rec, use_context=self._get_effective_spade_usage(global_step)
+        )
 
         # Early NaN detection after expansion
         if check_for_nan(out_imgs_rec, "out_imgs_rec", logger):
@@ -627,7 +684,9 @@ class VAETrainer:
                 # Don't detach - encoder needs GAN gradients when no reconstruction loss
                 packed_rec_for_gan = packed_rec
 
-            out_imgs_gan = self.expander(packed_rec_for_gan, use_context=self.use_spade)
+            out_imgs_gan = self.expander(
+                packed_rec_for_gan, use_context=self._get_effective_spade_usage(global_step)
+            )
             ctx_vec_rec = packed_rec_for_gan[:, :-1, :].contiguous().mean(dim=1)
 
             # Check inputs to discriminator

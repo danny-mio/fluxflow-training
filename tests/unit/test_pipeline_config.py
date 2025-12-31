@@ -93,6 +93,7 @@ class TestPipelineStepConfig:
             train_vae=True,
             gan_training=True,
             train_spade=True,
+            spade_training_mode="full",
             freeze=["text_encoder"],
             batch_size=4,
             lr=2e-5,
