@@ -165,13 +165,25 @@ class FlowTrainer:
         img_seq = latent_packet[:, :-1, :].contiguous()
         hw_vec = latent_packet[:, -1:, :].contiguous()
 
+        # Get context dimensions from model
+        context_dims = self.compressor.get_context_dims()
+
         # Sample timesteps
         device = img_seq.device
         t = sample_t(img_seq.size(0), device)
-        noise = torch.randn_like(img_seq)
 
-        # Add noise using scheduler
-        noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
+        if context_dims > 0:
+            # v0.7.0: Only add noise to VAE dimensions, keep context clean
+            vae_dims = img_seq.size(-1) - context_dims
+            noise = torch.randn_like(img_seq[:, :, :vae_dims])
+            # Add noise only to VAE part
+            noised_vae = self.noise_scheduler.add_noise(img_seq[:, :, :vae_dims], noise, t)
+            # Keep context unchanged
+            noised_seq = torch.cat([noised_vae, img_seq[:, :, vae_dims:]], dim=-1)
+        else:
+            # v0.6.0 and earlier: Add noise to all dimensions
+            noise = torch.randn_like(img_seq)
+            noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
         # Predict
@@ -182,9 +194,16 @@ class FlowTrainer:
         alpha_t = self.alphas_cumprod[t][:, None, None]
         sigma_t = (1 - alpha_t).sqrt()
         alpha_t = alpha_t.sqrt()
-        v_target = alpha_t * noise - sigma_t * img_seq
 
-        diff_loss = nn.functional.mse_loss(pred_seq, v_target)
+        if context_dims > 0:
+            # v0.7.0: Loss only on VAE dimensions (context is preserved)
+            vae_dims = img_seq.size(-1) - context_dims
+            v_target = alpha_t * noise - sigma_t * img_seq[:, :, :vae_dims]
+            diff_loss = nn.functional.mse_loss(pred_seq[:, :, :vae_dims], v_target)
+        else:
+            # v0.6.0 and earlier: Loss on all dimensions
+            v_target = alpha_t * noise - sigma_t * img_seq
+            diff_loss = nn.functional.mse_loss(pred_seq, v_target)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0

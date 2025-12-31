@@ -4,8 +4,8 @@
 model:
   # Model architecture type: "bezier" (default) or "baseline" (for comparison)
   model_type: "bezier"  # Options: "bezier", "baseline"
-  # Model version: "0.3.0" (default) or "0.6.0"
-  model_version: "0.3.0"  # Options: "0.3.0", "0.6.0"
+  # Model version: automatically discovered versions (default: "0.7.0")
+  model_version: "0.7.0"  # Available: dynamically discovered (0.7.0=context-enhanced, 0.6.0, 0.3.0, ...)
 
   # Core dimensions
   vae_dim: 128  # VAE latent dimension (32 for limited GPU, 128/256 for better quality)
