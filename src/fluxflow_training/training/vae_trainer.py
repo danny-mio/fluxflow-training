@@ -711,6 +711,15 @@ class VAETrainer:
             )
             ctx_vec_rec = packed_rec_for_gan[:, :-1, :].contiguous().mean(dim=1)
 
+            # Pad or truncate context vector to match discriminator expectations
+            expected_ctx_dim = self.discriminator.ctx_proj.in_features
+            if ctx_vec_rec.shape[-1] < expected_ctx_dim:
+                padding = expected_ctx_dim - ctx_vec_rec.shape[-1]
+                ctx_vec_rec = torch.nn.functional.pad(ctx_vec_rec, (0, padding))
+            elif ctx_vec_rec.shape[-1] > expected_ctx_dim:
+                # Truncate if context vector is larger than expected
+                ctx_vec_rec = ctx_vec_rec[:, :expected_ctx_dim]
+
             # Check inputs to discriminator
             if check_for_nan(out_imgs_gan, "out_imgs_gan", logger):
                 logger.error("NaN in discriminator input images")
