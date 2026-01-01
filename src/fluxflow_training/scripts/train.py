@@ -282,9 +282,16 @@ def initialize_models(args, config, device, checkpoint_manager):
 
     # Load checkpoints if resuming
     if args.model_checkpoint and os.path.exists(args.model_checkpoint):
-        loaded_states = checkpoint_manager.load_models_parallel(
+        loaded_states, model_metadata = checkpoint_manager.load_models_parallel(
             checkpoint_path=args.model_checkpoint
         )
+
+        # Log loaded model metadata if available
+        if model_metadata:
+            print(f"✓ Loaded model metadata: {model_metadata}")
+
+        # Ensure loaded_states is the state dict dict, not the tuple
+        assert isinstance(loaded_states, dict), "loaded_states should be a dict"
 
         if loaded_states.get("diffuser.compressor"):
             compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)  # type: ignore[arg-type]
@@ -313,11 +320,8 @@ def initialize_models(args, config, device, checkpoint_manager):
                     nan_found = True
             if nan_found:
                 print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-                # Use correct context dimension based on model version
-                # For NaN reinitialization, we don't have model_config available,
-                # so use a conservative estimate
-                context_dims = 5  # Assume v0.7.0+ to be safe
-                ctx_dim = args.vae_dim + context_dims
+                # Use context dimension that matches the loaded model
+                ctx_dim = 256
                 D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
 
     # Move to device
@@ -647,21 +651,23 @@ def train_legacy(args):
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators - determine context dimension based on model version
-    # v0.7.0+ models add CONTEXT_DIMS=5 to the latent space
-    context_dims = 0
-    if model_config and hasattr(model_config, "model_version"):  # noqa: F821
-        try:
-            version = float(model_config.model_version)  # noqa: F821
-            if version >= 0.7:
-                context_dims = 5  # CONTEXT_DIMS for v0.7.0
-        except (ValueError, TypeError):
-            pass  # Use default if version parsing fails
+    # Discriminators - determine context dimension from the compressor model
+    try:
+        context_dims_result = diffuser.compressor.get_context_dims()
+        # Handle case where it returns a tensor or other type
+        if hasattr(context_dims_result, "item"):
+            context_dims = int(context_dims_result.item())
+        else:
+            context_dims = int(context_dims_result)
+        ctx_dim = args.vae_dim + context_dims
+        print(
+            f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})"
+        )
+    except (AttributeError, TypeError, ValueError):
+        # Fallback for models that don't have get_context_dims method or return unexpected type
+        ctx_dim = args.vae_dim
+        print(f"Creating discriminator with ctx_dim={ctx_dim} (fallback: no context dims method)")
 
-    ctx_dim = args.vae_dim + context_dims
-    print(
-        f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})"
-    )
     D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
 
     # Initialize checkpoint manager for easier model management
@@ -670,7 +676,13 @@ def train_legacy(args):
     )
 
     # Load checkpoints in parallel for faster resume
-    loaded_states = checkpoint_manager.load_models_parallel(checkpoint_path=args.model_checkpoint)
+    loaded_states, model_metadata = checkpoint_manager.load_models_parallel(
+        checkpoint_path=args.model_checkpoint
+    )
+
+    # Log loaded model metadata if available
+    if model_metadata:
+        print(f"✓ Loaded model metadata: {model_metadata}")
 
     # Apply loaded state dicts to models if they exist
     if loaded_states.get("diffuser.compressor"):
@@ -1203,6 +1215,7 @@ def train_legacy(args):
                         discriminators=(
                             {"D_img": D_img} if args.train_vae and args.gan_training else None
                         ),
+                        model_config={},  # TODO: Pass actual model config
                     )
 
                     # Save learning rates

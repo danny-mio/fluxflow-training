@@ -793,7 +793,19 @@ class TrainingPipelineOrchestrator:
                 )
                 channels = getattr(args, "channels", 3)
                 vae_dim = getattr(args, "vae_dim", 128)
-                models["D_img"] = PatchDiscriminator(in_channels=channels, ctx_dim=vae_dim).to(
+                # Calculate correct context dimension from the compressor
+                try:
+                    context_dims = models["compressor"].get_context_dims()
+                    ctx_dim = vae_dim + context_dims
+                    logger.info(
+                        f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={vae_dim} + context_dims={context_dims})"
+                    )
+                except (AttributeError, TypeError):
+                    ctx_dim = vae_dim
+                    logger.info(
+                        f"Creating discriminator with ctx_dim={ctx_dim} (fallback - no context dims method)"
+                    )
+                models["D_img"] = PatchDiscriminator(in_channels=channels, ctx_dim=ctx_dim).to(
                     self.device
                 )
 
@@ -925,11 +937,16 @@ class TrainingPipelineOrchestrator:
         # Get pipeline metadata
         metadata = self.get_pipeline_metadata(step_idx, step_epoch, batch_idx)
 
-        # Save models
+        # Save models with model configuration metadata
+        # TODO: Extract model config from pipeline config
+        model_config = (
+            {}
+        )  # Placeholder - will be implemented when pipeline config includes model info
         self.checkpoint_manager.save_models(
             diffuser=models["diffuser"],
             text_encoder=models["text_encoder"],
             discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
+            model_config=model_config,
         )
 
         # Save training state with pipeline metadata
