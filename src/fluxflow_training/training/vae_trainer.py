@@ -535,6 +535,12 @@ class VAETrainer:
             img_seq = packed[:, :-1, :].contiguous()
             ctx_vec = img_seq.mean(dim=1)
 
+            # Pad context vector to match discriminator expectations
+            expected_ctx_dim = self.discriminator.ctx_proj.in_features
+            if ctx_vec.shape[-1] < expected_ctx_dim:
+                padding = expected_ctx_dim - ctx_vec.shape[-1]
+                ctx_vec = torch.nn.functional.pad(ctx_vec, (0, padding))
+
             # Generate reconstructions (VAE doesn't receive gradients here)
             out_imgs_for_D = self.expander(
                 packed, use_context=self._get_effective_spade_usage(global_step)
@@ -551,8 +557,7 @@ class VAETrainer:
             out_imgs_for_D.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
         )
 
-        # Real images with gradient for R1 penalty
-        real_imgs_noisy.requires_grad_(True)
+        # Real images (already require gradients for R1 penalty)
         real_logits = self.discriminator(real_imgs_noisy, ctx_vec.detach())
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
@@ -561,8 +566,6 @@ class VAETrainer:
         if (global_step % self.r1_interval) == 0:
             r1 = r1_penalty(real_imgs_noisy, real_logits)
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
-
-        real_imgs_noisy.requires_grad_(False)
 
         # Fake images
         fake_logits = self.discriminator(fake_imgs_noisy, ctx_vec.detach())

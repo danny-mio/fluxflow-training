@@ -783,31 +783,46 @@ class TrainingPipelineOrchestrator:
                     use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
                 ).to(self.device)
 
-            # Auto-add discriminator if GAN training enabled
-            if step.gan_training and ("D_img" not in models or models["D_img"] is None):
-                from fluxflow import PatchDiscriminator
+            # Create or validate discriminator for GAN training
+            if step.gan_training:
+                from fluxflow.models import PatchDiscriminator
 
-                logger.warning(
-                    "Discriminator 'D_img' not found but GAN training enabled, creating new PatchDiscriminator. "
-                    "This may not load from checkpoint - ensure models are initialized properly."
-                )
                 channels = getattr(args, "channels", 3)
                 vae_dim = getattr(args, "vae_dim", 128)
-                # Calculate correct context dimension from the compressor
+
+                # Calculate expected context dimension
                 try:
                     context_dims = models["compressor"].get_context_dims()
-                    ctx_dim = vae_dim + context_dims
-                    logger.info(
-                        f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={vae_dim} + context_dims={context_dims})"
-                    )
+                    expected_ctx_dim = vae_dim + context_dims
                 except (AttributeError, TypeError):
-                    ctx_dim = vae_dim
-                    logger.info(
-                        f"Creating discriminator with ctx_dim={ctx_dim} (fallback - no context dims method)"
-                    )
-                models["D_img"] = PatchDiscriminator(in_channels=channels, ctx_dim=ctx_dim).to(
-                    self.device
-                )
+                    expected_ctx_dim = vae_dim
+
+                # Check if we have a loaded discriminator and if it's compatible
+                discriminator_compatible = False
+                if "D_img" in models and models["D_img"] is not None:
+                    try:
+                        # Check if discriminator has compatible context dimension
+                        actual_ctx_dim = models["D_img"].ctx_proj.in_features
+                        if actual_ctx_dim == expected_ctx_dim:
+                            discriminator_compatible = True
+                            logger.info(
+                                f"Using loaded discriminator with compatible ctx_dim={actual_ctx_dim}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Loaded discriminator has incompatible ctx_dim={actual_ctx_dim}, "
+                                f"expected {expected_ctx_dim}. Creating new discriminator."
+                            )
+                    except (AttributeError, TypeError) as e:
+                        logger.warning(
+                            f"Could not check discriminator compatibility: {e}. Creating new discriminator."
+                        )
+
+                if not discriminator_compatible:
+                    logger.info(f"Creating new PatchDiscriminator with ctx_dim={expected_ctx_dim}")
+                    models["D_img"] = PatchDiscriminator(
+                        in_channels=channels, ctx_dim=expected_ctx_dim
+                    ).to(self.device)
 
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
