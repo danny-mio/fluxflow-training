@@ -271,16 +271,9 @@ def initialize_models(args, config, device, checkpoint_manager):
     # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators - Optimized lightweight version (98% parameter reduction)
-    D_img = PatchDiscriminator(
-        in_channels=args.channels,
-        base_ch=32,  # Reduced from 64 (50% less channels)
-        depth=3,  # Reduced from 4 (25% less depth)
-        ctx_dim=args.vae_dim,
-        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
-    )
-
     # Load checkpoints if resuming
+    loaded_states = None
+    model_metadata = None
     if args.model_checkpoint and os.path.exists(args.model_checkpoint):
         loaded_states, model_metadata = checkpoint_manager.load_models_parallel(
             checkpoint_path=args.model_checkpoint
@@ -293,6 +286,53 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Ensure loaded_states is the state dict dict, not the tuple
         assert isinstance(loaded_states, dict), "loaded_states should be a dict"
 
+    # Discriminators - determine correct ctx_dim from saved checkpoint if available
+    ctx_dim = args.vae_dim  # Default
+    if loaded_states and loaded_states.get("D_img"):
+        try:
+            # Use ctx_dim from saved checkpoint to ensure compatibility
+            saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+            ctx_dim = saved_ctx_dim
+            print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
+        except (KeyError, AttributeError):
+            print(
+                f"Could not determine ctx_dim from checkpoint, using default vae_dim={args.vae_dim}"
+            )
+
+    D_img = PatchDiscriminator(
+        in_channels=args.channels,
+        base_ch=32,  # Reduced from 64 (50% less channels)
+        depth=3,  # Reduced from 4 (25% less depth)
+        ctx_dim=ctx_dim,
+        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+    )
+
+    # Create diffuser pipeline
+    diffuser = FluxPipeline(compressor, flow_processor, expander)
+
+    # Discriminators - determine correct ctx_dim from saved checkpoint if available
+    ctx_dim = args.vae_dim  # Default
+    if loaded_states and loaded_states.get("D_img"):
+        try:
+            # Use ctx_dim from saved checkpoint to ensure compatibility
+            saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+            ctx_dim = saved_ctx_dim
+            print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
+        except (KeyError, AttributeError):
+            print(
+                f"Could not determine ctx_dim from checkpoint, using default vae_dim={args.vae_dim}"
+            )
+
+    D_img = PatchDiscriminator(
+        in_channels=args.channels,
+        base_ch=32,  # Reduced from 64 (50% less channels)
+        depth=3,  # Reduced from 4 (25% less depth)
+        ctx_dim=ctx_dim,
+        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+    )
+
+    # Load model checkpoints
+    if loaded_states:
         if loaded_states.get("diffuser.compressor"):
             compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded compressor checkpoint")
@@ -309,8 +349,25 @@ def initialize_models(args, config, device, checkpoint_manager):
             image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded image_encoder checkpoint")
         if loaded_states.get("D_img"):
-            D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
-            print("✓ Loaded D_img checkpoint")
+            # Check if loaded discriminator is compatible with current architecture
+            try:
+                saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+                current_ctx_dim = D_img.ctx_proj.in_features
+                if saved_ctx_dim == current_ctx_dim:
+                    D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
+                    print("✓ Loaded D_img checkpoint")
+                else:
+                    print(
+                        f"⚠️  D_img checkpoint incompatible (saved ctx_dim={saved_ctx_dim}, current ctx_dim={current_ctx_dim}). Skipping load."
+                    )
+            except (KeyError, AttributeError) as e:
+                print(f"⚠️  Could not check D_img compatibility: {e}. Attempting load anyway.")
+                # Try loading anyway with strict=False in case it's compatible
+                try:
+                    D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
+                    print("✓ Loaded D_img checkpoint (compatibility check failed)")
+                except RuntimeError:
+                    print("⚠️  D_img checkpoint incompatible. Skipping load.")
 
             # Validate discriminator weights for NaN/Inf
             nan_found = False
