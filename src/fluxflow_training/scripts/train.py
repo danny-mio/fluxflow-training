@@ -208,6 +208,7 @@ def initialize_models(args, config, device, checkpoint_manager):
 
     # Check if using factory-based model creation (for baseline/bezier selection)
     use_factory = config and "model" in config and config["model"].get("model_type")
+    model_config = None
 
     if use_factory:
         # Use factory to create models based on model_type in config
@@ -312,7 +313,12 @@ def initialize_models(args, config, device, checkpoint_manager):
                     nan_found = True
             if nan_found:
                 print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+                # Use correct context dimension based on model version
+                # For NaN reinitialization, we don't have model_config available,
+                # so use a conservative estimate
+                context_dims = 5  # Assume v0.7.0+ to be safe
+                ctx_dim = args.vae_dim + context_dims
+                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
 
     # Move to device
     diffuser.to(device)
@@ -641,8 +647,22 @@ def train_legacy(args):
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators
-    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+    # Discriminators - determine context dimension based on model version
+    # v0.7.0+ models add CONTEXT_DIMS=5 to the latent space
+    context_dims = 0
+    if model_config and hasattr(model_config, "model_version"):  # noqa: F821
+        try:
+            version = float(model_config.model_version)  # noqa: F821
+            if version >= 0.7:
+                context_dims = 5  # CONTEXT_DIMS for v0.7.0
+        except (ValueError, TypeError):
+            pass  # Use default if version parsing fails
+
+    ctx_dim = args.vae_dim + context_dims
+    print(
+        f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})"
+    )
+    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
 
     # Initialize checkpoint manager for easier model management
     checkpoint_manager = CheckpointManager(
