@@ -242,9 +242,7 @@ class VAETrainer:
                 warnings.filterwarnings("ignore", category=UserWarning)
                 warnings.filterwarnings("ignore", category=FutureWarning)
                 self.lpips_fn = lpips.LPIPS(net="vgg").eval()
-            # Move to device and freeze
-            if self.accelerator:
-                self.lpips_fn = self.accelerator.prepare(self.lpips_fn)
+            # Freeze parameters (device will be set dynamically)
             for param in self.lpips_fn.parameters():
                 param.requires_grad = False
 
@@ -662,7 +660,10 @@ class VAETrainer:
                 # Compute LPIPS WITH gradients so it actually trains the VAE
                 # NOTE: Gradient checkpointing removed - causes recursive checkpointing
                 # with VAE decoder, leading to OOM instead of saving memory
-                perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
+                # Ensure LPIPS is on the same device as input tensors
+                device = out_imgs_rec.device
+                lpips_fn = self.lpips_fn.to(device)
+                perceptual_loss = lpips_fn(out_imgs_rec, real_imgs).mean()
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
         # KL divergence with beta annealing (still compute even if not training reconstruction)
