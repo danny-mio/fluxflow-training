@@ -696,15 +696,11 @@ class VAETrainer:
         # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
         if self.use_gan and self.discriminator is not None:
-            # Detach latent only when training reconstruction
-            # - When train_reconstruction=True: Encoder learns from recon+KL, decoder from GAN
-            # - When train_reconstruction=False: Both encoder+decoder learn from GAN+KL
-            if self.train_reconstruction:
-                # Detach to prevent GAN gradients flowing to encoder
-                packed_rec_for_gan = packed_rec.detach()
-            else:
-                # Don't detach - encoder needs GAN gradients when no reconstruction loss
-                packed_rec_for_gan = packed_rec
+            # Always detach latents for GAN training to freeze encoder
+            # - Encoder learns from KL (and reconstruction if enabled)
+            # - Decoder learns conditional generation via GAN + SPADE conditioning
+            # - This provides stable context vectors and focuses SPADE on conditioning
+            packed_rec_for_gan = packed_rec.detach()
 
             out_imgs_gan = self.expander(
                 packed_rec_for_gan, use_context=self._get_effective_spade_usage(global_step)
