@@ -797,32 +797,19 @@ class TrainingPipelineOrchestrator:
                 except (AttributeError, TypeError):
                     expected_ctx_dim = vae_dim
 
-                # Check if we have a loaded discriminator and if it's compatible
-                discriminator_compatible = False
-                if "D_img" in models and models["D_img"] is not None:
-                    try:
-                        # Check if discriminator has compatible context dimension
-                        actual_ctx_dim = models["D_img"].ctx_proj.in_features
-                        if actual_ctx_dim == expected_ctx_dim:
-                            discriminator_compatible = True
-                            logger.info(
-                                f"Using loaded discriminator with compatible ctx_dim={actual_ctx_dim}"
-                            )
-                        else:
-                            logger.warning(
-                                f"Loaded discriminator has incompatible ctx_dim={actual_ctx_dim}, "
-                                f"expected {expected_ctx_dim}. Creating new discriminator."
-                            )
-                    except (AttributeError, TypeError) as e:
-                        logger.warning(
-                            f"Could not check discriminator compatibility: {e}. Creating new discriminator."
-                        )
-
-                if not discriminator_compatible:
+                # Check if we have a loaded discriminator
+                if "D_img" not in models or models["D_img"] is None:
                     logger.info(f"Creating new PatchDiscriminator with ctx_dim={expected_ctx_dim}")
                     models["D_img"] = PatchDiscriminator(
                         in_channels=channels, ctx_dim=expected_ctx_dim
                     ).to(self.device)
+                else:
+                    # Use loaded discriminator - padding will handle dimension differences
+                    actual_ctx_dim = models["D_img"].ctx_proj.in_features
+                    logger.info(
+                        f"Using loaded discriminator (ctx_dim={actual_ctx_dim}, "
+                        f"expected {expected_ctx_dim}) - padding will handle differences"
+                    )
 
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],

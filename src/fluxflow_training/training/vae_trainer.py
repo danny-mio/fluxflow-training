@@ -529,22 +529,28 @@ class VAETrainer:
         """
         self.discriminator.train()
 
-        # Generate fake images with VAE frozen (no gradients to VAE)
-        with torch.no_grad():
-            packed = self.compressor(real_imgs, training=False)
-            img_seq = packed[:, :-1, :].contiguous()
-            ctx_vec = img_seq.mean(dim=1)
+        # Generate fake images with VAE frozen (no gradients to VAE due to frozen params)
+        # Note: torch.no_grad() removed to avoid gradient checkpointing warnings
+        packed = self.compressor(real_imgs, training=False)
+        img_seq = packed[:, :-1, :].contiguous()
+        ctx_vec = img_seq.mean(dim=1)
 
-            # Pad context vector to match discriminator expectations
-            expected_ctx_dim = self.discriminator.ctx_proj.in_features
-            if ctx_vec.shape[-1] < expected_ctx_dim:
-                padding = expected_ctx_dim - ctx_vec.shape[-1]
-                ctx_vec = torch.nn.functional.pad(ctx_vec, (0, padding))
+        # Pad or truncate context vector to match discriminator expectations
+        expected_ctx_dim = self.discriminator.ctx_proj.in_features
+        if ctx_vec.shape[-1] < expected_ctx_dim:
+            padding = expected_ctx_dim - ctx_vec.shape[-1]
+            ctx_vec = torch.nn.functional.pad(ctx_vec, (0, padding))
+        elif ctx_vec.shape[-1] > expected_ctx_dim:
+            # Truncate if context vector is larger than expected
+            ctx_vec = ctx_vec[..., :expected_ctx_dim]
 
-            # Generate reconstructions (VAE doesn't receive gradients here)
-            out_imgs_for_D = self.expander(
-                packed, use_context=self._get_effective_spade_usage(global_step)
-            )
+        # Generate conditional reconstructions (VAE doesn't receive gradients here)
+        out_imgs_for_D = self.expander(
+            packed, use_context=self._get_effective_spade_usage(global_step)
+        )
+
+        # Also generate unconditional reconstructions for discriminator training
+        out_imgs_uncond_for_D = self.expander(packed, use_context=False)
 
         # Discriminator step
         self.discriminator_optimizer.zero_grad(set_to_none=True)
@@ -556,20 +562,32 @@ class VAETrainer:
         fake_imgs_noisy = add_instance_noise(
             out_imgs_for_D.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
         )
+        fake_uncond_imgs_noisy = add_instance_noise(
+            out_imgs_uncond_for_D.detach(),
+            self.instance_noise_std,
+            self.instance_noise_decay,
+            global_step,
+        )
 
         # Real images (already require gradients for R1 penalty)
         real_logits = self.discriminator(real_imgs_noisy, ctx_vec.detach())
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
 
-        # R1 gradient penalty (periodic)
+        # R1 gradient penalty (periodic) - only on real images
         if (global_step % self.r1_interval) == 0:
             r1 = r1_penalty(real_imgs_noisy, real_logits)
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
 
-        # Fake images
+        # Conditional fake images (should be harder to distinguish than unconditional)
         fake_logits = self.discriminator(fake_imgs_noisy, ctx_vec.detach())
-        d_hinge = d_hinge_loss(real_logits, fake_logits)
+        # Unconditional fake images (should be easier to distinguish)
+        fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, ctx_vec.detach())
+
+        # Combine losses - weight unconditional fakes more since they're easier to classify
+        d_hinge_cond = d_hinge_loss(real_logits, fake_logits)
+        d_hinge_uncond = d_hinge_loss(real_logits, fake_uncond_logits)
+        d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
         d_img_loss = d_img_loss + d_hinge
 
         self.accelerator.backward(d_img_loss)
