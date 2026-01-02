@@ -576,8 +576,15 @@ class VAETrainer:
             global_step,
         )
 
+        # Determine if SPADE conditioning is active this step
+        spade_active = self._get_effective_spade_usage(global_step)
+
+        # Context vectors: None when SPADE is active (conditioning happens in generator)
+        # Actual context when SPADE is inactive (traditional conditional GAN)
+        disc_ctx = None if spade_active else ctx_vec.detach()
+
         # Real images (already require gradients for R1 penalty)
-        real_logits = self.discriminator(real_imgs_noisy, ctx_vec.detach())
+        real_logits = self.discriminator(real_imgs_noisy, disc_ctx)
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
 
@@ -586,10 +593,10 @@ class VAETrainer:
             r1 = r1_penalty(real_imgs_noisy, real_logits)
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
 
-        # Conditional fake images (should be harder to distinguish than unconditional)
-        fake_logits = self.discriminator(fake_imgs_noisy, ctx_vec.detach())
-        # Unconditional fake images (should be easier to distinguish)
-        fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, ctx_vec.detach())
+        # Fake images - use same context logic as real images
+        fake_logits = self.discriminator(fake_imgs_noisy, disc_ctx)
+        # Unconditional fake images (should also be classified as fake)
+        fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, disc_ctx)
 
         # Combine losses - weight unconditional fakes more since they're easier to classify
         d_hinge_cond = d_hinge_loss(real_logits, fake_logits)
@@ -731,7 +738,10 @@ class VAETrainer:
                 logger.error("NaN in discriminator context vector")
                 G_img_loss = torch.tensor(0.0, device=real_imgs.device)
             else:
-                g_real_logits = self.discriminator(out_imgs_gan, ctx_vec_rec)
+                # Use same context logic as discriminator training
+                spade_active = self._get_effective_spade_usage(global_step)
+                gen_ctx = None if spade_active else ctx_vec_rec
+                g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
 
                 # Check discriminator output
                 if check_for_nan(g_real_logits, "g_real_logits", logger):
