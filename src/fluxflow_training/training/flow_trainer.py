@@ -306,6 +306,9 @@ class FlowTrainer:
         total_loss = total_loss / self.gradient_accumulation_steps
         self.accelerator.backward(total_loss)
 
+        # Get loss value for metrics (defined before accumulation check)
+        loss_value = float(total_loss.detach().item())
+
         # Only update weights after accumulating gradients
         self._accumulation_step += 1
         should_step = (self._accumulation_step % self.gradient_accumulation_steps) == 0
@@ -336,9 +339,6 @@ class FlowTrainer:
 
             # Update EMA
             self.ema.update()
-
-            # Get loss value for metrics and schedulers
-            loss_value = float(total_loss.detach().item())
 
             # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
             # Skip first step to avoid PyTorch warning about calling scheduler before first optimizer step
