@@ -63,6 +63,7 @@ class FlowTrainer:
         text_encoder_scheduler: Optional[_LRScheduler] = None,  # type: ignore[type-arg]
         gradient_clip_norm: float = 1.0,
         num_train_timesteps: int = 1000,
+        start_step: int = 0,
         ema_decay: float = 0.9999,
         lambda_align: float = 0.0,
         cfg_dropout_prob: float = 0.0,
@@ -81,6 +82,7 @@ class FlowTrainer:
             text_encoder_scheduler: Text encoder scheduler (None if frozen)
             gradient_clip_norm: Gradient clipping norm
             num_train_timesteps: Number of diffusion timesteps
+            start_step: Starting diffusion timestep (default: 0 for noise-to-image)
             ema_decay: EMA decay rate for model parameters (default: 0.9999)
             lambda_align: Text-image alignment loss weight (default: 0.1)
             cfg_dropout_prob: Classifier-free guidance dropout probability (default: 0.0)
@@ -113,6 +115,8 @@ class FlowTrainer:
         self.ema = EMA(self._ema_wrapper, decay=ema_decay)
 
         # Setup diffusion scheduler
+        self.num_train_timesteps = num_train_timesteps
+        self.start_step = start_step
         self.noise_scheduler = DPMSolverMultistepScheduler(num_train_timesteps=num_train_timesteps)
         self.noise_scheduler.set_timesteps(num_train_timesteps)  # type: ignore[arg-type]
         self.alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(  # type: ignore[attr-defined]
@@ -170,7 +174,7 @@ class FlowTrainer:
 
         # Sample timesteps
         device = img_seq.device
-        t = sample_t(img_seq.size(0), device)
+        t = sample_t(img_seq.size(0), device, self.start_step, self.num_train_timesteps)
 
         if context_dims > 0:
             # v0.7.0: Only add noise to VAE dimensions, keep context clean

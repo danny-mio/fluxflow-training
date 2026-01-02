@@ -913,7 +913,8 @@ class TrainingPipelineOrchestrator:
                 text_encoder_optimizer=optimizers.get("text_encoder"),
                 text_encoder_scheduler=schedulers.get("text_encoder"),
                 gradient_clip_norm=args.initial_clipping_norm,
-                num_train_timesteps=1000,
+                num_train_timesteps=step.num_train_timesteps,
+                start_step=step.start_step,
                 accelerator=self.accelerator,
             )
             logger.info("Created Flow trainer")
