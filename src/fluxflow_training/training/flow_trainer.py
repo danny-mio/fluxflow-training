@@ -62,6 +62,7 @@ class FlowTrainer:
         text_encoder_optimizer: Optional[Optimizer] = None,
         text_encoder_scheduler: Optional[_LRScheduler] = None,  # type: ignore[type-arg]
         gradient_clip_norm: float = 1.0,
+        gradient_accumulation_steps: int = 1,
         num_train_timesteps: int = 1000,
         start_step: int = 0,
         ema_decay: float = 0.9999,
@@ -97,6 +98,8 @@ class FlowTrainer:
         self.text_encoder_optimizer = text_encoder_optimizer
         self.text_encoder_scheduler = text_encoder_scheduler
         self.gradient_clip_norm = gradient_clip_norm
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self._accumulation_step = 0  # Track current accumulation step
         self.lambda_align = lambda_align
         self.cfg_dropout_prob = cfg_dropout_prob
         self.accelerator = accelerator
@@ -131,6 +134,7 @@ class FlowTrainer:
         real_imgs: torch.Tensor,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        global_step: int = 0,
     ) -> dict[str, float]:
         """
         Perform one flow training step.
@@ -156,12 +160,6 @@ class FlowTrainer:
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
 
-        # Apply classifier-free guidance dropout
-        if self.cfg_dropout_prob > 0.0:
-            from .cfg_utils import apply_cfg_dropout
-
-            text_embeddings = apply_cfg_dropout(text_embeddings, p_uncond=self.cfg_dropout_prob)
-
         # Encode image to latent (frozen VAE)
         with torch.no_grad():
             latent_packet = self.compressor(real_imgs)
@@ -175,6 +173,41 @@ class FlowTrainer:
         # Sample timesteps
         device = img_seq.device
         t = sample_t(img_seq.size(0), device, self.start_step, self.num_train_timesteps)
+
+        # Apply progressive classifier-free guidance dropout
+        # Higher CFG dropout at high timesteps (more noisy images need more guidance)
+        if self.cfg_dropout_prob > 0.0:
+            from .cfg_utils import apply_cfg_dropout
+
+            # Progressive CFG: scale dropout probability based on timestep
+            # Higher timesteps (more noise) benefit from more guidance
+            t_normalized = t.float() / self.num_train_timesteps  # [0, 1]
+            progressive_p_uncond = self.cfg_dropout_prob * (
+                0.5 + 0.5 * t_normalized
+            )  # Scale from 0.5x to 1.5x
+            progressive_p_uncond = torch.clamp(
+                progressive_p_uncond, 0.0, min(0.5, self.cfg_dropout_prob * 2.0)
+            )
+
+            text_embeddings = apply_cfg_dropout(
+                text_embeddings, p_uncond=progressive_p_uncond.mean().item()
+            )
+
+        # Monitor timestep distribution for training progress (log every 500 steps)
+        if global_step % 500 == 0:
+            # Create histogram of sampled timesteps
+            hist = torch.histc(
+                t.float(),
+                bins=10,
+                min=self.start_step,
+                max=self.start_step + self.num_train_timesteps - 1,
+            )
+            hist = hist / hist.sum()  # Normalize to probabilities
+
+            logger.info(f"Timestep distribution: {hist}")
+            logger.info(
+                f"Timestep range: {t.min().item()}-{t.max().item()} (mean: {t.float().mean().item():.1f})"
+            )
 
         if context_dims > 0:
             # v0.7.0: Only add noise to VAE dimensions, keep context clean
@@ -203,11 +236,13 @@ class FlowTrainer:
             # v0.7.0: Loss only on VAE dimensions (context is preserved)
             vae_dims = img_seq.size(-1) - context_dims
             v_target = alpha_t * noise - sigma_t * img_seq[:, :, :vae_dims]
-            diff_loss = nn.functional.mse_loss(pred_seq[:, :, :vae_dims], v_target)
+            # Use Smooth L1 loss for better gradient properties at high noise levels
+            diff_loss = nn.functional.smooth_l1_loss(pred_seq[:, :, :vae_dims], v_target, beta=0.01)
         else:
             # v0.6.0 and earlier: Loss on all dimensions
             v_target = alpha_t * noise - sigma_t * img_seq
-            diff_loss = nn.functional.mse_loss(pred_seq, v_target)
+            # Use Smooth L1 loss for better gradient properties at high noise levels
+            diff_loss = nn.functional.smooth_l1_loss(pred_seq, v_target, beta=0.01)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
@@ -247,35 +282,57 @@ class FlowTrainer:
             # Alignment loss disabled
             align_loss = torch.tensor(0.0, device=pred_seq.device)
 
-        # Combine losses
-        total_loss = diff_loss + self.lambda_align * align_loss
+        # Adaptive loss weighting for better training dynamics
+        # Gradually increase alignment loss weight to prevent early dominance
+        if self.lambda_align > 0.0:
+            # Warm up alignment loss over first 10% of training
+            warmup_steps = max(1000, int(0.1 * 10000))  # Assume 10k steps for warmup
+            align_weight = min(self.lambda_align, self.lambda_align * (global_step / warmup_steps))
+        else:
+            align_weight = 0.0
+
+        # Combine losses with adaptive weighting
+        total_loss = diff_loss + align_weight * align_loss
 
         # Check for NaN/Inf in loss
         if check_for_nan(total_loss, "flow_total_loss", logger):
             logger.error("Skipping batch due to NaN in flow loss")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
+        # Gradient accumulation for effective larger batch sizes
+        total_loss = total_loss / self.gradient_accumulation_steps
         self.accelerator.backward(total_loss)
 
-        # Check gradients for NaN/Inf after backward
-        if self.accelerator.scaler is not None:
-            self.accelerator.scaler.unscale_(self.optimizer)
-            for name, param in self.flow_processor.named_parameters():
-                if param.grad is not None and check_for_nan(
-                    param.grad, f"grad_flow_{name}", logger
-                ):
-                    logger.warning(f"NaN gradient in flow_processor.{name}, zeroing it")
-                    param.grad.zero_()
+        # Only update weights after accumulating gradients
+        self._accumulation_step += 1
+        should_step = (self._accumulation_step % self.gradient_accumulation_steps) == 0
 
-        # Clip gradients
-        self.accelerator.clip_grad_norm_(
-            self.flow_processor.parameters(),
-            self.gradient_clip_norm,
-        )
+        if should_step:
+            # Adaptive gradient clipping for better training stability
+            # Compute global gradient norm
+            grad_norms = []
+            for param in self.flow_processor.parameters():
+                if param.grad is not None:
+                    grad_norms.append(torch.norm(param.grad.detach()))
 
-        self.optimizer.step()
-        if self.text_encoder_optimizer is not None:
-            self.text_encoder_optimizer.step()
+            if grad_norms:
+                total_norm = torch.norm(torch.stack(grad_norms))
+
+                # Adaptive clipping: scale clip norm based on current gradient magnitude
+                adaptive_clip_norm = min(self.gradient_clip_norm, total_norm.item() * 1.5)
+
+                # Apply adaptive clipping
+                self.accelerator.clip_grad_norm_(
+                    self.flow_processor.parameters(),
+                    adaptive_clip_norm,
+                )
+
+            self.optimizer.step()
+            if self.text_encoder_optimizer is not None:
+                self.text_encoder_optimizer.step()
+
+            # Reset accumulation step
+            self._accumulation_step = 0
 
         # Update EMA
         self.ema.update()

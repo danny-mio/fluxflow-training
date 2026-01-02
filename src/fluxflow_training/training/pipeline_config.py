@@ -124,6 +124,11 @@ class PipelineStepConfig:
         0  # Starting diffusion timestep (default: 0 for noise-to-image, higher for img2img)
     )
 
+    # Training optimization
+    gradient_accumulation_steps: int = (
+        1  # Number of steps to accumulate gradients (effective batch size multiplier)
+    )
+
     # Model freeze/unfreeze
     freeze: list[str] = field(default_factory=list)
     unfreeze: list[str] = field(default_factory=list)
@@ -582,6 +587,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
         num_train_timesteps=step_dict.get("num_train_timesteps", 1000),
         start_step=step_dict.get("start_step", 0),
+        gradient_accumulation_steps=step_dict.get("gradient_accumulation_steps", 1),
         freeze=step_dict.get("freeze", []),
         unfreeze=step_dict.get("unfreeze", []),
         batch_size=step_dict.get("batch_size", 2),

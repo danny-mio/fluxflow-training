@@ -915,6 +915,7 @@ class TrainingPipelineOrchestrator:
                 gradient_clip_norm=args.initial_clipping_norm,
                 num_train_timesteps=step.num_train_timesteps,
                 start_step=step.start_step,
+                gradient_accumulation_steps=step.gradient_accumulation_steps,
                 accelerator=self.accelerator,
             )
             logger.info("Created Flow trainer")
@@ -1355,7 +1356,7 @@ class TrainingPipelineOrchestrator:
                         # Flow training
                         if (step.train_diff or step.train_diff_full) and trainers.get("flow"):
                             flow_losses = trainers["flow"].train_step(
-                                real_imgs, input_ids, attention_mask
+                                real_imgs, input_ids, attention_mask, self.global_step
                             )
                             flow_loss = (
                                 flow_losses["flow_loss"]
