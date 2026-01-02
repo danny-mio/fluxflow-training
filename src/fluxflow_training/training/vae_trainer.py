@@ -684,11 +684,21 @@ class VAETrainer:
         perceptual_loss = torch.tensor(0.0, device=real_imgs.device)
 
         if self.train_reconstruction:
-            # Reconstruction loss with frequency-aware weighting
-            # Reduced alpha from 1.0 to 0.5 to prevent over-sharpening and high contrast
-            recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.5)
-            recon_mse = self.reconstruction_loss_min_fn(out_imgs_rec, real_imgs)
-            recon_loss = recon_l1 + self.mse_weight * recon_mse
+            # Progressive frequency weighting: start low to prevent over-sharpening, increase over time
+            # This allows the model to learn basic structure first, then focus on sharp edges
+            total_training_steps = 100000  # Assume ~100k steps for full training
+            alpha_progress = min(
+                1.0, global_step / (total_training_steps * 0.3)
+            )  # Ramp over first 30%
+            alpha_start = 0.3  # Start with lower weighting to prevent early over-sharpening
+            alpha_end = 1.2  # End with higher weighting for sharp edges
+            progressive_alpha = alpha_start + (alpha_end - alpha_start) * alpha_progress
+
+            recon_l1 = self._frequency_weighted_loss(
+                out_imgs_rec, real_imgs, alpha=progressive_alpha
+            )
+            # Remove MSE loss as it can contribute to blur - rely on L1 + LPIPS for reconstruction
+            recon_loss = recon_l1
 
             # LPIPS perceptual loss
             if self.use_lpips and self.lpips_fn is not None:
