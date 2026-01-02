@@ -185,8 +185,13 @@ class VAETrainer:
         if self.use_lpips:
             try:
                 import lpips
+                import warnings
 
-                self.lpips_fn = lpips.LPIPS(net="vgg")
+                # Suppress torchvision pretrained deprecation warning
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
+                    self.lpips_fn = lpips.LPIPS(net="vgg")
+
                 self.lpips_fn.eval()
                 for param in self.lpips_fn.parameters():
                     param.requires_grad = False
