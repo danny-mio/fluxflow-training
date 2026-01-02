@@ -187,10 +187,11 @@ class VAETrainer:
                 import lpips
                 import warnings
 
-                # Suppress torchvision pretrained deprecation warning
+                # Suppress torchvision pretrained deprecation warning for LPIPS
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
-                    self.lpips_fn = lpips.LPIPS(net="vgg")
+                    # Use spatial=True for detailed perceptual loss maps
+                    self.lpips_fn = lpips.LPIPS(net="vgg", spatial=True)
 
                 self.lpips_fn.eval()
                 for param in self.lpips_fn.parameters():
@@ -246,7 +247,8 @@ class VAETrainer:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
                 warnings.filterwarnings("ignore", category=FutureWarning)
-                self.lpips_fn = lpips.LPIPS(net="vgg").eval()
+                # Use spatial=True for detailed perceptual loss maps
+                self.lpips_fn = lpips.LPIPS(net="vgg", spatial=True).eval()
             # Freeze parameters (device will be set dynamically)
             for param in self.lpips_fn.parameters():
                 param.requires_grad = False
