@@ -237,7 +237,10 @@ class FlowTrainer:
             vae_dims = img_seq.size(-1) - context_dims
             v_target = alpha_t * noise - sigma_t * img_seq[:, :, :vae_dims]
             # Use Smooth L1 loss for better gradient properties at high noise levels
-            diff_loss = nn.functional.smooth_l1_loss(pred_seq[:, :, :vae_dims], v_target, beta=0.01)
+            # Ensure tensors are contiguous for Smooth L1 loss
+            pred_vae = pred_seq[:, :, :vae_dims].contiguous()
+            v_target_contiguous = v_target.contiguous()
+            diff_loss = nn.functional.smooth_l1_loss(pred_vae, v_target_contiguous, beta=0.01)
         else:
             # v0.6.0 and earlier: Loss on all dimensions
             v_target = alpha_t * noise - sigma_t * img_seq
