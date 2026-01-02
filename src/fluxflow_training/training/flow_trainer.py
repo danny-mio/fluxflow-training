@@ -334,24 +334,24 @@ class FlowTrainer:
             if self.text_encoder_optimizer is not None:
                 self.text_encoder_optimizer.step()
 
+            # Update EMA
+            self.ema.update()
+
+            # Get loss value for metrics and schedulers
+            loss_value = float(total_loss.detach().item())
+
+            # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
+            # Skip first step to avoid PyTorch warning about calling scheduler before first optimizer step
+            if not self._first_step:
+                # Get the underlying scheduler (may be wrapped by accelerator)
+                base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
+                if isinstance(base_scheduler, ReduceLROnPlateau):
+                    self.scheduler.step(loss_value)  # type: ignore[arg-type]
+                else:
+                    self.scheduler.step()  # type: ignore[call-arg]
+
             # Reset accumulation step
             self._accumulation_step = 0
-
-        # Update EMA
-        self.ema.update()
-
-        # Get loss value for metrics and schedulers
-        loss_value = float(total_loss.detach().item())
-
-        # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
-        # Skip first step to avoid PyTorch warning about calling scheduler before first optimizer step
-        if not self._first_step:
-            # Get the underlying scheduler (may be wrapped by accelerator)
-            base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
-            if isinstance(base_scheduler, ReduceLROnPlateau):
-                self.scheduler.step(loss_value)  # type: ignore[arg-type]
-            else:
-                self.scheduler.step()  # type: ignore[call-arg]
 
             if self.text_encoder_scheduler is not None:
                 base_te_scheduler = getattr(
