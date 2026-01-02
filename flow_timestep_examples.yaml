@@ -1,0 +1,25 @@
+# Example flow training configurations for different scenarios
+
+# Default noise-to-image training (0-1000 timesteps)
+- name: "flow_noise_to_image"
+  train_diff: true
+  num_train_timesteps: 1000  # Default: full range
+  start_step: 0  # Default: start from noise
+
+# Img2img training (start from partially denoised images)
+- name: "flow_img2img"
+  train_diff: true
+  num_train_timesteps: 500  # Shorter range for img2img
+  start_step: 250  # Start from middle denoising (less noisy images)
+
+# Fine-tuning with fewer timesteps
+- name: "flow_finetune_quick"
+  train_diff: true
+  num_train_timesteps: 200  # Quick training
+  start_step: 0  # Standard noise-to-image
+
+# Advanced img2img (very noisy to moderately noisy)
+- name: "flow_img2img_advanced"
+  train_diff: true
+  num_train_timesteps: 750  # Custom range
+  start_step: 125  # Start from fairly noisy images
