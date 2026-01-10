@@ -232,10 +232,22 @@ class FlowTrainer:
         sigma_t = (1 - alpha_t).sqrt()
         alpha_t = alpha_t.sqrt()
 
+        # Determine VAE dimensions for metrics (defined early for scope)
+        vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
+
         if context_dims > 0:
             # v0.7.0: Loss only on VAE dimensions (context is preserved)
-            vae_dims = img_seq.size(-1) - context_dims
-            v_target = alpha_t * noise - sigma_t * img_seq[:, :, :vae_dims]
+
+            # Normalize latents for stable loss computation (fixes million-scale losses)
+            vae_latents = img_seq[:, :, :vae_dims]
+            latent_mean = vae_latents.detach().mean(dim=-1, keepdim=True)
+            latent_std = vae_latents.detach().std(dim=-1, keepdim=True) + 1e-8
+
+            # Normalized v-prediction target to prevent loss explosion from large latents
+            normalized_latents = (vae_latents - latent_mean) / latent_std
+            normalized_noise = noise / latent_std
+            v_target = alpha_t * normalized_noise - sigma_t * normalized_latents
+
             # Use Smooth L1 loss for better gradient properties at high noise levels
             # Ensure tensors are contiguous for Smooth L1 loss
             pred_vae = pred_seq[:, :, :vae_dims].contiguous()
@@ -374,6 +386,27 @@ class FlowTrainer:
             "lr_flow": self.optimizer.param_groups[0]["lr"],
             "pred_mean": pred_seq.mean().item(),
             "pred_std": pred_seq.std().item(),
+            # Latent statistics for monitoring normalization effectiveness
+            "latent_mean": (
+                float(img_seq[:, :, :vae_dims].mean().item())
+                if context_dims > 0
+                else float(img_seq.mean().item())
+            ),
+            "latent_std": (
+                float(img_seq[:, :, :vae_dims].std().item())
+                if context_dims > 0
+                else float(img_seq.std().item())
+            ),
+            "latent_max": (
+                float(img_seq[:, :, :vae_dims].max().item())
+                if context_dims > 0
+                else float(img_seq.max().item())
+            ),
+            "latent_min": (
+                float(img_seq[:, :, :vae_dims].min().item())
+                if context_dims > 0
+                else float(img_seq.min().item())
+            ),
         }
 
         # Add text encoder LR only if optimizer exists
