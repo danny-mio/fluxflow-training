@@ -219,11 +219,12 @@ class FlowTrainer:
             noised_seq = torch.cat([noised_vae, img_seq[:, :, vae_dims:]], dim=-1)
         else:
             # v0.6.0 and earlier: Add noise to all dimensions
+            vae_dims = img_seq.size(-1)
             noise = torch.randn_like(img_seq)
             noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
-        # Predict
+        # Predict (model operates on original latent space)
         pred = self.flow_processor(full_input, text_embeddings, t)
         pred_seq = pred[:, :-1, :]
 
@@ -238,26 +239,38 @@ class FlowTrainer:
         if context_dims > 0:
             # v0.7.0: Loss only on VAE dimensions (context is preserved)
 
-            # Normalize latents for stable loss computation (fixes million-scale losses)
+            # Compute normalization statistics for stable loss computation
             vae_latents = img_seq[:, :, :vae_dims]
             latent_mean = vae_latents.detach().mean(dim=-1, keepdim=True)
             latent_std = vae_latents.detach().std(dim=-1, keepdim=True) + 1e-8
 
-            # Normalized v-prediction target to prevent loss explosion from large latents
+            # Normalized v-prediction targets (fixes million-scale losses)
             normalized_latents = (vae_latents - latent_mean) / latent_std
             normalized_noise = noise / latent_std
             v_target = alpha_t * normalized_noise - sigma_t * normalized_latents
 
-            # Use Smooth L1 loss for better gradient properties at high noise levels
-            # Ensure tensors are contiguous for Smooth L1 loss
+            # Model predicts in original space, so denormalize predictions for comparison
             pred_vae = pred_seq[:, :, :vae_dims].contiguous()
+            # Denormalize predictions to match normalized targets
+            denormalized_pred = pred_vae * latent_std + latent_mean
+            normalized_pred = (denormalized_pred - latent_mean) / latent_std
+
             v_target_contiguous = v_target.contiguous()
-            diff_loss = nn.functional.smooth_l1_loss(pred_vae, v_target_contiguous, beta=0.01)
+            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, v_target_contiguous, beta=0.01)
         else:
             # v0.6.0 and earlier: Loss on all dimensions
-            v_target = alpha_t * noise - sigma_t * img_seq
-            # Use Smooth L1 loss for better gradient properties at high noise levels
-            diff_loss = nn.functional.smooth_l1_loss(pred_seq, v_target, beta=0.01)
+            latent_mean = img_seq.detach().mean(dim=-1, keepdim=True)
+            latent_std = img_seq.detach().std(dim=-1, keepdim=True) + 1e-8
+
+            normalized_img_seq = (img_seq - latent_mean) / latent_std
+            normalized_noise_all = (noise - latent_mean) / latent_std
+            v_target = alpha_t * normalized_noise_all - sigma_t * normalized_img_seq
+
+            # Denormalize predictions to match normalized targets
+            denormalized_pred = pred_seq * latent_std + latent_mean
+            normalized_pred = (denormalized_pred - latent_mean) / latent_std
+
+            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, v_target, beta=0.01)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
