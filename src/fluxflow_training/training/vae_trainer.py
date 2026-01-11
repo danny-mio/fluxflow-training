@@ -184,8 +184,9 @@ class VAETrainer:
         # Initialize LPIPS if needed
         if self.use_lpips:
             try:
-                import lpips
                 import warnings
+
+                import lpips
 
                 # Suppress torchvision pretrained deprecation warning for LPIPS
                 with warnings.catch_warnings():

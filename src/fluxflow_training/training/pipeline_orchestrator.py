@@ -943,9 +943,7 @@ class TrainingPipelineOrchestrator:
 
         # Save models with model configuration metadata
         # TODO: Extract model config from pipeline config
-        model_config = (
-            {}
-        )  # Placeholder - will be implemented when pipeline config includes model info
+        model_config = models.get("model_config", {})
         self.checkpoint_manager.save_models(
             diffuser=models["diffuser"],
             text_encoder=models["text_encoder"],

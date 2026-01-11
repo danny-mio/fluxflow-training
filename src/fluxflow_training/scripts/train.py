@@ -411,6 +411,7 @@ def initialize_models(args, config, device, checkpoint_manager):
         "text_encoder": text_encoder,
         "image_encoder": image_encoder,
         "D_img": D_img,
+        "model_config": model_config,  # Include model config for checkpoint saving
     }
 
 
@@ -1272,7 +1273,7 @@ def train_legacy(args):
                         discriminators=(
                             {"D_img": D_img} if args.train_vae and args.gan_training else None
                         ),
-                        model_config={},  # TODO: Pass actual model config
+                        model_config=None,  # Legacy training doesn't use factory
                     )
 
                     # Save learning rates
@@ -1360,6 +1361,7 @@ def train_legacy(args):
             diffuser=diffuser,
             text_encoder=text_encoder,
             discriminators={"D_img": D_img} if args.train_vae and args.gan_training else None,
+            model_config=None,  # Legacy training doesn't use factory
         )
 
         # Save learning rates

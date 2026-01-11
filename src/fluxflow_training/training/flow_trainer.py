@@ -256,7 +256,9 @@ class FlowTrainer:
             normalized_pred = (denormalized_pred - latent_mean) / latent_std
 
             v_target_contiguous = v_target.contiguous()
-            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, v_target_contiguous, beta=0.01)
+            diff_loss = nn.functional.smooth_l1_loss(
+                normalized_pred, v_target_contiguous, beta=0.01
+            )
         else:
             # v0.6.0 and earlier: Loss on all dimensions
             latent_mean = img_seq.detach().mean(dim=-1, keepdim=True)
