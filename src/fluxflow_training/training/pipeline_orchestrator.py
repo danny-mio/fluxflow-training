@@ -236,18 +236,22 @@ class TrainingPipelineOrchestrator:
 
         # Log final state
         if models_dict:
-            trainable_params = sum(
-                p.numel() for m in models_dict.values() for p in m.parameters() if p.requires_grad
-            )
-            total_params = sum(p.numel() for m in models_dict.values() for p in m.parameters())
-            frozen_params = total_params - trainable_params
+            # Filter to only PyTorch models (exclude ModelConfig objects)
+            torch_models = {k: v for k, v in models_dict.items() if hasattr(v, 'parameters')}
 
-            if total_params > 0:
-                logger.info(
-                    f"Model configuration complete: "
-                    f"{trainable_params:,} trainable, {frozen_params:,} frozen "
-                    f"({100.0 * trainable_params / total_params:.1f}% trainable)"
+            if torch_models:
+                trainable_params = sum(
+                    p.numel() for m in torch_models.values() for p in m.parameters() if p.requires_grad
                 )
+                total_params = sum(p.numel() for m in torch_models.values() for p in m.parameters())
+                frozen_params = total_params - trainable_params
+
+                if total_params > 0:
+                    logger.info(
+                        f"Model configuration complete: "
+                        f"{trainable_params:,} trainable, {frozen_params:,} frozen "
+                        f"({100.0 * trainable_params / total_params:.1f}% trainable)"
+                    )
             else:
                 logger.warning("No model parameters found")
 
