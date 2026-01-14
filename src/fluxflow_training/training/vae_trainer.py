@@ -9,6 +9,8 @@ from typing import Literal, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Context encoder uses SiLU activation
 from fluxflow.utils import get_logger
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
@@ -16,9 +18,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 from .losses import d_hinge_loss, g_hinge_loss, kl_standard_normal, r1_penalty
 from .schedulers import cosine_anneal_beta
 from .utils import EMA, FloatBuffer
-
-# Import Bezier activation for context encoder
-from fluxflow.models.activations import BezierActivation
 
 
 class ContextEncoder(nn.Module):
@@ -51,12 +50,20 @@ class ContextEncoder(nn.Module):
         except RuntimeError as e:
             if "MPS" in str(e) and "divisible" in str(e):
                 # Fallback: interpolate to target size
-                pooled = F.interpolate(features, size=(self.context_height, self.context_width), mode='bilinear', align_corners=False)
-                pooled = torch.mean(pooled, dim=[2, 3], keepdim=True).expand(-1, -1, self.context_height, self.context_width)
+                pooled = F.interpolate(
+                    features,
+                    size=(self.context_height, self.context_width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                pooled = torch.mean(pooled, dim=[2, 3], keepdim=True).expand(
+                    -1, -1, self.context_height, self.context_width
+                )
             else:
                 raise e
 
         return pooled
+
 
 logger = get_logger(__name__)
 
@@ -278,31 +285,26 @@ class VAETrainer:
                 test_input = torch.randn(1, 3, 64, 64).to(test_device)
                 # Use training=True to get (packed, mu, logvar) tuple
                 compressor_output = self.compressor(test_input, training=True)
-                print(f"DEBUG: compressor_output type: {type(compressor_output)}")
                 if isinstance(compressor_output, tuple):
-                    print(f"DEBUG: compressor_output length: {len(compressor_output)}")
                     if len(compressor_output) >= 2:
                         _, test_mu, _ = compressor_output
-                        print(f"DEBUG: test_mu shape: {test_mu.shape if hasattr(test_mu, 'shape') else 'no shape'}")
                         # For v0.7.0 VAE, mu has shape [B, latent_dim, H, W], so channel dim is latent_dim
                         if len(test_mu.shape) == 4:  # [B, C, H, W]
                             detected_dim = test_mu.shape[1]  # Channel dimension
                         else:
                             detected_dim = test_mu.shape[-1]  # Fallback
-                        logger.info(f"Detected VAE latent dimension from mu: {detected_dim}")
+                        logger.info(f"Detected VAE latent dimension: {detected_dim}")
                         latent_dim = detected_dim
-                    else:
-                        print(f"DEBUG: compressor_output contents: {compressor_output}")
                 else:
                     # Fallback: try to infer from single output (inference mode)
                     packed = compressor_output
-                    print(f"DEBUG: packed shape: {packed.shape if hasattr(packed, 'shape') else 'no shape'}")
                     detected_dim = packed.shape[-1]  # type: ignore
-                    logger.info(f"Detected VAE latent dimension from packed: {detected_dim}")
+                    logger.info(f"Detected VAE latent dimension: {detected_dim}")
                     latent_dim = detected_dim
         except Exception as e:
             logger.warning(f"Could not detect latent dimension, using fallback {latent_dim}: {e}")
             import traceback
+
             traceback.print_exc()
 
         context_output_dim = context_channels * context_height * context_width
@@ -317,8 +319,8 @@ class VAETrainer:
         # Load existing context predictor if available
         if context_predictor_path and Path(context_predictor_path).exists():
             try:
-                checkpoint = torch.load(context_predictor_path, map_location='cpu')
-                self.context_predictor.load_state_dict(checkpoint['context_predictor'])
+                checkpoint = torch.load(context_predictor_path, map_location="cpu")
+                self.context_predictor.load_state_dict(checkpoint["context_predictor"])
                 logger.info(f"Loaded context predictor from {context_predictor_path}")
             except Exception as e:
                 logger.warning(f"Failed to load context predictor: {e}")
@@ -338,16 +340,17 @@ class VAETrainer:
         # Optimizer for context predictor
         self.context_predictor_optimizer = torch.optim.AdamW(
             list(self.context_predictor.parameters()) + list(self.context_encoder.parameters()),
-            lr=1e-4, weight_decay=1e-4
+            lr=1e-4,
+            weight_decay=1e-4,
         )
 
     def save_context_predictor(self, checkpoint_path: str):
         """Save context predictor state for persistence."""
         if self.context_predictor_path:
             checkpoint = {
-                'context_predictor': self.context_predictor.state_dict(),
-                'context_encoder': self.context_encoder.state_dict(),
-                'context_predictor_optimizer': self.context_predictor_optimizer.state_dict(),
+                "context_predictor": self.context_predictor.state_dict(),
+                "context_encoder": self.context_encoder.state_dict(),
+                "context_predictor_optimizer": self.context_predictor_optimizer.state_dict(),
             }
             torch.save(checkpoint, self.context_predictor_path)
             logger.info(f"Saved context predictor to {self.context_predictor_path}")
@@ -356,10 +359,12 @@ class VAETrainer:
         """Load context predictor state."""
         if Path(checkpoint_path).exists():
             try:
-                checkpoint = torch.load(checkpoint_path, map_location='cpu')
-                self.context_predictor.load_state_dict(checkpoint['context_predictor'])
-                self.context_encoder.load_state_dict(checkpoint['context_encoder'])
-                self.context_predictor_optimizer.load_state_dict(checkpoint['context_predictor_optimizer'])
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                self.context_predictor.load_state_dict(checkpoint["context_predictor"])
+                self.context_encoder.load_state_dict(checkpoint["context_encoder"])
+                self.context_predictor_optimizer.load_state_dict(
+                    checkpoint["context_predictor_optimizer"]
+                )
                 logger.info(f"Loaded context predictor from {checkpoint_path}")
             except Exception as e:
                 logger.warning(f"Failed to load context predictor: {e}")
@@ -738,12 +743,22 @@ class VAETrainer:
 
             # Ensure context_predictor matches ctx_vec dimension
             if self.context_predictor[0].in_features != latent_repr.shape[-1]:
-                logger.warning(f"Context predictor dimension mismatch in discriminator: expected {self.context_predictor[0].in_features}, got {latent_repr.shape[-1]}")
+                logger.warning(
+                    f"Context predictor dimension mismatch in discriminator: expected {self.context_predictor[0].in_features}, got {latent_repr.shape[-1]}"
+                )
                 # Skip context prediction if dimensions don't match
-                predicted_context = torch.randn(B, self.context_channels, self.context_height, self.context_width, device=latent_repr.device)
+                predicted_context = torch.randn(
+                    B,
+                    self.context_channels,
+                    self.context_height,
+                    self.context_width,
+                    device=latent_repr.device,
+                )
             else:
                 predicted_context = self.context_predictor(latent_repr)
-                predicted_context = predicted_context.view(B, self.context_channels, self.context_height, self.context_width)
+                predicted_context = predicted_context.view(
+                    B, self.context_channels, self.context_height, self.context_width
+                )
 
             # Set context for expander
             self.expander.ctx_vec = predicted_context
@@ -920,7 +935,9 @@ class VAETrainer:
         # Ensure context_predictor matches actual latent dimension (may differ from init detection)
         actual_latent_dim = latent_repr.shape[-1]
         if self.context_predictor[0].in_features != actual_latent_dim:
-            logger.info(f"Adjusting context_predictor input dim from {self.context_predictor[0].in_features} to {actual_latent_dim}")
+            logger.info(
+                f"Adjusting context_predictor input dim from {self.context_predictor[0].in_features} to {actual_latent_dim}"
+            )
             # Create new predictor with correct input dimension
             output_dim = self.context_channels * self.context_height * self.context_width
             new_predictor = nn.Sequential(
@@ -932,7 +949,9 @@ class VAETrainer:
             self.context_predictor = new_predictor
 
         predicted_context = self.context_predictor(latent_repr.detach())
-        predicted_context = predicted_context.view(B, self.context_channels, self.context_height, self.context_width)
+        predicted_context = predicted_context.view(
+            B, self.context_channels, self.context_height, self.context_width
+        )
 
         # Context alignment loss - compare predicted context to ideal context from real images
         ideal_context = self.context_encoder(real_imgs.detach())

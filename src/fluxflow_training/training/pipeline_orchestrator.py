@@ -237,11 +237,14 @@ class TrainingPipelineOrchestrator:
         # Log final state
         if models_dict:
             # Filter to only PyTorch models (exclude ModelConfig objects)
-            torch_models = {k: v for k, v in models_dict.items() if hasattr(v, 'parameters')}
+            torch_models = {k: v for k, v in models_dict.items() if hasattr(v, "parameters")}
 
             if torch_models:
                 trainable_params = sum(
-                    p.numel() for m in torch_models.values() for p in m.parameters() if p.requires_grad
+                    p.numel()
+                    for m in torch_models.values()
+                    for p in m.parameters()
+                    if p.requires_grad
                 )
                 total_params = sum(p.numel() for m in torch_models.values() for p in m.parameters())
                 frozen_params = total_params - trainable_params
