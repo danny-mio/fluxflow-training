@@ -3,6 +3,7 @@
 Handles VAE (compressor + expander) training with optional GAN discriminator.
 """
 
+from pathlib import Path
 from typing import Literal, Optional
 
 import torch
@@ -15,6 +16,47 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 from .losses import d_hinge_loss, g_hinge_loss, kl_standard_normal, r1_penalty
 from .schedulers import cosine_anneal_beta
 from .utils import EMA, FloatBuffer
+
+# Import Bezier activation for context encoder
+from fluxflow.models.activations import BezierActivation
+
+
+class ContextEncoder(nn.Module):
+    """Simple context encoder that handles variable input sizes and MPS compatibility."""
+
+    def __init__(self, context_channels, context_height, context_width):
+        super().__init__()
+        self.context_channels = context_channels
+        self.context_height = context_height
+        self.context_width = context_width
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 64, 4, 2, 1),  # RGB -> 64ch
+            nn.InstanceNorm2d(64),
+            nn.SiLU(),
+            nn.Conv2d(64, 128, 4, 2, 1),  # -> 128ch
+            nn.InstanceNorm2d(128),
+            nn.SiLU(),
+            nn.Conv2d(128, context_channels, 1),  # Reduce to context channels
+        )
+
+    def forward(self, x):
+        # Encode
+        features = self.encoder(x)  # [B, C, H, W]
+
+        # Handle MPS adaptive pooling issue
+        try:
+            # Try MPS-compatible pooling
+            pooled = F.adaptive_avg_pool2d(features, (self.context_height, self.context_width))
+        except RuntimeError as e:
+            if "MPS" in str(e) and "divisible" in str(e):
+                # Fallback: interpolate to target size
+                pooled = F.interpolate(features, size=(self.context_height, self.context_width), mode='bilinear', align_corners=False)
+                pooled = torch.mean(pooled, dim=[2, 3], keepdim=True).expand(-1, -1, self.context_height, self.context_width)
+            else:
+                raise e
+
+        return pooled
 
 logger = get_logger(__name__)
 
@@ -99,6 +141,11 @@ class VAETrainer:
         r1_gamma: float = 5.0,
         gradient_clip_norm: float = 1.0,
         use_lpips: bool = True,
+        # Context predictor settings
+        context_channels: int = 64,
+        context_height: int = 16,
+        context_width: int = 16,
+        context_predictor_path: Optional[str] = None,
         lambda_lpips: float = 0.1,
         instance_noise_std: float = 0.01,
         instance_noise_decay: float = 0.9999,
@@ -214,6 +261,108 @@ class VAETrainer:
             "gan": FloatBuffer(100),
             "lpips": FloatBuffer(100),
         }
+
+        # Context predictor settings
+        self.context_channels = context_channels
+        self.context_height = context_height
+        self.context_width = context_width
+        self.context_predictor_path = context_predictor_path
+
+        # Initialize context predictor with SiLU activation
+        # Detect actual latent dimension from compressor
+        latent_dim = 27  # Based on training error, actual dimension is 27
+        try:
+            # Try to infer latent dimension from a test forward pass
+            with torch.no_grad():
+                test_device = next(self.compressor.parameters()).device
+                test_input = torch.randn(1, 3, 64, 64).to(test_device)
+                # Use training=True to get (packed, mu, logvar) tuple
+                compressor_output = self.compressor(test_input, training=True)
+                print(f"DEBUG: compressor_output type: {type(compressor_output)}")
+                if isinstance(compressor_output, tuple):
+                    print(f"DEBUG: compressor_output length: {len(compressor_output)}")
+                    if len(compressor_output) >= 2:
+                        _, test_mu, _ = compressor_output
+                        print(f"DEBUG: test_mu shape: {test_mu.shape if hasattr(test_mu, 'shape') else 'no shape'}")
+                        # For v0.7.0 VAE, mu has shape [B, latent_dim, H, W], so channel dim is latent_dim
+                        if len(test_mu.shape) == 4:  # [B, C, H, W]
+                            detected_dim = test_mu.shape[1]  # Channel dimension
+                        else:
+                            detected_dim = test_mu.shape[-1]  # Fallback
+                        logger.info(f"Detected VAE latent dimension from mu: {detected_dim}")
+                        latent_dim = detected_dim
+                    else:
+                        print(f"DEBUG: compressor_output contents: {compressor_output}")
+                else:
+                    # Fallback: try to infer from single output (inference mode)
+                    packed = compressor_output
+                    print(f"DEBUG: packed shape: {packed.shape if hasattr(packed, 'shape') else 'no shape'}")
+                    detected_dim = packed.shape[-1]  # type: ignore
+                    logger.info(f"Detected VAE latent dimension from packed: {detected_dim}")
+                    latent_dim = detected_dim
+        except Exception as e:
+            logger.warning(f"Could not detect latent dimension, using fallback {latent_dim}: {e}")
+            import traceback
+            traceback.print_exc()
+
+        context_output_dim = context_channels * context_height * context_width
+
+        self.context_predictor = nn.Sequential(
+            nn.Linear(latent_dim, 256),
+            nn.LayerNorm(256),
+            nn.SiLU(),  # Smooth activation for latent->conditioning mapping
+            nn.Linear(256, context_output_dim),
+        )
+
+        # Load existing context predictor if available
+        if context_predictor_path and Path(context_predictor_path).exists():
+            try:
+                checkpoint = torch.load(context_predictor_path, map_location='cpu')
+                self.context_predictor.load_state_dict(checkpoint['context_predictor'])
+                logger.info(f"Loaded context predictor from {context_predictor_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load context predictor: {e}")
+
+        # Context encoder for ideal context (used in KL-context alignment)
+        self.context_encoder = ContextEncoder(context_channels, context_height, context_width)
+
+        # Store context size
+        self.context_height = context_height
+        self.context_width = context_width
+
+        # Move context predictor components to device
+        device = next(self.compressor.parameters()).device
+        self.context_predictor = self.context_predictor.to(device)
+        self.context_encoder = self.context_encoder.to(device)
+
+        # Optimizer for context predictor
+        self.context_predictor_optimizer = torch.optim.AdamW(
+            list(self.context_predictor.parameters()) + list(self.context_encoder.parameters()),
+            lr=1e-4, weight_decay=1e-4
+        )
+
+    def save_context_predictor(self, checkpoint_path: str):
+        """Save context predictor state for persistence."""
+        if self.context_predictor_path:
+            checkpoint = {
+                'context_predictor': self.context_predictor.state_dict(),
+                'context_encoder': self.context_encoder.state_dict(),
+                'context_predictor_optimizer': self.context_predictor_optimizer.state_dict(),
+            }
+            torch.save(checkpoint, self.context_predictor_path)
+            logger.info(f"Saved context predictor to {self.context_predictor_path}")
+
+    def load_context_predictor(self, checkpoint_path: str):
+        """Load context predictor state."""
+        if Path(checkpoint_path).exists():
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location='cpu')
+                self.context_predictor.load_state_dict(checkpoint['context_predictor'])
+                self.context_encoder.load_state_dict(checkpoint['context_encoder'])
+                self.context_predictor_optimizer.load_state_dict(checkpoint['context_predictor_optimizer'])
+                logger.info(f"Loaded context predictor from {checkpoint_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load context predictor: {e}")
 
     def _get_effective_spade_usage(self, global_step: int) -> bool:
         """
@@ -580,6 +729,25 @@ class VAETrainer:
         # Determine if SPADE conditioning is active this step
         spade_active = self._get_effective_spade_usage(global_step)
 
+        # Compute predicted context for SPADE-Aware GAN loss (Step 3)
+        B = real_imgs.shape[0]
+        predicted_context = None
+        if spade_active:
+            # Use ctx_vec as latent representation (already padded/truncated)
+            latent_repr = ctx_vec.detach()  # [B, expected_ctx_dim]
+
+            # Ensure context_predictor matches ctx_vec dimension
+            if self.context_predictor[0].in_features != latent_repr.shape[-1]:
+                logger.warning(f"Context predictor dimension mismatch in discriminator: expected {self.context_predictor[0].in_features}, got {latent_repr.shape[-1]}")
+                # Skip context prediction if dimensions don't match
+                predicted_context = torch.randn(B, self.context_channels, self.context_height, self.context_width, device=latent_repr.device)
+            else:
+                predicted_context = self.context_predictor(latent_repr)
+                predicted_context = predicted_context.view(B, self.context_channels, self.context_height, self.context_width)
+
+            # Set context for expander
+            self.expander.ctx_vec = predicted_context
+
         # Context vectors: None when SPADE is active (conditioning happens in generator)
         # Actual context when SPADE is inactive (traditional conditional GAN)
         disc_ctx = None if spade_active else ctx_vec.detach()
@@ -604,6 +772,26 @@ class VAETrainer:
         d_hinge_uncond = d_hinge_loss(real_logits, fake_uncond_logits)
         d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
         d_img_loss = d_img_loss + d_hinge
+
+        # SPADE-Aware GAN Loss: Evaluate conditioning quality (Step 3)
+        if spade_active and predicted_context is not None:
+            # Generate with poor context (random noise)
+            poor_context = torch.randn_like(predicted_context)
+            self.expander.ctx_vec = poor_context
+            poor_imgs = self.expander(packed, use_context=True)
+
+            # Evaluate conditioning quality
+            poor_imgs_noisy = add_instance_noise(
+                poor_imgs.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
+            )
+            poor_logits = self.discriminator(poor_imgs_noisy, None)  # SPADE internal context
+
+            # Conditioning loss: encourage discriminator to prefer good over poor conditioning
+            conditioning_loss = F.relu(poor_logits - fake_logits).mean()  # poor should be < good
+            d_img_loss = d_img_loss + 0.05 * conditioning_loss  # Small weight
+
+            # Reset to good context
+            self.expander.ctx_vec = predicted_context
 
         self.accelerator.backward(d_img_loss)
         self.discriminator_optimizer.step()
@@ -718,6 +906,43 @@ class VAETrainer:
             mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean", normalize_by_dims=True
         )
 
+        # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
+        B = real_imgs.shape[0]
+        # Use mu as the latent representation (VAE latent distribution mean)
+        # mu may have shape [B, latent_dim, H, W], so we need to handle that
+        if mu.dim() == 4:  # [B, C, H, W] - pool spatially
+            latent_repr = mu.mean(dim=[2, 3])  # [B, latent_dim]
+        elif mu.dim() == 2:  # [B, latent_dim] - already correct
+            latent_repr = mu
+        else:
+            raise ValueError(f"Unexpected mu shape: {mu.shape}")
+
+        # Ensure context_predictor matches actual latent dimension (may differ from init detection)
+        actual_latent_dim = latent_repr.shape[-1]
+        if self.context_predictor[0].in_features != actual_latent_dim:
+            logger.info(f"Adjusting context_predictor input dim from {self.context_predictor[0].in_features} to {actual_latent_dim}")
+            # Create new predictor with correct input dimension
+            output_dim = self.context_channels * self.context_height * self.context_width
+            new_predictor = nn.Sequential(
+                nn.Linear(actual_latent_dim, 256),
+                nn.LayerNorm(256),
+                nn.SiLU(),
+                nn.Linear(256, output_dim),
+            ).to(latent_repr.device)
+            self.context_predictor = new_predictor
+
+        predicted_context = self.context_predictor(latent_repr.detach())
+        predicted_context = predicted_context.view(B, self.context_channels, self.context_height, self.context_width)
+
+        # Context alignment loss - compare predicted context to ideal context from real images
+        ideal_context = self.context_encoder(real_imgs.detach())
+        context_alignment_loss = F.mse_loss(predicted_context, ideal_context)
+
+        # Set predicted context for expander (SPADE conditioning)
+        spade_active = self._get_effective_spade_usage(global_step)
+        if spade_active:
+            self.expander.ctx_vec = predicted_context
+
         # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
         if self.use_gan and self.discriminator is not None:
@@ -808,6 +1033,9 @@ class VAETrainer:
         if self.use_gan:
             total_loss = total_loss + w_gan * G_img_loss
 
+        # Add context alignment loss (Step 2)
+        total_loss = total_loss + 0.1 * context_alignment_loss
+
         # Add regularization (small weights to not dominate main losses)
         total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
         total_loss = total_loss + 0.02 * hist_loss  # Match color distributions
@@ -875,6 +1103,7 @@ class VAETrainer:
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
             "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
             "recon": float(recon_loss.detach().item()),
+            "context_alignment": float(context_alignment_loss.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),
