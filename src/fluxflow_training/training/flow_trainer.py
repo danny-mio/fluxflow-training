@@ -233,7 +233,7 @@ class FlowTrainer:
         pred = self.flow_processor(full_input, text_embeddings, t)
 
         # Extract predicted sequence (exclude HW vector)
-        pred_seq = pred[:, :img_seq.size(1), :]
+        pred_seq = pred[:, : img_seq.size(1), :]
 
         # Fixed normalization for large latent values
         vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
@@ -266,7 +266,6 @@ class FlowTrainer:
             normalized_pred = (pred_seq - latent_mean) / latent_std
 
             diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_img_seq, beta=0.01)
-
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
