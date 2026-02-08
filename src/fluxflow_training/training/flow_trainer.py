@@ -120,7 +120,10 @@ class FlowTrainer:
         # Setup diffusion scheduler
         self.num_train_timesteps = num_train_timesteps
         self.start_step = start_step
-        self.noise_scheduler = DPMSolverMultistepScheduler(num_train_timesteps=num_train_timesteps)
+        self.noise_scheduler = DPMSolverMultistepScheduler(
+            num_train_timesteps=num_train_timesteps,
+            prediction_type="v_prediction",
+        )
         self.noise_scheduler.set_timesteps(num_train_timesteps)  # type: ignore[arg-type]
         self.alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(  # type: ignore[attr-defined]
             next(flow_processor.parameters()).device
@@ -229,8 +232,9 @@ class FlowTrainer:
             noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
-        # Predict (model operates on original latent space)
-        pred = self.flow_processor(full_input, text_embeddings, t)
+        # Predict (flow processor expects normalized timesteps in [0, 1]).
+        t_model = (t.float() / 999.0).clamp(0.0, 1.0)
+        pred = self.flow_processor(full_input, text_embeddings, t_model)
 
         # Extract predicted sequence (exclude HW vector)
         pred_seq = pred[:, : img_seq.size(1), :]

@@ -93,8 +93,8 @@ def generate_with_cfg(
     cfg_fn = cfg_guided_prediction_batched if use_batched_cfg else cfg_guided_prediction
 
     for i, t in enumerate(timesteps_list):
-        # Normalize timestep to [0, 1] range expected by flow model
-        t_normalized = t.float() / 1000.0
+        # Normalize timestep to [0, 1] range expected by flow model.
+        t_normalized = (t.float() / 999.0).clamp(0.0, 1.0)
         t_batch = t_normalized.unsqueeze(0).expand(batch_size).to(device)
 
         # CFG prediction

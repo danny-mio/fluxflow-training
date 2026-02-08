@@ -1048,6 +1048,8 @@ class TrainingPipelineOrchestrator:
                         args.sample_captions,
                         args.batch_size,
                         sample_sizes=parsed_sample_sizes,
+                        use_cfg=True,
+                        guidance_scale=5.0,
                         filename_prefix=f"{sample_prefix}_caption",
                     )
 
