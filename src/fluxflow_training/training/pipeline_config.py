@@ -15,10 +15,10 @@ logger = get_logger(__name__)
 
 @dataclass
 class DatasetConfig:
-    """Configuration for a single dataset (local or webdataset)."""
+    """Configuration for a single dataset (local, webdataset, or noise)."""
 
     # Dataset type
-    type: Literal["local", "webdataset"] = "local"
+    type: Literal["local", "webdataset", "noise"] = "local"
 
     # Local dataset configuration
     image_folder: Optional[str] = None
@@ -32,6 +32,13 @@ class DatasetConfig:
     webdataset_caption_key: str = "prompt"
     webdataset_size: int = 10000
     webdataset_samples_per_shard: int = 1000
+
+    # Noise dataset configuration
+    dimensions: list[int] = field(
+        default_factory=lambda: [512, 512]
+    )  # [height, width] for noise images
+    num_samples: int = 10000  # Number of synthetic samples
+    noise_std: float = 1.0  # Standard deviation for Gaussian noise
 
     # Common configuration
     batch_size: Optional[int] = None  # Override step batch_size
@@ -282,10 +289,22 @@ class PipelineConfigValidator:
                     self.errors.append(
                         f"Dataset '{name}': type='webdataset' requires 'webdataset_token'"
                     )
+            elif dataset.type == "noise":
+                # Noise dataset dimensions validation
+                if len(dataset.dimensions) != 2:
+                    self.errors.append(
+                        f"Dataset '{name}': type='noise' requires 'dimensions' as [height, width]"
+                    )
+                elif any(d <= 0 for d in dataset.dimensions):
+                    self.errors.append(f"Dataset '{name}': dimensions must be positive integers")
+                if dataset.num_samples <= 0:
+                    self.errors.append(f"Dataset '{name}': num_samples must be positive")
+                if dataset.noise_std <= 0:
+                    self.errors.append(f"Dataset '{name}': noise_std must be positive")
             else:
                 self.errors.append(
                     f"Dataset '{name}': unknown type '{dataset.type}'. "
-                    f"Valid types: 'local', 'webdataset'"
+                    f"Valid types: 'local', 'webdataset', 'noise'"
                 )
 
     def _validate_step(self, step: PipelineStepConfig, step_name: str, step_index: int) -> None:
@@ -462,6 +481,10 @@ def _parse_dataset_config(dataset_dict: dict) -> DatasetConfig:
         webdataset_caption_key=dataset_dict.get("webdataset_caption_key", "prompt"),
         webdataset_size=dataset_dict.get("webdataset_size", 10000),
         webdataset_samples_per_shard=dataset_dict.get("webdataset_samples_per_shard", 1000),
+        # Noise dataset fields
+        dimensions=dataset_dict.get("dimensions") or [512, 512],
+        num_samples=dataset_dict.get("num_samples", 10000),
+        noise_std=dataset_dict.get("noise_std", 1.0),
         # Common fields
         batch_size=dataset_dict.get("batch_size"),
         workers=dataset_dict.get("workers"),

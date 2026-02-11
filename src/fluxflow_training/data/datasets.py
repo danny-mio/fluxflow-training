@@ -122,7 +122,7 @@ class TextImageDataset(Dataset):
             Train mode: (input_ids, image_path)
         """
         caption = self.captions[idx]
-        encoding = self.tokenizer.encode_plus(
+        encoding = self.tokenizer(
             caption,
             max_length=128,
             padding="max_length",
@@ -288,7 +288,7 @@ class StreamingWebDataset(IterableDataset):
                         if self.fixed_prompt_prefix:
                             prompt = f"{self.fixed_prompt_prefix}. {prompt}"
 
-                        encoding = self.tokenizer.encode_plus(
+                        encoding = self.tokenizer(
                             prompt,
                             max_length=128,
                             padding="max_length",
@@ -343,6 +343,76 @@ class StreamingWebDataset(IterableDataset):
 
 # Backward compatibility alias
 TTI2MDataset = StreamingWebDataset
+
+
+class NoiseDataset(Dataset):
+    """Dataset for generating synthetic RGB noise images with empty captions.
+
+    Used for VAE training on pure noise to test robustness and learn latent representations
+    without semantic content.
+    """
+
+    def __init__(
+        self,
+        dimensions: Optional[list[int]] = None,
+        num_samples: int = 10000,
+        noise_std: float = 1.0,
+        tokenizer_name: str = "distilbert-base-uncased",
+        transform: Optional[Callable] = None,
+    ):
+        """
+        Args:
+            dimensions: [height, width] for noise images (default: [512, 512])
+            num_samples: Number of synthetic samples to generate
+            noise_std: Standard deviation for Gaussian noise
+            tokenizer_name: HuggingFace tokenizer for empty captions
+            transform: Optional image transform (applied to PIL image)
+        """
+        self.dimensions = dimensions or [512, 512]
+        self.height, self.width = self.dimensions
+        self.channels = 3  # Always RGB
+        self.num_samples = num_samples
+        self.noise_std = noise_std
+        self.transform = transform
+
+        # Initialize tokenizer for empty captions
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Pre-tokenize empty caption
+        encoding = self.tokenizer(
+            "", max_length=128, padding="max_length", truncation=True, return_tensors="pt"
+        )
+        self.empty_caption_tokens = encoding["input_ids"].squeeze(0)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, Image.Image]:
+        """
+        Generate unique RGB noise image and return with empty caption tokens.
+
+        Returns:
+            (caption_tokens, noise_image): Tokenized empty caption and PIL RGB noise image
+        """
+        # Generate Gaussian noise: [C, H, W] with specified std
+        noise = torch.randn(self.channels, self.height, self.width) * self.noise_std
+
+        # Convert to PIL Image (expected by collate function)
+        # Clamp to [0, 1] range for proper PIL conversion, then scale to [0, 255]
+        noise_normalized = torch.clamp(noise, -3.0, 3.0)  # Clamp to reasonable range
+        noise_01 = (noise_normalized + 3.0) / 6.0  # Map to [0, 1]
+        noise_255 = (noise_01 * 255).byte()
+
+        # Convert to PIL Image
+        pil_image = transforms.ToPILImage()(noise_255)
+
+        # Apply any additional transforms
+        if self.transform:
+            pil_image = self.transform(pil_image)
+
+        return self.empty_caption_tokens.clone(), pil_image
 
 
 class GroupedBatchSampler(Sampler):

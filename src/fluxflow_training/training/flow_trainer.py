@@ -162,6 +162,9 @@ class FlowTrainer:
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
+        if check_for_nan(text_embeddings, "text_embeddings", logger):
+            logger.error("NaN detected in text embeddings - skipping batch")
+            return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
         # Encode image to latent (frozen VAE)
         # Temporarily disable gradient checkpointing to avoid issues with torch.no_grad()
@@ -169,6 +172,9 @@ class FlowTrainer:
         self.compressor.use_gradient_checkpointing = False
         with torch.no_grad():
             latent_packet = self.compressor(real_imgs)
+        if check_for_nan(latent_packet, "latent_packet", logger):
+            logger.error("NaN detected in compressor output - skipping batch")
+            return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
         # Restore original setting
         self.compressor.use_gradient_checkpointing = original_checkpoint
 
@@ -238,13 +244,16 @@ class FlowTrainer:
 
         # Extract predicted sequence (exclude HW vector)
         pred_seq = pred[:, : img_seq.size(1), :]
+        if check_for_nan(pred_seq, "flow_prediction", logger):
+            logger.error("NaN detected in flow prediction - skipping batch")
+            return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
         # Fixed normalization for large latent values
         vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
 
         if context_dims > 0:
             # v0.7.0: Use global normalization for stability
-            vae_latents = img_seq[:, :, :vae_dims]
+            vae_latents = img_seq[:, :, :vae_dims].float()
             vae_noise = noise
 
             # Global statistics across batch and sequence for stability
@@ -252,22 +261,23 @@ class FlowTrainer:
             latent_std = vae_latents.detach().std() + 1e-8
 
             normalized_latents = (vae_latents - latent_mean) / latent_std
-            normalized_noise = (vae_noise - latent_mean) / latent_std
+            normalized_noise = (vae_noise.float() - latent_mean) / latent_std
 
             # Simple normalized reconstruction loss
-            pred_vae = pred_seq[:, :, :vae_dims].contiguous()
+            pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
             normalized_pred = (pred_vae - latent_mean) / latent_std
 
             diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_latents, beta=0.01)
         else:
             # v0.6.0 and earlier: Global normalization
-            latent_mean = img_seq.detach().mean()
-            latent_std = img_seq.detach().std() + 1e-8
+            img_seq_fp32 = img_seq.float()
+            latent_mean = img_seq_fp32.detach().mean()
+            latent_std = img_seq_fp32.detach().std() + 1e-8
 
-            normalized_img_seq = (img_seq - latent_mean) / latent_std
-            normalized_noise = (noise - latent_mean) / latent_std
+            normalized_img_seq = (img_seq_fp32 - latent_mean) / latent_std
+            normalized_noise = (noise.float() - latent_mean) / latent_std
 
-            normalized_pred = (pred_seq - latent_mean) / latent_std
+            normalized_pred = (pred_seq.float() - latent_mean) / latent_std
 
             diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_img_seq, beta=0.01)
 

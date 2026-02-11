@@ -403,6 +403,23 @@ def initialize_models(args, config, device, checkpoint_manager):
                 except Exception as e:
                     print(f"⚠️  Failed to auto-load text encoder: {e}")
 
+    # Ensure text encoder is in float32 for stability
+    text_encoder = text_encoder.float()
+
+    # Validate text encoder weights for NaN/Inf and reinitialize if needed
+    text_encoder_nan = False
+    for name, param in text_encoder.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"  ⚠️  WARNING: NaN/Inf in text_encoder parameter: {name}")
+            text_encoder_nan = True
+            break
+    if text_encoder_nan:
+        print("  ⚠️  Reinitializing text encoder due to NaN/Inf values")
+        text_encoder = BertTextEncoder(
+            embed_dim=args.text_embedding_dim,
+            pretrain_model=args.pretrained_bert_model or "distilbert-base-uncased",
+        ).to(device)
+
     return {
         "diffuser": diffuser,
         "compressor": compressor,
@@ -1079,6 +1096,7 @@ def train_legacy(args):
                 sample_sizes=parsed_sample_sizes,
                 use_cfg=True,
                 guidance_scale=5.0,
+                num_inference_steps=args.sample_steps,
             )
 
     global_step = saved_global_step
@@ -1345,6 +1363,7 @@ def train_legacy(args):
                                 sample_sizes=parsed_sample_sizes,
                                 use_cfg=True,
                                 guidance_scale=5.0,
+                                num_inference_steps=args.sample_steps,
                             )
                         last_sample_step = global_step
 
@@ -1683,6 +1702,12 @@ def parse_args():
         help="Sample image sizes. Can be integers (square) or WxH pairs (e.g., 512 768x512)",
     )
     parser.add_argument(
+        "--sample_steps",
+        type=int,
+        default=20,
+        help="Number of denoising steps for flow sampling",
+    )
+    parser.add_argument(
         "--reduced_min_sizes",
         nargs="+",
         type=int,
@@ -1894,6 +1919,8 @@ def parse_args():
                 args.sample_captions = config["output"]["sample_captions"]
             if "sample_sizes" in config["output"] and "sample_sizes" not in cli_provided:
                 args.sample_sizes = config["output"]["sample_sizes"]
+            if "sample_steps" in config["output"] and "sample_steps" not in cli_provided:
+                args.sample_steps = config["output"]["sample_steps"]
 
         if "data" in config:
             if "reduced_min_sizes" in config["data"] and "reduced_min_sizes" not in cli_provided:
