@@ -34,7 +34,9 @@ class DatasetConfig:
     webdataset_samples_per_shard: int = 1000
 
     # Noise dataset configuration
-    dimensions: list[int] = field(default_factory=lambda: [512, 512])  # [height, width] for noise images
+    dimensions: list[int] = field(
+        default_factory=lambda: [512, 512]
+    )  # [height, width] for noise images
     num_samples: int = 10000  # Number of synthetic samples
     noise_std: float = 1.0  # Standard deviation for Gaussian noise
 
@@ -294,9 +296,7 @@ class PipelineConfigValidator:
                         f"Dataset '{name}': type='noise' requires 'dimensions' as [height, width]"
                     )
                 elif any(d <= 0 for d in dataset.dimensions):
-                    self.errors.append(
-                        f"Dataset '{name}': dimensions must be positive integers"
-                    )
+                    self.errors.append(f"Dataset '{name}': dimensions must be positive integers")
                 if dataset.num_samples <= 0:
                     self.errors.append(f"Dataset '{name}': num_samples must be positive")
                 if dataset.noise_std <= 0:

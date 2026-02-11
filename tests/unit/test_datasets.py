@@ -218,9 +218,9 @@ class TestNoiseDataset:
         assert input_ids.dtype == torch.long
 
         # PIL Image
-        assert hasattr(image, 'size')
+        assert hasattr(image, "size")
         assert image.size == (256, 256)
-        assert image.mode == 'RGB'  # RGB mode
+        assert image.mode == "RGB"  # RGB mode
 
     @patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained")
     def test_unique_noise(self, mock_from_pretrained, mock_tokenizer):
