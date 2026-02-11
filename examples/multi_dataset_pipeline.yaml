@@ -23,17 +23,25 @@ training:
         batch_size: 8
         workers: 4
 
-      # WebDataset from HuggingFace
-      webdataset_large:
-        type: webdataset
-        webdataset_url: "pipe:aws s3 cp s3://bucket/dataset/{00000..00099}.tar -"
-        webdataset_token: hf_your_token_here
-        webdataset_image_key: png
-        webdataset_label_key: json
-        webdataset_caption_key: prompt
-        webdataset_size: 100000
-        webdataset_samples_per_shard: 1000
-        batch_size: 4
+       # WebDataset from HuggingFace
+       webdataset_large:
+         type: webdataset
+         webdataset_url: "pipe:aws s3 cp s3://bucket/dataset/{00000..00099}.tar -"
+         webdataset_token: hf_your_token_here
+         webdataset_image_key: png
+         webdataset_label_key: json
+         webdataset_caption_key: prompt
+         webdataset_size: 100000
+         webdataset_samples_per_shard: 1000
+         batch_size: 4
+
+       # Synthetic noise dataset for VAE robustness testing
+       noise_training:
+         type: noise
+         dimensions: [512, 512]  # [height, width] for noise images
+         num_samples: 10000      # Number of synthetic samples
+         noise_std: 1.0          # Standard deviation for Gaussian noise
+         batch_size: 8
 
     # Specify which dataset to use by default
     # Steps without explicit "dataset" field will use this
@@ -50,15 +58,24 @@ training:
         batch_size: 2
         workers: 8
 
-      # Step 2: Train VAE with GAN on low-resolution data
-      - name: vae_gan_lowres
-        description: "VAE+GAN training on low-res dataset for speed"
-        n_epochs: 10
-        train_vae: true
-        gan_training: true
-        dataset: local_lowres  # Switch to low-res dataset
-        lambda_adv: 0.1
-        r1_gamma: 1.0
+       # Step 2: Train VAE with GAN on low-resolution data
+       - name: vae_gan_lowres
+         description: "VAE+GAN training on low-res dataset for speed"
+         n_epochs: 10
+         train_vae: true
+         gan_training: true
+         dataset: local_lowres  # Switch to low-res dataset
+         lambda_adv: 0.1
+         r1_gamma: 1.0
+
+       # Step 2.5: Train VAE on synthetic noise for robustness
+       - name: vae_noise_robustness
+         description: "VAE training on synthetic noise to test robustness"
+         n_epochs: 5
+         train_vae: true
+         gan_training: false
+         dataset: noise_training  # Use synthetic noise dataset
+         batch_size: 8
 
       # Step 3: Train Flow on large webdataset
       - name: flow_training

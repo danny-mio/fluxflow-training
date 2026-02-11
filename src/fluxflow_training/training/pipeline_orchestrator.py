@@ -483,6 +483,7 @@ class TrainingPipelineOrchestrator:
         from torch.utils.data import DataLoader
 
         from ..data import (
+            NoiseDataset,
             ResumableDimensionSampler,
             StreamingWebDataset,
             TextImageDataset,
@@ -549,6 +550,22 @@ class TrainingPipelineOrchestrator:
                 batch_size=batch_size,
                 seed=42,
             )
+            dataset_size = len(dataset)
+        elif dataset_config.type == "noise":
+            # Noise dataset
+            logger.info(f"  Dimensions: {dataset_config.dimensions}")
+            logger.info(f"  Num samples: {dataset_config.num_samples}")
+            logger.info(f"  Noise std: {dataset_config.noise_std}")
+            dataset = NoiseDataset(
+                dimensions=dataset_config.dimensions,
+                num_samples=dataset_config.num_samples,
+                noise_std=dataset_config.noise_std,
+                tokenizer_name=args.tokenizer_name,
+                transform=None,
+            )
+
+            # No dimension cache needed for synthetic data
+            sampler = None
             dataset_size = len(dataset)
         else:
             raise ValueError(f"Unknown dataset type: {dataset_config.type}")
