@@ -6,12 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### 🐛 Fixes
+## [0.7.0] - 2026-02-12
+
+### Fixes
 - **Restore R1 penalty gradients**: Enable gradients on noisy real images before discriminator R1 regularization
 - **Fix gradient accumulation**: Only zero grads at the start of accumulation windows in FlowTrainer
 - **Tokenizer compatibility**: Add `batch_encode_plus` fallback for newer Transformers
 
-### 🧪 Testing
+### Testing
 - **Stabilize dataset tests**: Ensure mock tokenizer returns tensor encodings via `__call__`
 
 ## [0.5.1] - 2025-12-24
@@ -43,7 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.4.0] - 2025-12-17
 
-### 🚀 Added
+### Added
 
 #### CFG-Enabled Training Sample Generation
 - **Training samples now use CFG by default** when generating flow model samples
@@ -356,8 +358,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - All existing CLI args still work
   - Standard training mode unchanged
 
-## [Unreleased]
-
 ### Added
 
 #### WebDataset Optimizations
@@ -372,7 +372,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `webdataset_caption_key` (e.g. "prompt", "caption")
   - Enables support for any HuggingFace WebDataset format
 
-### Added
+### 🚀 Added
 
 #### Stability Improvements
 - **EMA (Exponential Moving Average)** for flow training to stabilize training and improve generation quality
