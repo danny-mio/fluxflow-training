@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### 🐛 Fixes
+- **Restore R1 penalty gradients**: Enable gradients on noisy real images before discriminator R1 regularization
+- **Fix gradient accumulation**: Only zero grads at the start of accumulation windows in FlowTrainer
+- **Tokenizer compatibility**: Add `batch_encode_plus` fallback for newer Transformers
+
+### 🧪 Testing
+- **Stabilize dataset tests**: Ensure mock tokenizer returns tensor encodings via `__call__`
+
 ## [0.5.1] - 2025-12-24
 
 ### 🐛 Fixes

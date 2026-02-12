@@ -1358,8 +1358,9 @@ Generated diagrams in `outputs/graph/`:
 **Solutions:**
 1. Check captions file format (tab-separated)
 2. Verify tokenizer: `--tokenizer_name "distilbert-base-uncased"`
-3. Train flow model longer: `--n_epochs 200`
-4. Increase text embedding: `--text_embedding_dim 1024`
+3. If using newer Transformers, ensure tokenizers support `__call__` (batch fallback)
+4. Train flow model longer: `--n_epochs 200`
+5. Increase text embedding: `--text_embedding_dim 1024`
 
 ## Performance Benchmarks
 

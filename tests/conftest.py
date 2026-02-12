@@ -160,6 +160,7 @@ def mock_tokenizer():
 
     mock.encode_plus = mock_encode_plus
     mock.__call__ = mock_call
+    mock.side_effect = mock_call
     mock.model_max_length = 128
     mock.pad_token_id = 0
     mock.pad_token = "[PAD]"

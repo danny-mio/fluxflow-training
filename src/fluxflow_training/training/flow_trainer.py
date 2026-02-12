@@ -156,9 +156,10 @@ class FlowTrainer:
         else:
             self.text_encoder.eval()
 
-        self.optimizer.zero_grad(set_to_none=True)
-        if self.text_encoder_optimizer is not None:
-            self.text_encoder_optimizer.zero_grad(set_to_none=True)
+        if self._accumulation_step == 0:
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.text_encoder_optimizer is not None:
+                self.text_encoder_optimizer.zero_grad(set_to_none=True)
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)

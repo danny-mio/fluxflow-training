@@ -767,7 +767,10 @@ class VAETrainer:
         # Actual context when SPADE is inactive (traditional conditional GAN)
         disc_ctx = None if spade_active else ctx_vec.detach()
 
-        # Real images (already require gradients for R1 penalty)
+        if (global_step % self.r1_interval) == 0:
+            real_imgs_noisy.requires_grad_(True)
+
+        # Real images
         real_logits = self.discriminator(real_imgs_noisy, disc_ctx)
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
