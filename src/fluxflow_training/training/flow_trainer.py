@@ -62,7 +62,9 @@ class FlowTrainer:
         text_encoder_optimizer: Optional[Optimizer] = None,
         text_encoder_scheduler: Optional[_LRScheduler] = None,  # type: ignore[type-arg]
         gradient_clip_norm: float = 1.0,
+        gradient_accumulation_steps: int = 1,
         num_train_timesteps: int = 1000,
+        start_step: int = 0,
         ema_decay: float = 0.9999,
         lambda_align: float = 0.0,
         cfg_dropout_prob: float = 0.0,
@@ -81,6 +83,7 @@ class FlowTrainer:
             text_encoder_scheduler: Text encoder scheduler (None if frozen)
             gradient_clip_norm: Gradient clipping norm
             num_train_timesteps: Number of diffusion timesteps
+            start_step: Starting diffusion timestep (default: 0 for noise-to-image)
             ema_decay: EMA decay rate for model parameters (default: 0.9999)
             lambda_align: Text-image alignment loss weight (default: 0.1)
             cfg_dropout_prob: Classifier-free guidance dropout probability (default: 0.0)
@@ -95,6 +98,8 @@ class FlowTrainer:
         self.text_encoder_optimizer = text_encoder_optimizer
         self.text_encoder_scheduler = text_encoder_scheduler
         self.gradient_clip_norm = gradient_clip_norm
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self._accumulation_step = 0  # Track current accumulation step
         self.lambda_align = lambda_align
         self.cfg_dropout_prob = cfg_dropout_prob
         self.accelerator = accelerator
@@ -113,7 +118,12 @@ class FlowTrainer:
         self.ema = EMA(self._ema_wrapper, decay=ema_decay)
 
         # Setup diffusion scheduler
-        self.noise_scheduler = DPMSolverMultistepScheduler(num_train_timesteps=num_train_timesteps)
+        self.num_train_timesteps = num_train_timesteps
+        self.start_step = start_step
+        self.noise_scheduler = DPMSolverMultistepScheduler(
+            num_train_timesteps=num_train_timesteps,
+            prediction_type="v_prediction",
+        )
         self.noise_scheduler.set_timesteps(num_train_timesteps)  # type: ignore[arg-type]
         self.alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(  # type: ignore[attr-defined]
             next(flow_processor.parameters()).device
@@ -127,6 +137,7 @@ class FlowTrainer:
         real_imgs: torch.Tensor,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        global_step: int = 0,
     ) -> dict[str, float]:
         """
         Perform one flow training step.
@@ -145,46 +156,131 @@ class FlowTrainer:
         else:
             self.text_encoder.eval()
 
-        self.optimizer.zero_grad(set_to_none=True)
-        if self.text_encoder_optimizer is not None:
-            self.text_encoder_optimizer.zero_grad(set_to_none=True)
+        if self._accumulation_step == 0:
+            self.optimizer.zero_grad(set_to_none=True)
+            if self.text_encoder_optimizer is not None:
+                self.text_encoder_optimizer.zero_grad(set_to_none=True)
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
-
-        # Apply classifier-free guidance dropout
-        if self.cfg_dropout_prob > 0.0:
-            from .cfg_utils import apply_cfg_dropout
-
-            text_embeddings = apply_cfg_dropout(text_embeddings, p_uncond=self.cfg_dropout_prob)
+        if check_for_nan(text_embeddings, "text_embeddings", logger):
+            logger.error("NaN detected in text embeddings - skipping batch")
+            return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
         # Encode image to latent (frozen VAE)
+        # Temporarily disable gradient checkpointing to avoid issues with torch.no_grad()
+        original_checkpoint = self.compressor.use_gradient_checkpointing
+        self.compressor.use_gradient_checkpointing = False
         with torch.no_grad():
             latent_packet = self.compressor(real_imgs)
+        if check_for_nan(latent_packet, "latent_packet", logger):
+            logger.error("NaN detected in compressor output - skipping batch")
+            return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
+        # Restore original setting
+        self.compressor.use_gradient_checkpointing = original_checkpoint
 
         img_seq = latent_packet[:, :-1, :].contiguous()
         hw_vec = latent_packet[:, -1:, :].contiguous()
 
+        # Get context dimensions from model
+        context_dims = self.compressor.get_context_dims()
+
         # Sample timesteps
         device = img_seq.device
-        t = sample_t(img_seq.size(0), device)
-        noise = torch.randn_like(img_seq)
+        t = sample_t(img_seq.size(0), device, self.start_step, self.num_train_timesteps)
 
-        # Add noise using scheduler
-        noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
+        # Apply progressive classifier-free guidance dropout
+        # Higher CFG dropout at high timesteps (more noisy images need more guidance)
+        if self.cfg_dropout_prob > 0.0:
+            from .cfg_utils import apply_cfg_dropout
+
+            # Progressive CFG: scale dropout probability based on timestep
+            # Higher timesteps (more noise) benefit from more guidance
+            t_normalized = t.float() / self.num_train_timesteps  # [0, 1]
+            progressive_p_uncond = self.cfg_dropout_prob * (
+                0.5 + 0.5 * t_normalized
+            )  # Scale from 0.5x to 1.5x
+            progressive_p_uncond = torch.clamp(
+                progressive_p_uncond, 0.0, min(0.5, self.cfg_dropout_prob * 2.0)
+            )
+
+            text_embeddings = apply_cfg_dropout(
+                text_embeddings, p_uncond=progressive_p_uncond.mean().item()
+            )
+
+        # Monitor timestep distribution for training progress (log every 500 steps)
+        if global_step % 500 == 0:
+            # Create histogram of sampled timesteps
+            hist = torch.histc(
+                t.float(),
+                bins=10,
+                min=self.start_step,
+                max=self.start_step + self.num_train_timesteps - 1,
+            )
+            hist = hist / hist.sum()  # Normalize to probabilities
+
+            logger.info(f"Timestep distribution: {hist}")
+            logger.info(
+                f"Timestep range: {t.min().item()}-{t.max().item()} (mean: {t.float().mean().item():.1f})"
+            )
+
+        if context_dims > 0:
+            # v0.7.0: Only add noise to VAE dimensions, keep context clean
+            vae_dims = img_seq.size(-1) - context_dims
+            noise = torch.randn_like(img_seq[:, :, :vae_dims])
+            # Add noise only to VAE part
+            noised_vae = self.noise_scheduler.add_noise(img_seq[:, :, :vae_dims], noise, t)
+            # Keep context unchanged
+            noised_seq = torch.cat([noised_vae, img_seq[:, :, vae_dims:]], dim=-1)
+        else:
+            # v0.6.0 and earlier: Add noise to all dimensions
+            vae_dims = img_seq.size(-1)
+            noise = torch.randn_like(img_seq)
+            noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
-        # Predict
-        pred = self.flow_processor(full_input, text_embeddings, t)
-        pred_seq = pred[:, :-1, :]
+        # Predict (flow processor expects normalized timesteps in [0, 1]).
+        t_model = (t.float() / 999.0).clamp(0.0, 1.0)
+        pred = self.flow_processor(full_input, text_embeddings, t_model)
 
-        # v-prediction loss (more stable than epsilon prediction)
-        alpha_t = self.alphas_cumprod[t][:, None, None]
-        sigma_t = (1 - alpha_t).sqrt()
-        alpha_t = alpha_t.sqrt()
-        v_target = alpha_t * noise - sigma_t * img_seq
+        # Extract predicted sequence (exclude HW vector)
+        pred_seq = pred[:, : img_seq.size(1), :]
+        if check_for_nan(pred_seq, "flow_prediction", logger):
+            logger.error("NaN detected in flow prediction - skipping batch")
+            return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
-        diff_loss = nn.functional.mse_loss(pred_seq, v_target)
+        # Fixed normalization for large latent values
+        vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
+
+        if context_dims > 0:
+            # v0.7.0: Use global normalization for stability
+            vae_latents = img_seq[:, :, :vae_dims].float()
+            vae_noise = noise
+
+            # Global statistics across batch and sequence for stability
+            latent_mean = vae_latents.detach().mean()
+            latent_std = vae_latents.detach().std() + 1e-8
+
+            normalized_latents = (vae_latents - latent_mean) / latent_std
+            normalized_noise = (vae_noise.float() - latent_mean) / latent_std
+
+            # Simple normalized reconstruction loss
+            pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
+            normalized_pred = (pred_vae - latent_mean) / latent_std
+
+            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_latents, beta=0.01)
+        else:
+            # v0.6.0 and earlier: Global normalization
+            img_seq_fp32 = img_seq.float()
+            latent_mean = img_seq_fp32.detach().mean()
+            latent_std = img_seq_fp32.detach().std() + 1e-8
+
+            normalized_img_seq = (img_seq_fp32 - latent_mean) / latent_std
+            normalized_noise = (noise.float() - latent_mean) / latent_std
+
+            normalized_pred = (pred_seq.float() - latent_mean) / latent_std
+
+            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_img_seq, beta=0.01)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
@@ -224,51 +320,73 @@ class FlowTrainer:
             # Alignment loss disabled
             align_loss = torch.tensor(0.0, device=pred_seq.device)
 
-        # Combine losses
-        total_loss = diff_loss + self.lambda_align * align_loss
+        # Adaptive loss weighting for better training dynamics
+        # Gradually increase alignment loss weight to prevent early dominance
+        if self.lambda_align > 0.0:
+            # Warm up alignment loss over first 10% of training
+            warmup_steps = max(1000, int(0.1 * 10000))  # Assume 10k steps for warmup
+            align_weight = min(self.lambda_align, self.lambda_align * (global_step / warmup_steps))
+        else:
+            align_weight = 0.0
+
+        # Combine losses with adaptive weighting
+        total_loss = diff_loss + align_weight * align_loss
 
         # Check for NaN/Inf in loss
         if check_for_nan(total_loss, "flow_total_loss", logger):
             logger.error("Skipping batch due to NaN in flow loss")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
+        # Gradient accumulation for effective larger batch sizes
+        total_loss = total_loss / self.gradient_accumulation_steps
         self.accelerator.backward(total_loss)
 
-        # Check gradients for NaN/Inf after backward
-        if self.accelerator.scaler is not None:
-            self.accelerator.scaler.unscale_(self.optimizer)
-            for name, param in self.flow_processor.named_parameters():
-                if param.grad is not None and check_for_nan(
-                    param.grad, f"grad_flow_{name}", logger
-                ):
-                    logger.warning(f"NaN gradient in flow_processor.{name}, zeroing it")
-                    param.grad.zero_()
-
-        # Clip gradients
-        self.accelerator.clip_grad_norm_(
-            self.flow_processor.parameters(),
-            self.gradient_clip_norm,
-        )
-
-        self.optimizer.step()
-        if self.text_encoder_optimizer is not None:
-            self.text_encoder_optimizer.step()
-
-        # Update EMA
-        self.ema.update()
-
-        # Get loss value for metrics and schedulers
+        # Get loss value for metrics (defined before accumulation check)
         loss_value = float(total_loss.detach().item())
 
-        # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
-        # Skip first step to avoid PyTorch warning about calling scheduler before first optimizer step
-        if not self._first_step:
-            # Get the underlying scheduler (may be wrapped by accelerator)
-            base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
-            if isinstance(base_scheduler, ReduceLROnPlateau):
-                self.scheduler.step(loss_value)  # type: ignore[arg-type]
-            else:
-                self.scheduler.step()  # type: ignore[call-arg]
+        # Only update weights after accumulating gradients
+        self._accumulation_step += 1
+        should_step = (self._accumulation_step % self.gradient_accumulation_steps) == 0
+
+        if should_step:
+            # Adaptive gradient clipping for better training stability
+            # Compute global gradient norm
+            grad_norms = []
+            for param in self.flow_processor.parameters():
+                if param.grad is not None:
+                    grad_norms.append(torch.norm(param.grad.detach()))
+
+            if grad_norms:
+                total_norm = torch.norm(torch.stack(grad_norms))
+
+                # Adaptive clipping: scale clip norm based on current gradient magnitude
+                adaptive_clip_norm = min(self.gradient_clip_norm, total_norm.item() * 1.5)
+
+                # Apply adaptive clipping
+                self.accelerator.clip_grad_norm_(
+                    self.flow_processor.parameters(),
+                    adaptive_clip_norm,
+                )
+
+            self.optimizer.step()
+            if self.text_encoder_optimizer is not None:
+                self.text_encoder_optimizer.step()
+
+            # Update EMA
+            self.ema.update()
+
+            # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
+            # Skip first step to avoid PyTorch warning about calling scheduler before first optimizer step
+            if not self._first_step:
+                # Get the underlying scheduler (may be wrapped by accelerator)
+                base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
+                if isinstance(base_scheduler, ReduceLROnPlateau):
+                    self.scheduler.step(loss_value)  # type: ignore[arg-type]
+                else:
+                    self.scheduler.step()  # type: ignore[call-arg]
+
+            # Reset accumulation step
+            self._accumulation_step = 0
 
             if self.text_encoder_scheduler is not None:
                 base_te_scheduler = getattr(
@@ -291,6 +409,27 @@ class FlowTrainer:
             "lr_flow": self.optimizer.param_groups[0]["lr"],
             "pred_mean": pred_seq.mean().item(),
             "pred_std": pred_seq.std().item(),
+            # Latent statistics for monitoring normalization effectiveness
+            "latent_mean": (
+                float(img_seq[:, :, :vae_dims].mean().item())
+                if context_dims > 0
+                else float(img_seq.mean().item())
+            ),
+            "latent_std": (
+                float(img_seq[:, :, :vae_dims].std().item())
+                if context_dims > 0
+                else float(img_seq.std().item())
+            ),
+            "latent_max": (
+                float(img_seq[:, :, :vae_dims].max().item())
+                if context_dims > 0
+                else float(img_seq.max().item())
+            ),
+            "latent_min": (
+                float(img_seq[:, :, :vae_dims].min().item())
+                if context_dims > 0
+                else float(img_seq.min().item())
+            ),
         }
 
         # Add text encoder LR only if optimizer exists

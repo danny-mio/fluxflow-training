@@ -627,4 +627,3 @@ Samples generated every: checkpoint_save_interval × samples_per_checkpoint batc
 # Adjust GAN loss weight
 --lambda_adv 0.9
 ```
-

@@ -89,7 +89,7 @@ echo
 if [[ $EXIT_CODE -eq 0 ]]; then
     echo -e "${GREEN}[SUCCESS]${NC} Generation complete!"
     echo -e "${GREEN}[INFO]${NC} Images saved to: $OUTPUT_PATH"
-    
+
     # Show generated files
     GENERATED_COUNT=$(find "$OUTPUT_PATH" -name "*_gen.webp" | wc -l | tr -d ' ')
     if [[ $GENERATED_COUNT -gt 0 ]]; then

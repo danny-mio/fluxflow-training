@@ -202,14 +202,14 @@ data:
 training:
   batch_size: 1
   output_path: "tests/output/pipeline_test"
-  
+
   pipeline:
     steps:
       - name: "step1"
         n_epochs: 1
         max_steps: 5  # Only run 5 batches
         train_vae: true
-        
+
       - name: "step2"
         n_epochs: 1
         max_steps: 5
@@ -314,15 +314,15 @@ def test_two_step_pipeline(tmp_path):
             }
         }
     }
-    
+
     config_path = tmp_path / "config.yaml"
     with open(config_path, "w") as f:
         yaml.dump(config, f)
-    
+
     # Run training
     from fluxflow_training.scripts.train import main
     main(["--config", str(config_path)])
-    
+
     # Verify outputs
     assert (tmp_path / "flxflow_step_step1_final.safetensors").exists()
     assert (tmp_path / "flxflow_step_step2_final.safetensors").exists()
@@ -489,4 +489,3 @@ Config: batch_size=4, vae_dim=128, gan_training=true, use_lpips=true, train_spad
 Version: fluxflow-training 0.2.1
 CUDA: 12.1
 ```
-

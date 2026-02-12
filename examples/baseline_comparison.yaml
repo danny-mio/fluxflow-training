@@ -4,18 +4,22 @@
 #
 # CRITICAL: This is for research only - baseline models should NOT be used in production.
 # Branch: experimental/baseline-no-bezier
+#
+# Usage: python train.py --config examples/baseline_comparison.yaml
 
 model:
   # Set model type to "baseline" (default is "bezier")
   model_type: "baseline"
-  
+  # Set model version (default is "0.3.0")
+  model_version: "0.3.0"
+
   # Core dimensions (MUST match Bezier for fair comparison)
   vae_dim: 128
   feature_maps_dim: 512  # Flow d_model
   feature_maps_dim_disc: 8
   text_embedding_dim: 1024
   pretrained_bert_model: null
-  
+
   # Baseline-specific parameters
   baseline_activation: "silu"  # Options: "silu", "gelu"
   baseline_vae_width_mult: 4.5  # 4.5× width, 1 layer (matches Bezier params)
@@ -27,11 +31,11 @@ data:
   # Use same dataset as Bezier model for direct comparison
   data_path: "/path/to/your/images"
   captions_file: "/path/to/your/captions.txt"
-  
+
   img_size: 1024
   channels: 3
   tokenizer_name: "distilbert-base-uncased"
-  
+
   # Multi-scale training (optional)
   reduced_min_sizes: [128, 256, 512]
 
@@ -46,7 +50,7 @@ training:
   use_fp16: false
   initial_clipping_norm: 1.0
   preserve_lr: true
-  
+
   # Phase 1: VAE training (SPADE off)
   train_vae: true
   gan_training: true
@@ -54,12 +58,12 @@ training:
   train_spade: false
   train_diff: false
   train_diff_full: false
-  
+
   # KL divergence settings
   kl_beta: 0.001
   kl_warmup_steps: 5000
   kl_free_bits: 0.0
-  
+
   # GAN settings
   lambda_adv: 0.5
   lambda_lpips: 0.1

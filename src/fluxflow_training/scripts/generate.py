@@ -40,6 +40,8 @@ def generate(args):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if not hasattr(tokenizer, "batch_encode_plus"):
+        tokenizer.batch_encode_plus = tokenizer
 
     # Initialize models
     text_encoder = BertTextEncoder(embed_dim=args.text_embedding_dim)

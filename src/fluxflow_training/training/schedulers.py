@@ -25,7 +25,9 @@ def cosine_anneal_beta(step: int, total_steps: int, beta_max: float) -> float:
     return float(beta_max * (1 - math.cos(math.pi * frac)) / 2.0)
 
 
-def sample_t(batch_size: int, device: torch.device) -> torch.Tensor:
+def sample_t(
+    batch_size: int, device: torch.device, start_step: int = 0, num_train_timesteps: int = 1000
+) -> torch.Tensor:
     """
     Sample diffusion timesteps with cosine-weighted distribution.
 
@@ -34,11 +36,18 @@ def sample_t(batch_size: int, device: torch.device) -> torch.Tensor:
     Args:
         batch_size: Number of timesteps to sample
         device: Device to place tensor on
+        start_step: Starting timestep (default: 0 for noise-to-image)
+        num_train_timesteps: Total number of training timesteps (default: 1000)
 
     Returns:
-        Timestep indices [batch_size] in range [0, 999]
+        Timestep indices [batch_size] in range [start_step, num_train_timesteps-1]
     """
-    s = torch.linspace(0, 1, 1000, device=device)
+    # Sample from start_step to num_train_timesteps-1
+    num_steps = num_train_timesteps - start_step
+    s = torch.linspace(0, 1, num_steps, device=device)
     weights = torch.cos((s + 0.008) / 1.008 * math.pi / 2) ** 2
     weights /= weights.sum()
-    return torch.multinomial(weights, batch_size, replacement=True)
+
+    indices = torch.multinomial(weights, batch_size, replacement=True)
+    # Shift by start_step to get timesteps in the desired range
+    return indices + start_step

@@ -8,6 +8,7 @@ import torch
 
 from fluxflow_training.data.datasets import (
     GroupedBatchSampler,
+    NoiseDataset,
     StreamingGroupedBatchSampler,
     TextImageDataset,
     build_dimension_cache,
@@ -167,6 +168,77 @@ class TestTextImageDataset:
         assert isinstance(file_name, str)
         assert input_ids.shape == (128,)
         assert input_ids.dtype == torch.long
+
+
+class TestNoiseDataset:
+    """Tests for NoiseDataset class."""
+
+    @patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained")
+    def test_initialization(self, mock_from_pretrained, mock_tokenizer):
+        """Test NoiseDataset initialization."""
+        mock_from_pretrained.return_value = mock_tokenizer
+
+        dataset = NoiseDataset(
+            dimensions=[512, 512],
+            num_samples=100,
+            noise_std=1.5,
+        )
+
+        assert len(dataset) == 100
+        assert dataset.height == 512
+        assert dataset.width == 512
+        assert dataset.channels == 3
+        assert dataset.num_samples == 100
+        assert dataset.noise_std == 1.5
+
+    @patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained")
+    def test_initialization_defaults(self, mock_from_pretrained, mock_tokenizer):
+        """Test NoiseDataset initialization with defaults."""
+        mock_from_pretrained.return_value = mock_tokenizer
+
+        dataset = NoiseDataset()
+
+        assert len(dataset) == 10000  # default
+        assert dataset.height == 512
+        assert dataset.width == 512
+        assert dataset.channels == 3
+        assert dataset.noise_std == 1.0
+
+    @patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained")
+    def test_getitem(self, mock_from_pretrained, mock_tokenizer):
+        """Test __getitem__ returns correct types and shapes."""
+        mock_from_pretrained.return_value = mock_tokenizer
+
+        dataset = NoiseDataset(dimensions=[256, 256], num_samples=10)
+
+        input_ids, image = dataset[0]
+
+        assert isinstance(input_ids, torch.Tensor)
+        assert input_ids.shape == (128,)  # tokenizer max_length
+        assert input_ids.dtype == torch.long
+
+        # PIL Image
+        assert hasattr(image, "size")
+        assert image.size == (256, 256)
+        assert image.mode == "RGB"  # RGB mode
+
+    @patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained")
+    def test_unique_noise(self, mock_from_pretrained, mock_tokenizer):
+        """Test that different samples generate different noise."""
+        mock_from_pretrained.return_value = mock_tokenizer
+
+        dataset = NoiseDataset(dimensions=[64, 64], num_samples=10)
+
+        # Get two different samples
+        _, image1 = dataset[0]
+        _, image2 = dataset[1]
+
+        # Convert to tensors for comparison
+        img1_tensor = torch.tensor(list(image1.getdata())).float()
+        img2_tensor = torch.tensor(list(image2.getdata())).float()
+
+        # They should be different (probability of being identical is negligible)
+        assert not torch.allclose(img1_tensor, img2_tensor)
 
 
 class TestGroupedBatchSampler:

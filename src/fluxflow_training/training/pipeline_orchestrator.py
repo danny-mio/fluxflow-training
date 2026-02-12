@@ -236,18 +236,25 @@ class TrainingPipelineOrchestrator:
 
         # Log final state
         if models_dict:
-            trainable_params = sum(
-                p.numel() for m in models_dict.values() for p in m.parameters() if p.requires_grad
-            )
-            total_params = sum(p.numel() for m in models_dict.values() for p in m.parameters())
-            frozen_params = total_params - trainable_params
+            # Filter to only PyTorch models (exclude ModelConfig objects)
+            torch_models = {k: v for k, v in models_dict.items() if hasattr(v, "parameters")}
 
-            if total_params > 0:
-                logger.info(
-                    f"Model configuration complete: "
-                    f"{trainable_params:,} trainable, {frozen_params:,} frozen "
-                    f"({100.0 * trainable_params / total_params:.1f}% trainable)"
+            if torch_models:
+                trainable_params = sum(
+                    p.numel()
+                    for m in torch_models.values()
+                    for p in m.parameters()
+                    if p.requires_grad
                 )
+                total_params = sum(p.numel() for m in torch_models.values() for p in m.parameters())
+                frozen_params = total_params - trainable_params
+
+                if total_params > 0:
+                    logger.info(
+                        f"Model configuration complete: "
+                        f"{trainable_params:,} trainable, {frozen_params:,} frozen "
+                        f"({100.0 * trainable_params / total_params:.1f}% trainable)"
+                    )
             else:
                 logger.warning("No model parameters found")
 
@@ -476,6 +483,7 @@ class TrainingPipelineOrchestrator:
         from torch.utils.data import DataLoader
 
         from ..data import (
+            NoiseDataset,
             ResumableDimensionSampler,
             StreamingWebDataset,
             TextImageDataset,
@@ -542,6 +550,22 @@ class TrainingPipelineOrchestrator:
                 batch_size=batch_size,
                 seed=42,
             )
+            dataset_size = len(dataset)
+        elif dataset_config.type == "noise":
+            # Noise dataset
+            logger.info(f"  Dimensions: {dataset_config.dimensions}")
+            logger.info(f"  Num samples: {dataset_config.num_samples}")
+            logger.info(f"  Noise std: {dataset_config.noise_std}")
+            dataset = NoiseDataset(
+                dimensions=dataset_config.dimensions,
+                num_samples=dataset_config.num_samples,
+                noise_std=dataset_config.noise_std,
+                tokenizer_name=args.tokenizer_name,
+                transform=None,
+            )
+
+            # No dimension cache needed for synthetic data
+            sampler = None
             dataset_size = len(dataset)
         else:
             raise ValueError(f"Unknown dataset type: {dataset_config.type}")
@@ -783,19 +807,33 @@ class TrainingPipelineOrchestrator:
                     use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
                 ).to(self.device)
 
-            # Auto-add discriminator if GAN training enabled
-            if step.gan_training and ("D_img" not in models or models["D_img"] is None):
-                from fluxflow import PatchDiscriminator
+            # Create or validate discriminator for GAN training
+            if step.gan_training:
+                from fluxflow.models import PatchDiscriminator
 
-                logger.warning(
-                    "Discriminator 'D_img' not found but GAN training enabled, creating new PatchDiscriminator. "
-                    "This may not load from checkpoint - ensure models are initialized properly."
-                )
                 channels = getattr(args, "channels", 3)
                 vae_dim = getattr(args, "vae_dim", 128)
-                models["D_img"] = PatchDiscriminator(in_channels=channels, ctx_dim=vae_dim).to(
-                    self.device
-                )
+
+                # Calculate expected context dimension
+                try:
+                    context_dims = models["compressor"].get_context_dims()
+                    expected_ctx_dim = vae_dim + context_dims
+                except (AttributeError, TypeError):
+                    expected_ctx_dim = vae_dim
+
+                # Check if we have a loaded discriminator
+                if "D_img" not in models or models["D_img"] is None:
+                    logger.info(f"Creating new PatchDiscriminator with ctx_dim={expected_ctx_dim}")
+                    models["D_img"] = PatchDiscriminator(
+                        in_channels=channels, ctx_dim=expected_ctx_dim
+                    ).to(self.device)
+                else:
+                    # Use loaded discriminator - padding will handle dimension differences
+                    actual_ctx_dim = models["D_img"].ctx_proj.in_features
+                    logger.info(
+                        f"Using loaded discriminator (ctx_dim={actual_ctx_dim}, "
+                        f"expected {expected_ctx_dim}) - padding will handle differences"
+                    )
 
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
@@ -806,6 +844,7 @@ class TrainingPipelineOrchestrator:
                 reconstruction_loss_fn=nn.L1Loss(),
                 reconstruction_loss_min_fn=nn.MSELoss(),
                 use_spade=step.train_spade,
+                spade_training_mode=step.spade_training_mode,
                 train_reconstruction=step.train_vae,  # Only compute recon loss if train_vae=True
                 kl_beta=step.kl_beta if hasattr(step, "kl_beta") else 0.0001,
                 kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
@@ -898,7 +937,9 @@ class TrainingPipelineOrchestrator:
                 text_encoder_optimizer=optimizers.get("text_encoder"),
                 text_encoder_scheduler=schedulers.get("text_encoder"),
                 gradient_clip_norm=args.initial_clipping_norm,
-                num_train_timesteps=1000,
+                num_train_timesteps=step.num_train_timesteps,
+                start_step=step.start_step,
+                gradient_accumulation_steps=step.gradient_accumulation_steps,
                 accelerator=self.accelerator,
             )
             logger.info("Created Flow trainer")
@@ -924,11 +965,14 @@ class TrainingPipelineOrchestrator:
         # Get pipeline metadata
         metadata = self.get_pipeline_metadata(step_idx, step_epoch, batch_idx)
 
-        # Save models
+        # Save models with model configuration metadata
+        # TODO: Extract model config from pipeline config
+        model_config = models.get("model_config", {})
         self.checkpoint_manager.save_models(
             diffuser=models["diffuser"],
             text_encoder=models["text_encoder"],
             discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
+            model_config=model_config,
         )
 
         # Save training state with pipeline metadata
@@ -1021,6 +1065,8 @@ class TrainingPipelineOrchestrator:
                         args.sample_captions,
                         args.batch_size,
                         sample_sizes=parsed_sample_sizes,
+                        use_cfg=True,
+                        guidance_scale=5.0,
                         filename_prefix=f"{sample_prefix}_caption",
                     )
 
@@ -1304,7 +1350,7 @@ class TrainingPipelineOrchestrator:
 
                     # Train on all resolutions
                     for ri in imgs:
-                        real_imgs = ri.to(self.device).detach()
+                        real_imgs = ri.to(self.device).requires_grad_(True)
 
                         # VAE/GAN/SPADE training (runs if trainer exists, even with train_vae=false)
                         if trainers.get("vae"):
@@ -1334,7 +1380,7 @@ class TrainingPipelineOrchestrator:
                         # Flow training
                         if (step.train_diff or step.train_diff_full) and trainers.get("flow"):
                             flow_losses = trainers["flow"].train_step(
-                                real_imgs, input_ids, attention_mask
+                                real_imgs, input_ids, attention_mask, self.global_step
                             )
                             flow_loss = (
                                 flow_losses["flow_loss"]

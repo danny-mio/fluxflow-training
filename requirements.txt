@@ -2,7 +2,7 @@
 # Install with: pip install -r requirements.txt
 
 # Core package dependency
-fluxflow @ git+https://github.com/danny-mio/fluxflow-core.git
+#fluxflow @ git+https://github.com/danny-mio/fluxflow-core.git
 # Or use: fluxflow>=0.1.0 (when published to PyPI)
 
 # Training-specific dependencies

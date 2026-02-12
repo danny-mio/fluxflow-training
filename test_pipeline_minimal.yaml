@@ -1,9 +1,11 @@
 # Minimal pipeline config for testing
 model:
+  model_type: bezier
+  model_version: "0.7.0"
   vae_dim: 32  # Small for fast testing
   feature_maps_dim: 32
   feature_maps_dim_disc: 8
-  text_embedding_dim: 128
+  text_embedding_dim: 1024
 
 data:
   data_path: "tests/fixtures/test_images"  # Will create dummy data
@@ -19,38 +21,62 @@ training:
   lr: 0.0001
   use_fp16: false
   initial_clipping_norm: 1.0
-  
+
   # Pipeline mode
   pipeline:
     steps:
-      # Step 1: VAE training with SPADE OFF (minimal)
-      - name: "vae_test"
-        n_epochs: 1  # Just 1 epoch
-        max_steps: 2  # Only 2 batches for quick testing
-        train_vae: true
-        train_spade: false
-        train_diff: false
-        gan_training: false  # No GAN for simplicity
-        use_lpips: false  # No LPIPS for speed
-        
-        freeze: ["flow_processor", "text_encoder"]
-        
-        kl_beta: 0.0001
-        kl_warmup_steps: 100
-        kl_free_bits: 0.0
-        
-        optimization:
-          optimizers:
-            vae:
-              type: "AdamW"
-              lr: 0.0001
-              betas: [0.9, 0.999]
-              weight_decay: 0.01
-          
-          schedulers:
-            vae:
-              type: "CosineAnnealingLR"
-              eta_min_factor: 0.1
+       # Step 1: VAE training with SPADE OFF (minimal)
+       - name: "vae_test"
+         n_epochs: 1  # Just 1 epoch
+         max_steps: 2  # Only 2 batches for quick testing
+         train_vae: true
+         train_spade: false
+         train_diff: false
+         gan_training: false  # No GAN for simplicity
+         use_lpips: false  # No LPIPS for speed
+
+         freeze: ["flow_processor", "text_encoder"]
+
+         kl_beta: 0.0001
+         kl_warmup_steps: 100
+         kl_free_bits: 0.0
+
+         optimization:
+           optimizers:
+             vae:
+               type: "AdamW"
+               lr: 0.0001
+               betas: [0.9, 0.999]
+               weight_decay: 0.01
+
+           schedulers:
+             vae:
+               type: "CosineAnnealingLR"
+               eta_min_factor: 0.1
+
+       # Step 2: Flow training test (minimal)
+       - name: "flow_test"
+         n_epochs: 1  # Just 1 epoch
+         max_steps: 1  # Only 1 batch for quick testing
+         train_vae: false
+         train_spade: false
+         train_diff: true
+         gan_training: false
+
+         freeze: ["compressor", "expander", "text_encoder"]
+
+         optimization:
+           optimizers:
+             flow:
+               type: "AdamW"
+               lr: 0.0001
+               betas: [0.9, 0.999]
+               weight_decay: 0.01
+
+           schedulers:
+             flow:
+               type: "CosineAnnealingLR"
+               eta_min_factor: 0.1
 
 output:
   output_path: "outputs/test_pipeline"
