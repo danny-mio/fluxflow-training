@@ -15,10 +15,10 @@ logger = get_logger(__name__)
 
 @dataclass
 class DatasetConfig:
-    """Configuration for a single dataset (local or webdataset)."""
+    """Configuration for a single dataset (local, webdataset, or noise)."""
 
     # Dataset type
-    type: Literal["local", "webdataset"] = "local"
+    type: Literal["local", "webdataset", "noise"] = "local"
 
     # Local dataset configuration
     image_folder: Optional[str] = None
@@ -32,6 +32,13 @@ class DatasetConfig:
     webdataset_caption_key: str = "prompt"
     webdataset_size: int = 10000
     webdataset_samples_per_shard: int = 1000
+
+    # Noise dataset configuration
+    dimensions: list[int] = field(
+        default_factory=lambda: [512, 512]
+    )  # [height, width] for noise images
+    num_samples: int = 10000  # Number of synthetic samples
+    noise_std: float = 1.0  # Standard deviation for Gaussian noise
 
     # Common configuration
     batch_size: Optional[int] = None  # Override step batch_size
@@ -108,12 +115,26 @@ class PipelineStepConfig:
     gan_training: bool = False
     use_lpips: bool = False
     train_spade: bool = False
+    spade_training_mode: Literal["full", "alternate"] = "full"
     train_diff: bool = False
     train_diff_full: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
 
     # Classifier-Free Guidance (CFG) for text-conditioned flow training
     cfg_dropout_prob: float = 0.0  # Probability of null conditioning (0.0=disabled, 0.10=standard)
+
+    # Diffusion timestep configuration
+    num_train_timesteps: int = (
+        1000  # Number of diffusion timesteps (default: 1000 for noise-to-image)
+    )
+    start_step: int = (
+        0  # Starting diffusion timestep (default: 0 for noise-to-image, higher for img2img)
+    )
+
+    # Training optimization
+    gradient_accumulation_steps: int = (
+        1  # Number of steps to accumulate gradients (effective batch size multiplier)
+    )
 
     # Model freeze/unfreeze
     freeze: list[str] = field(default_factory=list)
@@ -268,10 +289,22 @@ class PipelineConfigValidator:
                     self.errors.append(
                         f"Dataset '{name}': type='webdataset' requires 'webdataset_token'"
                     )
+            elif dataset.type == "noise":
+                # Noise dataset dimensions validation
+                if len(dataset.dimensions) != 2:
+                    self.errors.append(
+                        f"Dataset '{name}': type='noise' requires 'dimensions' as [height, width]"
+                    )
+                elif any(d <= 0 for d in dataset.dimensions):
+                    self.errors.append(f"Dataset '{name}': dimensions must be positive integers")
+                if dataset.num_samples <= 0:
+                    self.errors.append(f"Dataset '{name}': num_samples must be positive")
+                if dataset.noise_std <= 0:
+                    self.errors.append(f"Dataset '{name}': noise_std must be positive")
             else:
                 self.errors.append(
                     f"Dataset '{name}': unknown type '{dataset.type}'. "
-                    f"Valid types: 'local', 'webdataset'"
+                    f"Valid types: 'local', 'webdataset', 'noise'"
                 )
 
     def _validate_step(self, step: PipelineStepConfig, step_name: str, step_index: int) -> None:
@@ -448,6 +481,10 @@ def _parse_dataset_config(dataset_dict: dict) -> DatasetConfig:
         webdataset_caption_key=dataset_dict.get("webdataset_caption_key", "prompt"),
         webdataset_size=dataset_dict.get("webdataset_size", 10000),
         webdataset_samples_per_shard=dataset_dict.get("webdataset_samples_per_shard", 1000),
+        # Noise dataset fields
+        dimensions=dataset_dict.get("dimensions") or [512, 512],
+        num_samples=dataset_dict.get("num_samples", 10000),
+        noise_std=dataset_dict.get("noise_std", 1.0),
         # Common fields
         batch_size=dataset_dict.get("batch_size"),
         workers=dataset_dict.get("workers"),
@@ -566,10 +603,14 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         gan_training=step_dict.get("gan_training", False),
         use_lpips=step_dict.get("use_lpips", False),
         train_spade=step_dict.get("train_spade", False),
+        spade_training_mode=step_dict.get("spade_training_mode", "full"),
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
         use_ema=step_dict.get("use_ema", True),
         cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
+        num_train_timesteps=step_dict.get("num_train_timesteps", 1000),
+        start_step=step_dict.get("start_step", 0),
+        gradient_accumulation_steps=step_dict.get("gradient_accumulation_steps", 1),
         freeze=step_dict.get("freeze", []),
         unfreeze=step_dict.get("unfreeze", []),
         batch_size=step_dict.get("batch_size", 2),

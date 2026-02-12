@@ -3,6 +3,7 @@
 from .datasets import TTI2MDataset  # Backward compatibility alias
 from .datasets import (
     GroupedBatchSampler,
+    NoiseDataset,
     ResumableDimensionSampler,
     StreamingGroupedBatchSampler,
     StreamingWebDataset,
@@ -21,6 +22,7 @@ from .transforms import (
 __all__ = [
     "TextImageDataset",
     "StreamingWebDataset",
+    "NoiseDataset",
     "TTI2MDataset",  # Backward compatibility alias
     "GroupedBatchSampler",
     "StreamingGroupedBatchSampler",

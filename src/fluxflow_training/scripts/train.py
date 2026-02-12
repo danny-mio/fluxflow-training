@@ -27,11 +27,7 @@ from fluxflow.models import (
     PatchDiscriminator,
     create_models_from_config,
 )
-from fluxflow.utils import (
-    format_duration,
-    safe_vae_sample,
-    save_sample_images,
-)
+from fluxflow.utils import format_duration, safe_vae_sample, save_sample_images
 from torch.utils.data import DataLoader, IterableDataset
 from transformers import AutoTokenizer
 
@@ -212,6 +208,7 @@ def initialize_models(args, config, device, checkpoint_manager):
 
     # Check if using factory-based model creation (for baseline/bezier selection)
     use_factory = config and "model" in config and config["model"].get("model_type")
+    model_config = None
 
     if use_factory:
         # Use factory to create models based on model_type in config
@@ -220,7 +217,9 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Build ModelConfig from config dict
         model_config = ModelConfig(**config["model"])
 
-        print(f"Creating models using factory (model_type={model_config.model_type})...")
+        print(
+            f"Creating models using factory (model_type={model_config.model_type}, model_version={model_config.model_version})..."
+        )
         compressor, expander, flow_processor, text_encoder = create_models_from_config(model_config)
 
         # Apply gradient checkpointing if requested
@@ -237,7 +236,7 @@ def initialize_models(args, config, device, checkpoint_manager):
             feature_maps=args.feature_maps_dim_disc,
         )
 
-        print(f"✓ Created {model_config.model_type} model")
+        print(f"✓ Created {model_config.model_type} v{model_config.model_version} model")
         print(f"  - Compressor: {type(compressor).__name__}")
         print(f"  - Expander: {type(expander).__name__}")
         print(f"  - Flow: {type(flow_processor).__name__}")
@@ -263,18 +262,77 @@ def initialize_models(args, config, device, checkpoint_manager):
         )
         flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
 
+        print("✓ Created bezier v0.3.0 model (legacy mode)")
+        print(f"  - Compressor: {type(compressor).__name__}")
+        print(f"  - Expander: {type(expander).__name__}")
+        print(f"  - Flow: {type(flow_processor).__name__}")
+        print(f"  - Text Encoder: {type(text_encoder).__name__}")
+
     # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators
-    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
-
     # Load checkpoints if resuming
+    loaded_states = None
+    model_metadata = None
     if args.model_checkpoint and os.path.exists(args.model_checkpoint):
-        loaded_states = checkpoint_manager.load_models_parallel(
+        loaded_states, model_metadata = checkpoint_manager.load_models_parallel(
             checkpoint_path=args.model_checkpoint
         )
 
+        # Log loaded model metadata if available
+        if model_metadata:
+            print(f"✓ Loaded model metadata: {model_metadata}")
+
+        # Ensure loaded_states is the state dict dict, not the tuple
+        assert isinstance(loaded_states, dict), "loaded_states should be a dict"
+
+    # Discriminators - determine correct ctx_dim from saved checkpoint if available
+    ctx_dim = args.vae_dim  # Default
+    if loaded_states and loaded_states.get("D_img"):
+        try:
+            # Use ctx_dim from saved checkpoint to ensure compatibility
+            saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+            ctx_dim = saved_ctx_dim
+            print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
+        except (KeyError, AttributeError):
+            print(
+                f"Could not determine ctx_dim from checkpoint, using default vae_dim={args.vae_dim}"
+            )
+
+    D_img = PatchDiscriminator(
+        in_channels=args.channels,
+        base_ch=32,  # Reduced from 64 (50% less channels)
+        depth=3,  # Reduced from 4 (25% less depth)
+        ctx_dim=ctx_dim,
+        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+    )
+
+    # Create diffuser pipeline
+    diffuser = FluxPipeline(compressor, flow_processor, expander)
+
+    # Discriminators - determine correct ctx_dim from saved checkpoint if available
+    ctx_dim = args.vae_dim  # Default
+    if loaded_states and loaded_states.get("D_img"):
+        try:
+            # Use ctx_dim from saved checkpoint to ensure compatibility
+            saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+            ctx_dim = saved_ctx_dim
+            print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
+        except (KeyError, AttributeError):
+            print(
+                f"Could not determine ctx_dim from checkpoint, using default vae_dim={args.vae_dim}"
+            )
+
+    D_img = PatchDiscriminator(
+        in_channels=args.channels,
+        base_ch=32,  # Reduced from 64 (50% less channels)
+        depth=3,  # Reduced from 4 (25% less depth)
+        ctx_dim=ctx_dim,
+        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+    )
+
+    # Load model checkpoints
+    if loaded_states:
         if loaded_states.get("diffuser.compressor"):
             compressor.load_state_dict(loaded_states["diffuser.compressor"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded compressor checkpoint")
@@ -291,8 +349,25 @@ def initialize_models(args, config, device, checkpoint_manager):
             image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded image_encoder checkpoint")
         if loaded_states.get("D_img"):
-            D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
-            print("✓ Loaded D_img checkpoint")
+            # Check if loaded discriminator is compatible with current architecture
+            try:
+                saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+                current_ctx_dim = D_img.ctx_proj.in_features
+                if saved_ctx_dim == current_ctx_dim:
+                    D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
+                    print("✓ Loaded D_img checkpoint")
+                else:
+                    print(
+                        f"⚠️  D_img checkpoint incompatible (saved ctx_dim={saved_ctx_dim}, current ctx_dim={current_ctx_dim}). Skipping load."
+                    )
+            except (KeyError, AttributeError) as e:
+                print(f"⚠️  Could not check D_img compatibility: {e}. Attempting load anyway.")
+                # Try loading anyway with strict=False in case it's compatible
+                try:
+                    D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
+                    print("✓ Loaded D_img checkpoint (compatibility check failed)")
+                except RuntimeError:
+                    print("⚠️  D_img checkpoint incompatible. Skipping load.")
 
             # Validate discriminator weights for NaN/Inf
             nan_found = False
@@ -302,7 +377,9 @@ def initialize_models(args, config, device, checkpoint_manager):
                     nan_found = True
             if nan_found:
                 print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+                # Use context dimension that matches the loaded model
+                ctx_dim = 256
+                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
 
     # Move to device
     diffuser.to(device)
@@ -326,6 +403,23 @@ def initialize_models(args, config, device, checkpoint_manager):
                 except Exception as e:
                     print(f"⚠️  Failed to auto-load text encoder: {e}")
 
+    # Ensure text encoder is in float32 for stability
+    text_encoder = text_encoder.float()
+
+    # Validate text encoder weights for NaN/Inf and reinitialize if needed
+    text_encoder_nan = False
+    for name, param in text_encoder.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"  ⚠️  WARNING: NaN/Inf in text_encoder parameter: {name}")
+            text_encoder_nan = True
+            break
+    if text_encoder_nan:
+        print("  ⚠️  Reinitializing text encoder due to NaN/Inf values")
+        text_encoder = BertTextEncoder(
+            embed_dim=args.text_embedding_dim,
+            pretrain_model=args.pretrained_bert_model or "distilbert-base-uncased",
+        ).to(device)
+
     return {
         "diffuser": diffuser,
         "compressor": compressor,
@@ -334,6 +428,7 @@ def initialize_models(args, config, device, checkpoint_manager):
         "text_encoder": text_encoder,
         "image_encoder": image_encoder,
         "D_img": D_img,
+        "model_config": model_config,  # Include model config for checkpoint saving
     }
 
 
@@ -353,6 +448,8 @@ def initialize_tokenizer(args):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    if not hasattr(tokenizer, "batch_encode_plus"):
+        tokenizer.batch_encode_plus = tokenizer
     return tokenizer
 
 
@@ -631,8 +728,24 @@ def train_legacy(args):
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators
-    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+    # Discriminators - determine context dimension from the compressor model
+    try:
+        context_dims_result = diffuser.compressor.get_context_dims()
+        # Handle case where it returns a tensor or other type
+        if hasattr(context_dims_result, "item"):
+            context_dims = int(context_dims_result.item())
+        else:
+            context_dims = int(context_dims_result)
+        ctx_dim = args.vae_dim + context_dims
+        print(
+            f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})"
+        )
+    except (AttributeError, TypeError, ValueError):
+        # Fallback for models that don't have get_context_dims method or return unexpected type
+        ctx_dim = args.vae_dim
+        print(f"Creating discriminator with ctx_dim={ctx_dim} (fallback: no context dims method)")
+
+    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
 
     # Initialize checkpoint manager for easier model management
     checkpoint_manager = CheckpointManager(
@@ -640,7 +753,13 @@ def train_legacy(args):
     )
 
     # Load checkpoints in parallel for faster resume
-    loaded_states = checkpoint_manager.load_models_parallel(checkpoint_path=args.model_checkpoint)
+    loaded_states, model_metadata = checkpoint_manager.load_models_parallel(
+        checkpoint_path=args.model_checkpoint
+    )
+
+    # Log loaded model metadata if available
+    if model_metadata:
+        print(f"✓ Loaded model metadata: {model_metadata}")
 
     # Apply loaded state dicts to models if they exist
     if loaded_states.get("diffuser.compressor"):
@@ -928,6 +1047,7 @@ def train_legacy(args):
             reconstruction_loss_fn=nn.L1Loss(),
             reconstruction_loss_min_fn=nn.MSELoss(),
             use_spade=args.train_spade,
+            spade_training_mode=args.spade_training_mode,
             kl_beta=args.kl_beta,
             kl_warmup_steps=args.kl_warmup_steps,
             kl_free_bits=args.kl_free_bits,
@@ -978,6 +1098,7 @@ def train_legacy(args):
                 sample_sizes=parsed_sample_sizes,
                 use_cfg=True,
                 guidance_scale=5.0,
+                num_inference_steps=args.sample_steps,
             )
 
     global_step = saved_global_step
@@ -1172,6 +1293,7 @@ def train_legacy(args):
                         discriminators=(
                             {"D_img": D_img} if args.train_vae and args.gan_training else None
                         ),
+                        model_config=None,  # Legacy training doesn't use factory
                     )
 
                     # Save learning rates
@@ -1243,6 +1365,7 @@ def train_legacy(args):
                                 sample_sizes=parsed_sample_sizes,
                                 use_cfg=True,
                                 guidance_scale=5.0,
+                                num_inference_steps=args.sample_steps,
                             )
                         last_sample_step = global_step
 
@@ -1259,6 +1382,7 @@ def train_legacy(args):
             diffuser=diffuser,
             text_encoder=text_encoder,
             discriminators={"D_img": D_img} if args.train_vae and args.gan_training else None,
+            model_config=None,  # Legacy training doesn't use factory
         )
 
         # Save learning rates
@@ -1508,6 +1632,12 @@ def parse_args():
         "--use_lpips", action="store_true", help="Enable LPIPS perceptual loss for VAE"
     )
     parser.add_argument("--train_spade", action="store_true", help="Use SPADE conditioning")
+    parser.add_argument(
+        "--spade_training_mode",
+        choices=["full", "alternate"],
+        default="full",
+        help="SPADE training mode: 'full' (always on) or 'alternate' (alternate on/off)",
+    )
     parser.add_argument("--train_diff", action="store_true", help="Train flow model")
     parser.add_argument(
         "--train_diff_full", action="store_true", help="Train flow with full schedule"
@@ -1572,6 +1702,12 @@ def parse_args():
         nargs="+",
         default=None,
         help="Sample image sizes. Can be integers (square) or WxH pairs (e.g., 512 768x512)",
+    )
+    parser.add_argument(
+        "--sample_steps",
+        type=int,
+        default=20,
+        help="Number of denoising steps for flow sampling",
     )
     parser.add_argument(
         "--reduced_min_sizes",
@@ -1732,6 +1868,11 @@ def parse_args():
                 args.use_lpips = config["training"]["use_lpips"]
             if "train_spade" in config["training"] and "train_spade" not in cli_provided:
                 args.train_spade = config["training"]["train_spade"]
+            if (
+                "spade_training_mode" in config["training"]
+                and "spade_training_mode" not in cli_provided
+            ):
+                args.spade_training_mode = config["training"]["spade_training_mode"]
             if "train_diff" in config["training"] and "train_diff" not in cli_provided:
                 args.train_diff = config["training"]["train_diff"]
             if "train_diff_full" in config["training"] and "train_diff_full" not in cli_provided:
@@ -1780,6 +1921,8 @@ def parse_args():
                 args.sample_captions = config["output"]["sample_captions"]
             if "sample_sizes" in config["output"] and "sample_sizes" not in cli_provided:
                 args.sample_sizes = config["output"]["sample_sizes"]
+            if "sample_steps" in config["output"] and "sample_steps" not in cli_provided:
+                args.sample_steps = config["output"]["sample_steps"]
 
         if "data" in config:
             if "reduced_min_sizes" in config["data"] and "reduced_min_sizes" not in cli_provided:

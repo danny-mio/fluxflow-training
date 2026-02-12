@@ -6,11 +6,7 @@ import tempfile
 import pytest
 import yaml
 
-from fluxflow_training.scripts.train import (
-    detect_config_mode,
-    parse_args,
-    validate_and_show_plan,
-)
+from fluxflow_training.scripts.train import detect_config_mode, parse_args, validate_and_show_plan
 
 
 class TestDetectConfigMode:

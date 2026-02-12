@@ -54,6 +54,7 @@ class TestTrainScriptSetup:
         args.train_vae = True
         args.gan_training = True
         args.train_spade = False
+        args.spade_training_mode = "full"
         args.train_diff = False
         args.train_diff_full = False
         args.kl_beta = 0.0001

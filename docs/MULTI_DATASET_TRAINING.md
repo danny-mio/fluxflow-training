@@ -26,20 +26,20 @@ training:
       dataset_name_2:
         type: webdataset
         # ... dataset-specific config
-    
+
     # 2. Set default dataset (optional)
     default_dataset: dataset_name_1
-    
+
     # 3. Assign datasets to steps
     steps:
       - name: step1
         dataset: dataset_name_1  # Use specific dataset
         # ... other step config
-      
+
       - name: step2
         dataset: dataset_name_2  # Switch dataset
         # ... other step config
-      
+
       - name: step3
         # No dataset specified - uses default_dataset
         # ... other step config
@@ -97,7 +97,7 @@ datasets:
     image_folder: /data/256x256
     captions_file: /data/captions_lowres.txt
     batch_size: 8
-  
+
   highres_dataset:
     type: local
     image_folder: /data/1024x1024
@@ -109,7 +109,7 @@ steps:
     dataset: lowres_dataset
     train_vae: true
     n_epochs: 10
-  
+
   - name: vae_highres
     dataset: highres_dataset
     train_vae: true
@@ -126,7 +126,7 @@ datasets:
     type: local
     image_folder: /data/faces
     captions_file: /data/captions_faces.txt
-  
+
   landscapes_dataset:
     type: local
     image_folder: /data/landscapes
@@ -137,7 +137,7 @@ steps:
     dataset: faces_dataset
     train_vae: true
     n_epochs: 10
-  
+
   - name: flow_combined
     dataset: landscapes_dataset
     train_diff: true
@@ -156,7 +156,7 @@ datasets:
     image_folder: /data/curated
     captions_file: /data/curated.txt
     batch_size: 2
-  
+
   remote_large:
     type: webdataset
     webdataset_url: "https://huggingface.co/datasets/my-dataset/data-{000..999}.tar"
@@ -169,7 +169,7 @@ steps:
     dataset: remote_large
     train_vae: true
     n_epochs: 50
-  
+
   - name: finetune_local
     dataset: local_curated
     train_vae: true
@@ -209,7 +209,7 @@ steps:
   - name: warmup
     dataset: high_res
     # Uses batch_size=2 from dataset
-  
+
   - name: main_training
     dataset: high_res
     batch_size: 4  # Override to 4 for this step only
@@ -278,7 +278,7 @@ training:
 When training is interrupted and resumed mid-epoch:
 
 - **Skip mechanism**: Dataloader wrapped to yield None for skipped batches without fetching data
-- **batch_idx preservation**: Batch counter increments correctly via enumerate(), preserving checkpoint/logging intervals  
+- **batch_idx preservation**: Batch counter increments correctly via enumerate(), preserving checkpoint/logging intervals
 - **Minimal overhead**: Skipped batches return None without downloading tar files or decoding images
 - **Works for all dataset types**: Both local and webdataset benefit from this optimization
 
@@ -292,7 +292,7 @@ for batch_idx, (imgs, input_ids) in enumerate(dataloader_wrapper):
     # Real training starts here
 ```
 
-Note: For WebDatasets, this avoids network downloads. For local datasets with ResumableDimensionSampler, 
+Note: For WebDatasets, this avoids network downloads. For local datasets with ResumableDimensionSampler,
 both the sampler's skip logic AND the wrapper's skip logic apply sequentially.
 
 ## Troubleshooting

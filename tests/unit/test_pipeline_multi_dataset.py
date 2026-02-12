@@ -2,10 +2,7 @@
 
 import pytest
 
-from fluxflow_training.training.pipeline_config import (
-    DatasetConfig,
-    parse_pipeline_config,
-)
+from fluxflow_training.training.pipeline_config import DatasetConfig, parse_pipeline_config
 
 
 class TestDatasetConfig:

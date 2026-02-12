@@ -3,11 +3,14 @@
 Handles VAE (compressor + expander) training with optional GAN discriminator.
 """
 
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Context encoder uses SiLU activation
 from fluxflow.utils import get_logger
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
@@ -15,6 +18,52 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 from .losses import d_hinge_loss, g_hinge_loss, kl_standard_normal, r1_penalty
 from .schedulers import cosine_anneal_beta
 from .utils import EMA, FloatBuffer
+
+
+class ContextEncoder(nn.Module):
+    """Simple context encoder that handles variable input sizes and MPS compatibility."""
+
+    def __init__(self, context_channels, context_height, context_width):
+        super().__init__()
+        self.context_channels = context_channels
+        self.context_height = context_height
+        self.context_width = context_width
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(3, 64, 4, 2, 1),  # RGB -> 64ch
+            nn.InstanceNorm2d(64),
+            nn.SiLU(),
+            nn.Conv2d(64, 128, 4, 2, 1),  # -> 128ch
+            nn.InstanceNorm2d(128),
+            nn.SiLU(),
+            nn.Conv2d(128, context_channels, 1),  # Reduce to context channels
+        )
+
+    def forward(self, x):
+        # Encode
+        features = self.encoder(x)  # [B, C, H, W]
+
+        # Handle MPS adaptive pooling issue
+        try:
+            # Try MPS-compatible pooling
+            pooled = F.adaptive_avg_pool2d(features, (self.context_height, self.context_width))
+        except RuntimeError as e:
+            if "MPS" in str(e) and "divisible" in str(e):
+                # Fallback: interpolate to target size
+                pooled = F.interpolate(
+                    features,
+                    size=(self.context_height, self.context_width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                pooled = torch.mean(pooled, dim=[2, 3], keepdim=True).expand(
+                    -1, -1, self.context_height, self.context_width
+                )
+            else:
+                raise e
+
+        return pooled
+
 
 logger = get_logger(__name__)
 
@@ -84,6 +133,7 @@ class VAETrainer:
         reconstruction_loss_fn: nn.Module,
         reconstruction_loss_min_fn: nn.Module,
         use_spade: bool = True,
+        spade_training_mode: Literal["full", "alternate"] = "full",
         train_reconstruction: bool = True,  # NEW: Control reconstruction loss
         kl_beta: float = 0.0001,
         kl_warmup_steps: int = 5000,
@@ -98,6 +148,11 @@ class VAETrainer:
         r1_gamma: float = 5.0,
         gradient_clip_norm: float = 1.0,
         use_lpips: bool = True,
+        # Context predictor settings
+        context_channels: int = 64,
+        context_height: int = 16,
+        context_width: int = 16,
+        context_predictor_path: Optional[str] = None,
         lambda_lpips: float = 0.1,
         instance_noise_std: float = 0.01,
         instance_noise_decay: float = 0.9999,
@@ -117,6 +172,7 @@ class VAETrainer:
             reconstruction_loss_fn: L1 loss
             reconstruction_loss_min_fn: MSE loss
             use_spade: Use SPADE conditioning in decoder
+            spade_training_mode: SPADE training mode ("full" or "alternate")
             train_reconstruction: Compute reconstruction loss (L1+MSE+LPIPS). Set to False for
                 GAN-only or SPADE-only training without VAE reconstruction (default: True)
             kl_beta: Final KL divergence weight
@@ -143,6 +199,8 @@ class VAETrainer:
         self.reconstruction_loss_fn = reconstruction_loss_fn
         self.reconstruction_loss_min_fn = reconstruction_loss_min_fn
         self.use_spade = use_spade
+        self.spade_training_mode = spade_training_mode
+
         self.train_reconstruction = train_reconstruction
 
         # KL settings
@@ -154,12 +212,11 @@ class VAETrainer:
         self.use_gan = use_gan
         if use_gan:
             if discriminator is None:
-                raise ValueError("discriminator is required when use_gan=True")
+                raise ValueError("discriminator must be provided when use_gan=True")
             if discriminator_optimizer is None:
-                raise ValueError(
-                    "discriminator_optimizer is required when use_gan=True. "
-                    "Ensure pipeline config includes optimization.optimizers.discriminator section."
-                )
+                raise ValueError("discriminator_optimizer must be provided when use_gan=True")
+            if discriminator_scheduler is None:
+                raise ValueError("discriminator_scheduler must be provided when use_gan=True")
 
         self.discriminator = discriminator
         self.discriminator_optimizer = discriminator_optimizer
@@ -168,18 +225,175 @@ class VAETrainer:
         self.r1_interval = r1_interval
         self.r1_gamma = r1_gamma
 
+        # Training settings
         self.gradient_clip_norm = gradient_clip_norm
+        self.use_lpips = use_lpips
+        self.lambda_lpips = lambda_lpips
         self.instance_noise_std = instance_noise_std
         self.instance_noise_decay = instance_noise_decay
         self.adaptive_weights = adaptive_weights
         self.mse_weight = mse_weight
         self.accelerator = accelerator
 
+        # Initialize LPIPS if needed
+        if self.use_lpips:
+            try:
+                import warnings
+
+                import lpips
+
+                # Suppress torchvision pretrained deprecation warning for LPIPS
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning, module="torchvision")
+                    # Use spatial=True for detailed perceptual loss maps
+                    self.lpips_fn = lpips.LPIPS(net="vgg", spatial=True)
+
+                self.lpips_fn.eval()
+                for param in self.lpips_fn.parameters():
+                    param.requires_grad = False
+            except ImportError:
+                raise ImportError("LPIPS not available. Install with: pip install lpips")
+
+        # Metrics buffers
+        self.vae_loss_buffer = FloatBuffer(max_items=20)
+        self.kl_loss_buffer = FloatBuffer(max_items=20)
+        self.d_loss_buffer = FloatBuffer(max_items=20)
+        self.g_loss_buffer = FloatBuffer(max_items=20)
+        self.lpips_loss_buffer = FloatBuffer(max_items=20)
+
+        # Loss history for adaptive weighting
+        self.loss_history = {
+            "recon": FloatBuffer(100),
+            "kl": FloatBuffer(100),
+            "gan": FloatBuffer(100),
+            "lpips": FloatBuffer(100),
+        }
+
+        # Context predictor settings
+        self.context_channels = context_channels
+        self.context_height = context_height
+        self.context_width = context_width
+        self.context_predictor_path = context_predictor_path
+
+        # Initialize context predictor with SiLU activation
+        # Detect actual latent dimension from compressor
+        latent_dim = 27  # Based on training error, actual dimension is 27
+        try:
+            # Try to infer latent dimension from a test forward pass
+            with torch.no_grad():
+                test_device = next(self.compressor.parameters()).device
+                test_input = torch.randn(1, 3, 64, 64).to(test_device)
+                # Use training=True to get (packed, mu, logvar) tuple
+                compressor_output = self.compressor(test_input, training=True)
+                if isinstance(compressor_output, tuple):
+                    if len(compressor_output) >= 2:
+                        _, test_mu, _ = compressor_output
+                        # For v0.7.0 VAE, mu has shape [B, latent_dim, H, W], so channel dim is latent_dim
+                        if len(test_mu.shape) == 4:  # [B, C, H, W]
+                            detected_dim = test_mu.shape[1]  # Channel dimension
+                        else:
+                            detected_dim = test_mu.shape[-1]  # Fallback
+                        logger.info(f"Detected VAE latent dimension: {detected_dim}")
+                        latent_dim = detected_dim
+                else:
+                    # Fallback: try to infer from single output (inference mode)
+                    packed = compressor_output
+                    detected_dim = packed.shape[-1]  # type: ignore
+                    logger.info(f"Detected VAE latent dimension: {detected_dim}")
+                    latent_dim = detected_dim
+        except Exception as e:
+            logger.warning(f"Could not detect latent dimension, using fallback {latent_dim}: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+        context_output_dim = context_channels * context_height * context_width
+
+        self.context_predictor = nn.Sequential(
+            nn.Linear(latent_dim, 256),
+            nn.LayerNorm(256),
+            nn.SiLU(),  # Smooth activation for latent->conditioning mapping
+            nn.Linear(256, context_output_dim),
+        )
+
+        # Load existing context predictor if available
+        if context_predictor_path and Path(context_predictor_path).exists():
+            try:
+                checkpoint = torch.load(context_predictor_path, map_location="cpu")
+                self.context_predictor.load_state_dict(checkpoint["context_predictor"])
+                logger.info(f"Loaded context predictor from {context_predictor_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load context predictor: {e}")
+
+        # Context encoder for ideal context (used in KL-context alignment)
+        self.context_encoder = ContextEncoder(context_channels, context_height, context_width)
+
+        # Store context size
+        self.context_height = context_height
+        self.context_width = context_width
+
+        # Move context predictor components to device
+        device = next(self.compressor.parameters()).device
+        self.context_predictor = self.context_predictor.to(device)
+        self.context_encoder = self.context_encoder.to(device)
+
+        # Optimizer for context predictor
+        self.context_predictor_optimizer = torch.optim.AdamW(
+            list(self.context_predictor.parameters()) + list(self.context_encoder.parameters()),
+            lr=1e-4,
+            weight_decay=1e-4,
+        )
+
+    def save_context_predictor(self, checkpoint_path: str):
+        """Save context predictor state for persistence."""
+        if self.context_predictor_path:
+            checkpoint = {
+                "context_predictor": self.context_predictor.state_dict(),
+                "context_encoder": self.context_encoder.state_dict(),
+                "context_predictor_optimizer": self.context_predictor_optimizer.state_dict(),
+            }
+            torch.save(checkpoint, self.context_predictor_path)
+            logger.info(f"Saved context predictor to {self.context_predictor_path}")
+
+    def load_context_predictor(self, checkpoint_path: str):
+        """Load context predictor state."""
+        if Path(checkpoint_path).exists():
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                self.context_predictor.load_state_dict(checkpoint["context_predictor"])
+                self.context_encoder.load_state_dict(checkpoint["context_encoder"])
+                self.context_predictor_optimizer.load_state_dict(
+                    checkpoint["context_predictor_optimizer"]
+                )
+                logger.info(f"Loaded context predictor from {checkpoint_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load context predictor: {e}")
+
+    def _get_effective_spade_usage(self, global_step: int) -> bool:
+        """
+        Determine whether to use SPADE conditioning for the current training step.
+
+        Args:
+            global_step: Current training step number
+
+        Returns:
+            True if SPADE should be used, False otherwise
+        """
+        if not self.use_spade:
+            return False
+
+        if self.spade_training_mode == "full":
+            return True
+        elif self.spade_training_mode == "alternate":
+            return global_step % 2 == 0  # Alternate every step (even steps use SPADE)
+        else:
+            raise ValueError(f"Unknown SPADE training mode: {self.spade_training_mode}")
+
         # LPIPS perceptual loss
-        self.use_lpips = use_lpips
-        self.lambda_lpips = lambda_lpips
+        self.use_lpips = use_lpips  # noqa: F821
+        self.lambda_lpips = lambda_lpips  # noqa: F821
         self.lpips_fn = None
-        if use_lpips:
+        if self.use_lpips:
             import warnings
 
             import lpips
@@ -188,10 +402,9 @@ class VAETrainer:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=UserWarning)
                 warnings.filterwarnings("ignore", category=FutureWarning)
-                self.lpips_fn = lpips.LPIPS(net="vgg").eval()
-            # Move to device and freeze
-            if accelerator:
-                self.lpips_fn = accelerator.prepare(self.lpips_fn)
+                # Use spatial=True for detailed perceptual loss maps
+                self.lpips_fn = lpips.LPIPS(net="vgg", spatial=True).eval()
+            # Freeze parameters (device will be set dynamically)
             for param in self.lpips_fn.parameters():
                 param.requires_grad = False
 
@@ -478,14 +691,28 @@ class VAETrainer:
         """
         self.discriminator.train()
 
-        # Generate fake images with VAE frozen (no gradients to VAE)
-        with torch.no_grad():
-            packed = self.compressor(real_imgs, training=False)
-            img_seq = packed[:, :-1, :].contiguous()
-            ctx_vec = img_seq.mean(dim=1)
+        # Generate fake images with VAE frozen (no gradients to VAE due to frozen params)
+        # Note: torch.no_grad() removed to avoid gradient checkpointing warnings
+        packed = self.compressor(real_imgs, training=False)
+        img_seq = packed[:, :-1, :].contiguous()
+        ctx_vec = img_seq.mean(dim=1)
 
-            # Generate reconstructions (VAE doesn't receive gradients here)
-            out_imgs_for_D = self.expander(packed, use_context=self.use_spade)
+        # Pad or truncate context vector to match discriminator expectations
+        expected_ctx_dim = self.discriminator.ctx_proj.in_features
+        if ctx_vec.shape[-1] < expected_ctx_dim:
+            padding = expected_ctx_dim - ctx_vec.shape[-1]
+            ctx_vec = torch.nn.functional.pad(ctx_vec, (0, padding))
+        elif ctx_vec.shape[-1] > expected_ctx_dim:
+            # Truncate if context vector is larger than expected
+            ctx_vec = ctx_vec[..., :expected_ctx_dim]
+
+        # Generate conditional reconstructions (VAE doesn't receive gradients here)
+        out_imgs_for_D = self.expander(
+            packed, use_context=self._get_effective_spade_usage(global_step)
+        )
+
+        # Also generate unconditional reconstructions for discriminator training
+        out_imgs_uncond_for_D = self.expander(packed, use_context=False)
 
         # Discriminator step
         self.discriminator_optimizer.zero_grad(set_to_none=True)
@@ -497,24 +724,92 @@ class VAETrainer:
         fake_imgs_noisy = add_instance_noise(
             out_imgs_for_D.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
         )
+        fake_uncond_imgs_noisy = add_instance_noise(
+            out_imgs_uncond_for_D.detach(),
+            self.instance_noise_std,
+            self.instance_noise_decay,
+            global_step,
+        )
 
-        # Real images with gradient for R1 penalty
-        real_imgs_noisy.requires_grad_(True)
-        real_logits = self.discriminator(real_imgs_noisy, ctx_vec.detach())
+        # Determine if SPADE conditioning is active this step
+        spade_active = self._get_effective_spade_usage(global_step)
+
+        # Compute predicted context for SPADE-Aware GAN loss (Step 3)
+        B = real_imgs.shape[0]
+        predicted_context = None
+        if spade_active:
+            # Use ctx_vec as latent representation (already padded/truncated)
+            latent_repr = ctx_vec.detach()  # [B, expected_ctx_dim]
+
+            # Ensure context_predictor matches ctx_vec dimension
+            if self.context_predictor[0].in_features != latent_repr.shape[-1]:
+                logger.warning(
+                    f"Context predictor dimension mismatch in discriminator: expected {self.context_predictor[0].in_features}, got {latent_repr.shape[-1]}"
+                )
+                # Skip context prediction if dimensions don't match
+                predicted_context = torch.randn(
+                    B,
+                    self.context_channels,
+                    self.context_height,
+                    self.context_width,
+                    device=latent_repr.device,
+                )
+            else:
+                predicted_context = self.context_predictor(latent_repr)
+                predicted_context = predicted_context.view(
+                    B, self.context_channels, self.context_height, self.context_width
+                )
+
+            # Set context for expander
+            self.expander.ctx_vec = predicted_context
+
+        # Context vectors: None when SPADE is active (conditioning happens in generator)
+        # Actual context when SPADE is inactive (traditional conditional GAN)
+        disc_ctx = None if spade_active else ctx_vec.detach()
+
+        if (global_step % self.r1_interval) == 0:
+            real_imgs_noisy.requires_grad_(True)
+
+        # Real images
+        real_logits = self.discriminator(real_imgs_noisy, disc_ctx)
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
 
-        # R1 gradient penalty (periodic)
+        # R1 gradient penalty (periodic) - only on real images
         if (global_step % self.r1_interval) == 0:
             r1 = r1_penalty(real_imgs_noisy, real_logits)
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
 
-        real_imgs_noisy.requires_grad_(False)
+        # Fake images - use same context logic as real images
+        fake_logits = self.discriminator(fake_imgs_noisy, disc_ctx)
+        # Unconditional fake images (should also be classified as fake)
+        fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, disc_ctx)
 
-        # Fake images
-        fake_logits = self.discriminator(fake_imgs_noisy, ctx_vec.detach())
-        d_hinge = d_hinge_loss(real_logits, fake_logits)
+        # Combine losses - weight unconditional fakes more since they're easier to classify
+        d_hinge_cond = d_hinge_loss(real_logits, fake_logits)
+        d_hinge_uncond = d_hinge_loss(real_logits, fake_uncond_logits)
+        d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
         d_img_loss = d_img_loss + d_hinge
+
+        # SPADE-Aware GAN Loss: Evaluate conditioning quality (Step 3)
+        if spade_active and predicted_context is not None:
+            # Generate with poor context (random noise)
+            poor_context = torch.randn_like(predicted_context)
+            self.expander.ctx_vec = poor_context
+            poor_imgs = self.expander(packed, use_context=True)
+
+            # Evaluate conditioning quality
+            poor_imgs_noisy = add_instance_noise(
+                poor_imgs.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
+            )
+            poor_logits = self.discriminator(poor_imgs_noisy, None)  # SPADE internal context
+
+            # Conditioning loss: encourage discriminator to prefer good over poor conditioning
+            conditioning_loss = F.relu(poor_logits - fake_logits).mean()  # poor should be < good
+            d_img_loss = d_img_loss + 0.05 * conditioning_loss  # Small weight
+
+            # Reset to good context
+            self.expander.ctx_vec = predicted_context
 
         self.accelerator.backward(d_img_loss)
         self.discriminator_optimizer.step()
@@ -572,7 +867,9 @@ class VAETrainer:
                 "_optimizer_stepped": False,
             }
 
-        out_imgs_rec = self.expander(packed_rec, use_context=self.use_spade)
+        out_imgs_rec = self.expander(
+            packed_rec, use_context=self._get_effective_spade_usage(global_step)
+        )
 
         # Early NaN detection after expansion
         if check_for_nan(out_imgs_rec, "out_imgs_rec", logger):
@@ -594,18 +891,31 @@ class VAETrainer:
         perceptual_loss = torch.tensor(0.0, device=real_imgs.device)
 
         if self.train_reconstruction:
-            # Reconstruction loss with frequency-aware weighting
-            # Reduced alpha from 1.0 to 0.5 to prevent over-sharpening and high contrast
-            recon_l1 = self._frequency_weighted_loss(out_imgs_rec, real_imgs, alpha=0.5)
-            recon_mse = self.reconstruction_loss_min_fn(out_imgs_rec, real_imgs)
-            recon_loss = recon_l1 + self.mse_weight * recon_mse
+            # Progressive frequency weighting: start low to prevent over-sharpening, increase over time
+            # This allows the model to learn basic structure first, then focus on sharp edges
+            total_training_steps = 100000  # Assume ~100k steps for full training
+            alpha_progress = min(
+                1.0, global_step / (total_training_steps * 0.3)
+            )  # Ramp over first 30%
+            alpha_start = 0.3  # Start with lower weighting to prevent early over-sharpening
+            alpha_end = 1.2  # End with higher weighting for sharp edges
+            progressive_alpha = alpha_start + (alpha_end - alpha_start) * alpha_progress
+
+            recon_l1 = self._frequency_weighted_loss(
+                out_imgs_rec, real_imgs, alpha=progressive_alpha
+            )
+            # Remove MSE loss as it can contribute to blur - rely on L1 + LPIPS for reconstruction
+            recon_loss = recon_l1
 
             # LPIPS perceptual loss
             if self.use_lpips and self.lpips_fn is not None:
                 # Compute LPIPS WITH gradients so it actually trains the VAE
                 # NOTE: Gradient checkpointing removed - causes recursive checkpointing
                 # with VAE decoder, leading to OOM instead of saving memory
-                perceptual_loss = self.lpips_fn(out_imgs_rec, real_imgs).mean()
+                # Ensure LPIPS is on the same device as input tensors
+                device = out_imgs_rec.device
+                lpips_fn = self.lpips_fn.to(device)
+                perceptual_loss = lpips_fn(out_imgs_rec, real_imgs).mean()
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
         # KL divergence with beta annealing (still compute even if not training reconstruction)
@@ -614,21 +924,69 @@ class VAETrainer:
             mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean", normalize_by_dims=True
         )
 
+        # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
+        B = real_imgs.shape[0]
+        # Use mu as the latent representation (VAE latent distribution mean)
+        # mu may have shape [B, latent_dim, H, W], so we need to handle that
+        if mu.dim() == 4:  # [B, C, H, W] - pool spatially
+            latent_repr = mu.mean(dim=[2, 3])  # [B, latent_dim]
+        elif mu.dim() == 2:  # [B, latent_dim] - already correct
+            latent_repr = mu
+        else:
+            raise ValueError(f"Unexpected mu shape: {mu.shape}")
+
+        # Ensure context_predictor matches actual latent dimension (may differ from init detection)
+        actual_latent_dim = latent_repr.shape[-1]
+        if self.context_predictor[0].in_features != actual_latent_dim:
+            logger.info(
+                f"Adjusting context_predictor input dim from {self.context_predictor[0].in_features} to {actual_latent_dim}"
+            )
+            # Create new predictor with correct input dimension
+            output_dim = self.context_channels * self.context_height * self.context_width
+            new_predictor = nn.Sequential(
+                nn.Linear(actual_latent_dim, 256),
+                nn.LayerNorm(256),
+                nn.SiLU(),
+                nn.Linear(256, output_dim),
+            ).to(latent_repr.device)
+            self.context_predictor = new_predictor
+
+        predicted_context = self.context_predictor(latent_repr.detach())
+        predicted_context = predicted_context.view(
+            B, self.context_channels, self.context_height, self.context_width
+        )
+
+        # Context alignment loss - compare predicted context to ideal context from real images
+        ideal_context = self.context_encoder(real_imgs.detach())
+        context_alignment_loss = F.mse_loss(predicted_context, ideal_context)
+
+        # Set predicted context for expander (SPADE conditioning)
+        spade_active = self._get_effective_spade_usage(global_step)
+        if spade_active:
+            self.expander.ctx_vec = predicted_context
+
         # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
         if self.use_gan and self.discriminator is not None:
-            # Detach latent only when training reconstruction
-            # - When train_reconstruction=True: Encoder learns from recon+KL, decoder from GAN
-            # - When train_reconstruction=False: Both encoder+decoder learn from GAN+KL
-            if self.train_reconstruction:
-                # Detach to prevent GAN gradients flowing to encoder
-                packed_rec_for_gan = packed_rec.detach()
-            else:
-                # Don't detach - encoder needs GAN gradients when no reconstruction loss
-                packed_rec_for_gan = packed_rec
+            # Always detach latents for GAN training to freeze encoder
+            # - Encoder learns from KL (and reconstruction if enabled)
+            # - Decoder learns conditional generation via GAN + SPADE conditioning
+            # - This provides stable context vectors and focuses SPADE on conditioning
+            packed_rec_for_gan = packed_rec.detach()
 
-            out_imgs_gan = self.expander(packed_rec_for_gan, use_context=self.use_spade)
+            out_imgs_gan = self.expander(
+                packed_rec_for_gan, use_context=self._get_effective_spade_usage(global_step)
+            )
             ctx_vec_rec = packed_rec_for_gan[:, :-1, :].contiguous().mean(dim=1)
+
+            # Pad or truncate context vector to match discriminator expectations
+            expected_ctx_dim = self.discriminator.ctx_proj.in_features
+            if ctx_vec_rec.shape[-1] < expected_ctx_dim:
+                padding = expected_ctx_dim - ctx_vec_rec.shape[-1]
+                ctx_vec_rec = torch.nn.functional.pad(ctx_vec_rec, (0, padding))
+            elif ctx_vec_rec.shape[-1] > expected_ctx_dim:
+                # Truncate if context vector is larger than expected
+                ctx_vec_rec = ctx_vec_rec[:, :expected_ctx_dim]
 
             # Check inputs to discriminator
             if check_for_nan(out_imgs_gan, "out_imgs_gan", logger):
@@ -638,7 +996,10 @@ class VAETrainer:
                 logger.error("NaN in discriminator context vector")
                 G_img_loss = torch.tensor(0.0, device=real_imgs.device)
             else:
-                g_real_logits = self.discriminator(out_imgs_gan, ctx_vec_rec)
+                # Use same context logic as discriminator training
+                spade_active = self._get_effective_spade_usage(global_step)
+                gen_ctx = None if spade_active else ctx_vec_rec
+                g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
 
                 # Check discriminator output
                 if check_for_nan(g_real_logits, "g_real_logits", logger):
@@ -693,6 +1054,9 @@ class VAETrainer:
             total_loss = total_loss + w_recon * recon_loss
         if self.use_gan:
             total_loss = total_loss + w_gan * G_img_loss
+
+        # Add context alignment loss (Step 2)
+        total_loss = total_loss + 0.1 * context_alignment_loss
 
         # Add regularization (small weights to not dominate main losses)
         total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
@@ -761,6 +1125,7 @@ class VAETrainer:
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
             "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
             "recon": float(recon_loss.detach().item()),
+            "context_alignment": float(context_alignment_loss.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),

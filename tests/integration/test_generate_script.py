@@ -110,12 +110,7 @@ class TestGenerateScriptGeneration:
     @pytest.fixture
     def small_pipeline(self):
         """Create a small pipeline for testing."""
-        from fluxflow.models import (
-            FluxCompressor,
-            FluxExpander,
-            FluxFlowProcessor,
-            FluxPipeline,
-        )
+        from fluxflow.models import FluxCompressor, FluxExpander, FluxFlowProcessor, FluxPipeline
 
         device = torch.device("cpu")
         compressor = FluxCompressor(d_model=32, use_attention=False).to(device)

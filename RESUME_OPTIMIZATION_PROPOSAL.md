@@ -35,7 +35,7 @@ When training is interrupted and resumed:
 ```
 Resume from batch 10,000 with batch_size=2:
 - Downloads: ~20,000 images from shards
-- Decodes: ~20,000 images 
+- Decodes: ~20,000 images
 - Uses: 0 images (all skipped)
 - Time: 10-30 minutes of wasted work
 ```
@@ -63,7 +63,7 @@ if step_idx == start_step and epoch == start_epoch and batch_idx < start_batch:
     if current_dataset_name and self.config.datasets:
         dataset_config = self.config.datasets.get(current_dataset_name)
         is_webdataset = dataset_config and dataset_config.type == "webdataset"
-    
+
     if not is_webdataset:
         continue  # Only skip for local datasets
 ```
@@ -183,7 +183,7 @@ Resetting batch_idx would:
 
 **Change**: Wrap the WebDataset iterator to track position without downloading/decoding.
 
-**Key Insight**: 
+**Key Insight**:
 - We need to maintain batch_idx for all the logic above
 - But we DON'T need to actually process those batches
 - Solution: Track position in a counter without yielding data
@@ -192,15 +192,15 @@ Resetting batch_idx would:
 ```python
 class FastForwardIterator:
     """Wrapper that fast-forwards an iterator without processing items."""
-    
+
     def __init__(self, iterator, skip_count=0):
         self.iterator = iterator
         self.skip_count = skip_count
         self.current = 0
-    
+
     def __iter__(self):
         return self
-    
+
     def __next__(self):
         # Fast-forward: just increment counter without yielding
         while self.current < self.skip_count:
@@ -208,7 +208,7 @@ class FastForwardIterator:
             # Return None or dummy data - will be skipped by continue logic
             # This way batch_idx increments but we don't download/decode
             return None, None
-        
+
         # Past skip point - yield real data
         return next(self.iterator)
 
@@ -220,7 +220,7 @@ if step_idx == start_step and epoch == start_epoch and start_batch > 0:
     if current_dataset_name and self.config.datasets:
         dataset_config = self.config.datasets.get(current_dataset_name)
         is_webdataset = dataset_config and dataset_config.type == "webdataset"
-    
+
     if is_webdataset:
         logger.info(f"WebDataset: Using fast-forward to batch {start_batch} (no downloads)")
         # Wrap dataloader to fast-forward without downloading
@@ -231,7 +231,7 @@ for batch_idx, (imgs, input_ids) in enumerate(dataloader):
     # Skip None batches from fast-forward
     if imgs is None:
         continue
-    
+
     # ... rest of training logic
 ```
 
@@ -263,7 +263,7 @@ for batch_idx, (imgs, input_ids) in enumerate(dataloader):
 if step_idx == start_step and epoch == start_epoch and start_batch > 0:
     logger.info(f"Resuming from batch {start_batch}...")
     logger.info(f"Note: This may take time for WebDatasets (downloading required)")
-    
+
     # Add progress counter
     skip_progress = 0
     skip_total = start_batch

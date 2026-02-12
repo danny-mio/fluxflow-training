@@ -1,7 +1,7 @@
 # Training Memory and Speed Optimizations
 
-**Branch**: `feature/memory-speed-optimizations`  
-**Status**: ✅ Tested on CUDA, MPS, and CPU  
+**Branch**: `feature/memory-speed-optimizations`
+**Status**: ✅ Tested on CUDA, MPS, and CPU
 **Expected Impact**: 10-20% faster, stable memory usage
 
 ---
@@ -116,7 +116,7 @@ else:
 ---
 
 ### 5. DataLoader Prefetching 🚀
-**Files**: 
+**Files**:
 - `src/fluxflow_training/scripts/train.py:360`
 - `src/fluxflow_training/scripts/train.py:663`
 
@@ -151,7 +151,7 @@ dataloader_kwargs = {
 if torch.cuda.is_available():
     mem_allocated_gb = torch.cuda.memory_allocated() / 1e9
     mem_str = f" | GPU: {mem_allocated_gb:.1f}GB"
-    
+
     # Warn if approaching memory limit (85%+)
     if i % (args.log_interval * 10) == 0:
         max_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9

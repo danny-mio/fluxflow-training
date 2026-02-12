@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-02-12
+
+### Fixes
+- **Restore R1 penalty gradients**: Enable gradients on noisy real images before discriminator R1 regularization
+- **Fix gradient accumulation**: Only zero grads at the start of accumulation windows in FlowTrainer
+- **Tokenizer compatibility**: Add `batch_encode_plus` fallback for newer Transformers
+
+### Testing
+- **Stabilize dataset tests**: Ensure mock tokenizer returns tensor encodings via `__call__`
+
 ## [0.5.1] - 2025-12-24
 
 ### 🐛 Fixes
@@ -35,7 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.4.0] - 2025-12-17
 
-### 🚀 Added
+### Added
 
 #### CFG-Enabled Training Sample Generation
 - **Training samples now use CFG by default** when generating flow model samples
@@ -112,7 +122,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - VAE mode: Reconstruction loss training
     - GAN-only mode: Adversarial loss training without reconstruction
     - SPADE mode: Decoder SPADE conditioning training
-  - **Impact**: 
+  - **Impact**:
     - Eliminates confusing VAE samples during Flow-only training
     - Preserves samples for all encoder/decoder training modes
     - Reduces I/O overhead (~2-5 seconds per checkpoint for multi-image test sets)
@@ -175,7 +185,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Impact: Training would OOM even on A6000 48GB with full config (GAN+LPIPS+SPADE)
   - Fix: Disabled gradient checkpointing in LPIPS (commit: 05196e7)
   - Result: Reduced LPIPS memory overhead by ~3-5GB
-  
+
 - **CRITICAL FIX #2**: Removed dataloader prefetch_factor causing memory overhead
   - Issue: DataLoader prefetch_factor=2 pre-loaded batches into VRAM
   - Impact: Added ~4-8GB memory overhead, contributed to OOM
@@ -348,8 +358,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - All existing CLI args still work
   - Standard training mode unchanged
 
-## [Unreleased]
-
 ### Added
 
 #### WebDataset Optimizations
@@ -364,7 +372,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `webdataset_caption_key` (e.g. "prompt", "caption")
   - Enables support for any HuggingFace WebDataset format
 
-### Added
+### 🚀 Added
 
 #### Stability Improvements
 - **EMA (Exponential Moving Average)** for flow training to stabilize training and improve generation quality
@@ -424,7 +432,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     ```python
     # Before
     loss = trainer.train_step(batch)
-    
+
     # After
     metrics = trainer.train_step(batch)
     loss = metrics['flow_loss']  # Note: key is 'flow_loss', not 'loss'

@@ -31,7 +31,7 @@ echo "3. Checking configuration..."
 if [ -f "config.local.sh" ]; then
     echo "   ✓ config.local.sh exists"
     source config.local.sh
-    
+
     if [ "$USE_TT2M" != true ]; then
         if [ ! -z "$DATA_PATH" ] && [ -d "$DATA_PATH" ]; then
             echo "   ✓ DATA_PATH exists: $DATA_PATH"
@@ -39,7 +39,7 @@ if [ -f "config.local.sh" ]; then
             echo "   ✗ DATA_PATH not found: $DATA_PATH"
             errors=$((errors + 1))
         fi
-        
+
         if [ ! -z "$DATASET" ] && [ -f "$DATASET" ]; then
             echo "   ✓ DATASET file exists: $DATASET"
         else

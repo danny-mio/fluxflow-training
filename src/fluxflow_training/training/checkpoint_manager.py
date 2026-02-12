@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
+import safetensors
 import safetensors.torch
 import torch
 from fluxflow.utils import get_logger
@@ -85,6 +86,7 @@ class CheckpointManager:
         text_encoder: nn.Module,
         discriminators: Optional[dict[str, nn.Module]] = None,
         save_pretrained: bool = False,
+        model_config: Optional[dict[str, Any]] = None,
     ) -> None:
         """
         Save model checkpoints.
@@ -94,12 +96,25 @@ class CheckpointManager:
             text_encoder: Text encoder model
             discriminators: Optional dict of discriminator models
             save_pretrained: Whether to save in HuggingFace format
+            model_config: Optional model configuration dict with version/type info
         """
         logger.info(f"Saving model checkpoints to {self.output_dir}")
 
+        # Create metadata for model configuration
+        metadata = {}
+        if model_config:
+            if "model_type" in model_config:
+                metadata["model_type"] = model_config["model_type"]
+            if "model_version" in model_config:
+                metadata["model_version"] = model_config["model_version"]
+            if "vae_dim" in model_config:
+                metadata["vae_dim"] = str(model_config["vae_dim"])
+
         # Save diffuser (compressor + flow + expander)
         diffuser_state = {f"diffuser.{k}": v for k, v in diffuser.state_dict().items()}
-        safetensors.torch.save_file(diffuser_state, str(self.model_path))
+        safetensors.torch.save_file(
+            diffuser_state, str(self.model_path), metadata=metadata if metadata else None
+        )
         logger.debug(f"✓ Saved diffuser to {self.model_path}")
 
         # Save text encoder
@@ -117,7 +132,7 @@ class CheckpointManager:
 
     def load_models_parallel(
         self, checkpoint_path: Optional[Union[str, Path]] = None
-    ) -> dict[str, Optional[dict[str, Any]]]:
+    ) -> tuple[dict[str, Optional[dict[str, Any]]], Optional[dict[str, str]]]:
         """
         Load model checkpoints in parallel for faster resume.
 
@@ -125,7 +140,9 @@ class CheckpointManager:
             checkpoint_path: Optional path to main checkpoint (uses default if None)
 
         Returns:
-            Dictionary mapping component names to loaded state dicts
+            Tuple of (state_dicts, metadata) where:
+            - state_dicts: Dictionary mapping component names to loaded state dicts
+            - metadata: Dictionary with model configuration metadata (model_type, model_version, etc.)
         """
         if checkpoint_path is None:
             checkpoint_path = self.model_path
@@ -145,6 +162,9 @@ class CheckpointManager:
         if d_img_path.exists():
             files_to_load.append((str(d_img_path), "D_img"))
 
+        # Initialize metadata
+        metadata = None
+
         if checkpoint_path.exists():
             # Load main checkpoint components
             files_to_load.append((str(checkpoint_path), "diffuser.compressor"))
@@ -155,9 +175,18 @@ class CheckpointManager:
             if not self.text_encoder_path.exists():
                 files_to_load.append((str(checkpoint_path), "text_encoder"))
 
+            # Load metadata from main checkpoint
+            try:
+                with safetensors.safe_open(checkpoint_path, framework="pt", device="cpu") as f:
+                    if hasattr(f, "metadata") and f.metadata():
+                        metadata = dict(f.metadata())
+                        logger.debug(f"✓ Loaded model metadata: {metadata}")
+            except Exception as e:
+                logger.warning(f"Could not load metadata from {checkpoint_path}: {e}")
+
         if not files_to_load:
             logger.warning("No model checkpoints found")
-            return {}
+            return {}, metadata
 
         logger.info(f"Loading {len(files_to_load)} checkpoint components in parallel...")
 
@@ -182,7 +211,7 @@ class CheckpointManager:
             if state:
                 logger.debug(f"✓ Loaded {component}")
 
-        return results
+        return results, metadata
 
     def save_training_state(
         self,
