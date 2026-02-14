@@ -9,9 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [0.7.1] - 2026-02-14
 
 ### Fixes
-- **Normalize timesteps**: Base normalization on `num_train_timesteps` and `start_step`
+- **Normalize timesteps**: Base normalization on the active window (`start_step` to `num_train_timesteps`)
 - **Scheduler first step**: Correct `_first_step` handling so the scheduler advances properly
-- **Context optimizer reset**: Ensure predictor/encoder optimizer steps and reinitialize on dimension changes
+- **Context optimizer handling**: Prepare/step predictor optimizer safely with accelerator and reinit on dim changes
 
 ## [0.7.0] - 2026-02-12
 
