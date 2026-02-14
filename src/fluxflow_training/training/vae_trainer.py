@@ -344,6 +344,8 @@ class VAETrainer:
             weight_decay=1e-4,
         )
 
+        self._prepare_context_components()
+
     def save_context_predictor(self, checkpoint_path: str):
         """Save context predictor state for persistence."""
         if self.context_predictor_path:
@@ -368,6 +370,32 @@ class VAETrainer:
                 logger.info(f"Loaded context predictor from {checkpoint_path}")
             except Exception as e:
                 logger.warning(f"Failed to load context predictor: {e}")
+
+    def _prepare_context_components(self) -> None:
+        if self.accelerator is None:
+            return
+
+        try:
+            prepared = self.accelerator.prepare(
+                self.context_predictor,
+                self.context_encoder,
+                self.context_predictor_optimizer,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to prepare context components with accelerator: {exc}")
+            return
+
+        if isinstance(prepared, tuple) and len(prepared) == 3:
+            (
+                self.context_predictor,
+                self.context_encoder,
+                self.context_predictor_optimizer,
+            ) = prepared
+        else:
+            logger.warning(
+                "Accelerator.prepare returned unexpected result for context components; "
+                "skipping prepare."
+            )
 
     def _get_effective_spade_usage(self, global_step: int) -> bool:
         """
@@ -957,6 +985,8 @@ class VAETrainer:
                 weight_decay=1e-4,
             )
 
+            self._prepare_context_components()
+
         predicted_context = self.context_predictor(latent_repr.detach())
         predicted_context = predicted_context.view(
             B, self.context_channels, self.context_height, self.context_width
@@ -1121,8 +1151,12 @@ class VAETrainer:
         # Clip gradients (only VAE parameters)
         self.accelerator.clip_grad_norm_(vae_params, self.gradient_clip_norm)
 
-        self.optimizer.step()
-        self.context_predictor_optimizer.step()
+        if self.accelerator is not None and hasattr(self.accelerator, "step"):
+            self.accelerator.step(self.optimizer)
+            self.accelerator.step(self.context_predictor_optimizer)
+        else:
+            self.optimizer.step()
+            self.context_predictor_optimizer.step()
 
         # Return dict matching original tuple behavior:
         # vae = recon_loss (NOT total_loss which includes adaptive weighting and can be huge/negative)

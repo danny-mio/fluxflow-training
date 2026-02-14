@@ -240,7 +240,7 @@ class FlowTrainer:
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
         # Predict (flow processor expects normalized timesteps in [0, 1]).
-        denom = float(max(1, self.num_train_timesteps - 1))
+        denom = float(max(1, (self.num_train_timesteps - 1) - self.start_step))
         t_model = ((t.float() - float(self.start_step)) / denom).clamp(0.0, 1.0)
         pred = self.flow_processor(full_input, text_embeddings, t_model)
 
