@@ -240,7 +240,8 @@ class FlowTrainer:
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
         # Predict (flow processor expects normalized timesteps in [0, 1]).
-        t_model = (t.float() / 999.0).clamp(0.0, 1.0)
+        denom = float(max(1, self.num_train_timesteps - 1))
+        t_model = ((t.float() - float(self.start_step)) / denom).clamp(0.0, 1.0)
         pred = self.flow_processor(full_input, text_embeddings, t_model)
 
         # Extract predicted sequence (exclude HW vector)
@@ -396,8 +397,9 @@ class FlowTrainer:
                     self.text_encoder_scheduler.step(loss_value)  # type: ignore[arg-type]
                 else:
                     self.text_encoder_scheduler.step()  # type: ignore[call-arg]
-        else:
-            self._first_step = False
+
+            if self._first_step:
+                self._first_step = False
 
         # Return comprehensive metrics
         metrics = {

@@ -832,6 +832,7 @@ class VAETrainer:
             - lpips_loss: LPIPS perceptual loss (if enabled)
         """
         self.optimizer.zero_grad(set_to_none=True)
+        self.context_predictor_optimizer.zero_grad(set_to_none=True)
 
         # Check input for NaN/Inf
         if check_for_nan(real_imgs, "input_images", logger):
@@ -950,6 +951,11 @@ class VAETrainer:
                 nn.Linear(256, output_dim),
             ).to(latent_repr.device)
             self.context_predictor = new_predictor
+            self.context_predictor_optimizer = torch.optim.AdamW(
+                list(self.context_predictor.parameters()) + list(self.context_encoder.parameters()),
+                lr=1e-4,
+                weight_decay=1e-4,
+            )
 
         predicted_context = self.context_predictor(latent_repr.detach())
         predicted_context = predicted_context.view(
@@ -1116,6 +1122,7 @@ class VAETrainer:
         self.accelerator.clip_grad_norm_(vae_params, self.gradient_clip_norm)
 
         self.optimizer.step()
+        self.context_predictor_optimizer.step()
 
         # Return dict matching original tuple behavior:
         # vae = recon_loss (NOT total_loss which includes adaptive weighting and can be huge/negative)
