@@ -1151,7 +1151,12 @@ class VAETrainer:
         # Clip gradients (only VAE parameters)
         self.accelerator.clip_grad_norm_(vae_params, self.gradient_clip_norm)
 
-        if self.accelerator is not None and hasattr(self.accelerator, "step"):
+        accelerator_step = (
+            self.accelerator is not None
+            and hasattr(self.accelerator, "step")
+            and callable(getattr(self.accelerator, "step"))
+        )
+        if accelerator_step:
             self.accelerator.step(self.optimizer)
             self.accelerator.step(self.context_predictor_optimizer)
         else:
