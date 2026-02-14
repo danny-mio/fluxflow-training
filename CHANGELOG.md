@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-02-14
+
+### Fixes
+- **Normalize timesteps**: Base normalization on `num_train_timesteps` and `start_step`
+- **Scheduler first step**: Correct `_first_step` handling so the scheduler advances properly
+- **Context optimizer reset**: Ensure predictor/encoder optimizer steps and reinitialize on dimension changes
+
 ## [0.7.0] - 2026-02-12
 
 ### Fixes
