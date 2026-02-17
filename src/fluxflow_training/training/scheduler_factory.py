@@ -170,11 +170,8 @@ def create_scheduler(
         factor = scheduler_config.get("factor", 0.1)
         patience = scheduler_config.get("patience", 10)
         threshold = scheduler_config.get("threshold", 1e-4)
-        return cast(
-            ReduceLROnPlateau,
-            ReduceLROnPlateau(
-                optimizer, mode=mode, factor=factor, patience=patience, threshold=threshold
-            ),
+        return ReduceLROnPlateau(
+            optimizer, mode=mode, factor=factor, patience=patience, threshold=threshold
         )
 
     else:
