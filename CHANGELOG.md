@@ -6,7 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [0.7.1] - 2026-02-14
+## [0.7.1] - 2026-02-17
+
+### Features
+- **VAE loss component toggles**: Add configurable enable/disable for KL divergence, color statistics, histogram matching, contrast regularization, and coarseness losses
+- **Coarseness loss**: New per-channel texture loss that matches local patch variance distributions between predicted and target images
 
 ### Fixes
 - **Normalize timesteps**: Base normalization on the active window (`start_step` to `num_train_timesteps`)

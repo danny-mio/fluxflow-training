@@ -89,6 +89,13 @@ training:
   kl_warmup_steps: 5000
   kl_free_bits: 0.0
 
+  # VAE loss component settings
+  train_kl: true
+  train_colorstats: true
+  train_histogram: true
+  train_contrast: true
+  train_coarseness: true
+
   # GAN settings
   lambda_adv: 0.5
 

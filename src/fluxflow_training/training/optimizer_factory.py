@@ -3,7 +3,7 @@ Optimizer factory for creating optimizers based on configuration.
 Supports per-model optimizer selection with customizable hyperparameters.
 """
 
-from typing import Any, Dict, Iterator
+from typing import Any, Dict, Iterator, cast
 
 import torch.nn as nn
 import torch.optim as optim
@@ -103,7 +103,7 @@ def create_optimizer(
             f"Supported optimizers: {list(SUPPORTED_OPTIMIZERS.keys())}"
         )
 
-    optimizer_class = SUPPORTED_OPTIMIZERS[optimizer_type]
+    optimizer_class = cast(type[optim.Optimizer], SUPPORTED_OPTIMIZERS[optimizer_type])
 
     # Common parameters
     kwargs = {"lr": lr}
@@ -139,7 +139,7 @@ def create_optimizer(
         kwargs["momentum"] = optimizer_config.get("momentum", 0.0)
         kwargs["centered"] = optimizer_config.get("centered", False)
 
-    result: optim.Optimizer = optimizer_class(parameters, **kwargs)  # type: ignore[call-arg]
+    result: optim.Optimizer = optimizer_class(parameters, **kwargs)
     return result
 
 

@@ -725,12 +725,11 @@ class TestLoggingOutput:
         assert 'vae_errors.add_item(vae_losses["vae"])' in content
         assert 'kl_errors.add_item(vae_losses["kl"])' in content
 
-        # Verify logged to console
-        assert 'f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"' in content
+        # Verify VAE is logged to console (KL is conditional on train_kl)
+        assert 'f" | VAE: {vae_errors.average:.4f}"' in content
 
-        # Verify logged to metrics
+        # Verify VAE is logged to metrics (KL is conditional on train_kl)
         assert 'metrics["vae_loss"] = vae_errors.average' in content
-        assert 'metrics["kl_loss"] = kl_errors.average' in content
 
     def test_batch_timing_shown(self):
         """Batch timing should be shown in console output."""
