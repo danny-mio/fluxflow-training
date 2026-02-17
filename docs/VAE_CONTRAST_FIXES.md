@@ -136,14 +136,16 @@ Each VAE loss component can be enabled/disabled via configuration:
 
 **Example YAML configuration:**
 ```yaml
-steps:
-  - name: my_step
-    train_vae: true
-    train_kl: true          # Keep KL for latent regularization
-    train_colorstats: true  # Prevent contrast issues
-    train_histogram: true   # Match tonal distribution
-    train_contrast: true    # Prevent over-saturation
-    train_coarseness: true  # Match texture coarseness
+training:
+  pipeline:
+    steps:
+      - name: my_step
+        train_vae: true
+        train_kl: true          # Keep KL for latent regularization
+        train_colorstats: true  # Prevent contrast issues
+        train_histogram: true   # Match tonal distribution
+        train_contrast: true    # Prevent over-saturation
+        train_coarseness: true  # Match texture coarseness
 ```
 
 ### Coarseness Loss
@@ -209,7 +211,6 @@ pipeline:
 **Recommended Settings:**
 ```python
 # Regularization weights
-bezier_reg_weight = 0.01
 color_stats_weight = 0.05
 hist_weight = 0.02
 
@@ -249,7 +250,7 @@ After implementing these fixes:
 - **Contrast reg:** ~1% overhead (simple calculations)
 - **Total:** ~5-7% slower per batch
 
-**Worth it?** Yes! Much better visual quality for minimal slowdown.
+Expected impact: modest slowdown (~5-7%) for improved reconstruction fidelity.
 
 ## Summary
 
@@ -257,5 +258,6 @@ All fixes are **training-only** (no model architecture changes):
 1. ✅ Color statistics matching → prevents contrast expansion
 2. ✅ Histogram matching → prevents tonal distortion
 3. ✅ Contrast regularization → prevents over-saturation
+4. ✅ Coarseness matching → preserves local texture patterns
 
 **Result:** Natural-looking reconstructions with proper contrast and saturation.
