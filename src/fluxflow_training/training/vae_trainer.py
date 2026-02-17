@@ -389,28 +389,32 @@ class VAETrainer:
     def _prepare_context_components(self) -> None:
         if self.accelerator is None:
             return
+        logger.info(
+            "Skipping accelerator.prepare for context components to avoid wrapper "
+            "compatibility issues with module indexing."
+        )
 
-        try:
-            prepared = self.accelerator.prepare(
-                self.context_predictor,
-                self.context_encoder,
-                self.context_predictor_optimizer,
-            )
-        except Exception as exc:
-            logger.warning(f"Failed to prepare context components with accelerator: {exc}")
-            return
+    def _get_unwrapped_model(self, model: nn.Module) -> nn.Module:
+        """
+        Get the underlying model, unwrapping from accelerator wrappers like DDP/FSDP.
 
-        if isinstance(prepared, tuple) and len(prepared) == 3:
-            (
-                self.context_predictor,
-                self.context_encoder,
-                self.context_predictor_optimizer,
-            ) = prepared
-        else:
-            logger.warning(
-                "Accelerator.prepare returned unexpected result for context components; "
-                "skipping prepare."
-            )
+        Args:
+            model: The potentially wrapped model
+
+        Returns:
+            The unwrapped model
+        """
+        if hasattr(model, "module"):
+            return model.module
+        return model
+
+    def _get_context_input_dim(self) -> int:
+        """Get the input dimension for the context predictor."""
+        context_predictor = self._get_unwrapped_model(self.context_predictor)
+        for module in context_predictor.modules():
+            if isinstance(module, nn.Linear):
+                return module.in_features
+        raise RuntimeError("Context predictor has no Linear layer")
 
     def _get_effective_spade_usage(self, global_step: int) -> bool:
         """
@@ -632,8 +636,17 @@ class VAETrainer:
             pred_var = pred_var.clamp(0.0, 1.0)
             target_var = target_var.clamp(0.0, 1.0)
 
-            pred_hist = torch.histc(pred_var, bins=bins, min=0.0, max=1.0)
-            target_hist = torch.histc(target_var, bins=bins, min=0.0, max=1.0)
+            bin_centers = torch.linspace(0.0, 1.0, bins, device=pred_var.device)
+            sigma = 1.0 / max(bins - 1, 1)
+
+            pred_diff = pred_var[:, None] - bin_centers[None, :]
+            target_diff = target_var[:, None] - bin_centers[None, :]
+
+            pred_weights = torch.exp(-0.5 * (pred_diff / sigma) ** 2)
+            target_weights = torch.exp(-0.5 * (target_diff / sigma) ** 2)
+
+            pred_hist = pred_weights.sum(dim=0)
+            target_hist = target_weights.sum(dim=0)
 
             pred_hist = pred_hist / (pred_hist.sum() + 1e-8)
             target_hist = target_hist / (target_hist.sum() + 1e-8)
@@ -838,10 +851,13 @@ class VAETrainer:
             # Use ctx_vec as latent representation (already padded/truncated)
             latent_repr = ctx_vec.detach()  # [B, expected_ctx_dim]
 
+            context_input_dim = self._get_context_input_dim()
             # Ensure context_predictor matches ctx_vec dimension
-            if self.context_predictor[0].in_features != latent_repr.shape[-1]:
+            if context_input_dim != latent_repr.shape[-1]:
                 logger.warning(
-                    f"Context predictor dimension mismatch in discriminator: expected {self.context_predictor[0].in_features}, got {latent_repr.shape[-1]}"
+                    "Context predictor dimension mismatch in discriminator: expected %s, got %s",
+                    context_input_dim,
+                    latent_repr.shape[-1],
                 )
                 # Skip context prediction if dimensions don't match
                 predicted_context = torch.randn(
@@ -1041,11 +1057,14 @@ class VAETrainer:
         else:
             raise ValueError(f"Unexpected mu shape: {mu.shape}")
 
+        context_input_dim = self._get_context_input_dim()
         # Ensure context_predictor matches actual latent dimension (may differ from init detection)
         actual_latent_dim = latent_repr.shape[-1]
-        if self.context_predictor[0].in_features != actual_latent_dim:
+        if context_input_dim != actual_latent_dim:
             logger.info(
-                f"Adjusting context_predictor input dim from {self.context_predictor[0].in_features} to {actual_latent_dim}"
+                "Adjusting context_predictor input dim from %s to %s",
+                context_input_dim,
+                actual_latent_dim,
             )
             # Create new predictor with correct input dimension
             output_dim = self.context_channels * self.context_height * self.context_width
