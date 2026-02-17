@@ -1048,6 +1048,11 @@ def train_legacy(args):
             reconstruction_loss_min_fn=nn.MSELoss(),
             use_spade=args.train_spade,
             spade_training_mode=args.spade_training_mode,
+            train_kl=args.train_kl,
+            train_colorstats=args.train_colorstats,
+            train_histogram=args.train_histogram,
+            train_contrast=args.train_contrast,
+            train_coarseness=args.train_coarseness,
             kl_beta=args.kl_beta,
             kl_warmup_steps=args.kl_warmup_steps,
             kl_free_bits=args.kl_free_bits,
@@ -1167,7 +1172,8 @@ def train_legacy(args):
                             vae_losses = vae_trainer.train_step(real_imgs, global_step)
                             avg_vae_loss += vae_losses["vae"] / resolutions
                             vae_errors.add_item(vae_losses["vae"])
-                            kl_errors.add_item(vae_losses["kl"])
+                            if args.train_kl:
+                                kl_errors.add_item(vae_losses["kl"])
                             if "lpips" in vae_losses and vae_losses["lpips"] > 0:
                                 lpips_errors.add_item(vae_losses["lpips"])
                             if "discriminator" in vae_losses:
@@ -1231,11 +1237,13 @@ def train_legacy(args):
                     # Store current beta for logging
                     current_beta = 0.0
                     if args.train_vae:
-                        # Show current KL beta for warmup monitoring
-                        current_beta = cosine_anneal_beta(
-                            global_step, args.kl_warmup_steps, args.kl_beta
-                        )
-                        log_msg += f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f} (β={current_beta:.6f})"
+                        log_msg += f" | VAE: {vae_errors.average:.4f}"
+                        if args.train_kl and len(kl_errors._items) > 0:
+                            # Show current KL beta for warmup monitoring
+                            current_beta = cosine_anneal_beta(
+                                global_step, args.kl_warmup_steps, args.kl_beta
+                            )
+                            log_msg += f" | KL: {kl_errors.average:.4f} (β={current_beta:.6f})"
                         if lpips_errors.average > 0:
                             log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
                         if args.gan_training:
@@ -1262,8 +1270,9 @@ def train_legacy(args):
 
                     if args.train_vae:
                         metrics["vae_loss"] = vae_errors.average
-                        metrics["kl_loss"] = kl_errors.average
-                        metrics["kl_beta"] = current_beta  # Log beta value for graphs
+                        if args.train_kl and len(kl_errors._items) > 0:
+                            metrics["kl_loss"] = kl_errors.average
+                            metrics["kl_beta"] = current_beta  # Log beta value for graphs
                         if lpips_errors.average > 0:
                             metrics["lpips_loss"] = lpips_errors.average
                         if args.gan_training:
@@ -1652,6 +1661,43 @@ def parse_args():
     )
     parser.add_argument("--kl_free_bits", type=float, default=0.0, help="Free bits (nats)")
 
+    # VAE loss component toggles
+    parser.add_argument(
+        "--no_train_kl",
+        action="store_false",
+        dest="train_kl",
+        default=True,
+        help="Disable KL divergence loss",
+    )
+    parser.add_argument(
+        "--no_train_colorstats",
+        action="store_false",
+        dest="train_colorstats",
+        default=True,
+        help="Disable color statistics loss",
+    )
+    parser.add_argument(
+        "--no_train_histogram",
+        action="store_false",
+        dest="train_histogram",
+        default=True,
+        help="Disable histogram matching loss",
+    )
+    parser.add_argument(
+        "--no_train_contrast",
+        action="store_false",
+        dest="train_contrast",
+        default=True,
+        help="Disable contrast regularization loss",
+    )
+    parser.add_argument(
+        "--no_train_coarseness",
+        action="store_false",
+        dest="train_coarseness",
+        default=True,
+        help="Disable coarseness distribution loss",
+    )
+
     # Output
     parser.add_argument("--output_path", type=str, default="outputs", help="Output directory")
     parser.add_argument("--log_interval", type=int, default=10, help="Logging frequency")
@@ -1750,7 +1796,7 @@ def parse_args():
         # Map config to args (config overrides defaults, but CLI args override config)
         cli_provided = set()
         for action in parser._actions:
-            if action.dest in sys.argv or f"--{action.dest}" in sys.argv:
+            if any(option in sys.argv for option in action.option_strings):
                 cli_provided.add(action.dest)
 
         # Apply config values if not provided via CLI
@@ -1883,6 +1929,16 @@ def parse_args():
                 args.kl_warmup_steps = config["training"]["kl_warmup_steps"]
             if "kl_free_bits" in config["training"] and "kl_free_bits" not in cli_provided:
                 args.kl_free_bits = config["training"]["kl_free_bits"]
+            if "train_kl" in config["training"] and "train_kl" not in cli_provided:
+                args.train_kl = config["training"]["train_kl"]
+            if "train_colorstats" in config["training"] and "train_colorstats" not in cli_provided:
+                args.train_colorstats = config["training"]["train_colorstats"]
+            if "train_histogram" in config["training"] and "train_histogram" not in cli_provided:
+                args.train_histogram = config["training"]["train_histogram"]
+            if "train_contrast" in config["training"] and "train_contrast" not in cli_provided:
+                args.train_contrast = config["training"]["train_contrast"]
+            if "train_coarseness" in config["training"] and "train_coarseness" not in cli_provided:
+                args.train_coarseness = config["training"]["train_coarseness"]
             if "lambda_adv" in config["training"] and "lambda_adv" not in cli_provided:
                 args.lambda_adv = config["training"]["lambda_adv"]
             if "lambda_lpips" in config["training"] and "lambda_lpips" not in cli_provided:

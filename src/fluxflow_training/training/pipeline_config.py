@@ -116,6 +116,11 @@ class PipelineStepConfig:
     use_lpips: bool = False
     train_spade: bool = False
     spade_training_mode: Literal["full", "alternate"] = "full"
+    train_kl: bool = True
+    train_colorstats: bool = True
+    train_histogram: bool = True
+    train_contrast: bool = True
+    train_coarseness: bool = True
     train_diff: bool = False
     train_diff_full: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
@@ -604,6 +609,11 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         use_lpips=step_dict.get("use_lpips", False),
         train_spade=step_dict.get("train_spade", False),
         spade_training_mode=step_dict.get("spade_training_mode", "full"),
+        train_kl=step_dict.get("train_kl", True),
+        train_colorstats=step_dict.get("train_colorstats", True),
+        train_histogram=step_dict.get("train_histogram", True),
+        train_contrast=step_dict.get("train_contrast", True),
+        train_coarseness=step_dict.get("train_coarseness", True),
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
         use_ema=step_dict.get("use_ema", True),

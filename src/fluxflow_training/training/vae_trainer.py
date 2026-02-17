@@ -135,6 +135,11 @@ class VAETrainer:
         use_spade: bool = True,
         spade_training_mode: Literal["full", "alternate"] = "full",
         train_reconstruction: bool = True,  # NEW: Control reconstruction loss
+        train_kl: bool = True,
+        train_colorstats: bool = True,
+        train_histogram: bool = True,
+        train_contrast: bool = True,
+        train_coarseness: bool = True,
         kl_beta: float = 0.0001,
         kl_warmup_steps: int = 5000,
         kl_free_bits: float = 0.0,
@@ -175,6 +180,11 @@ class VAETrainer:
             spade_training_mode: SPADE training mode ("full" or "alternate")
             train_reconstruction: Compute reconstruction loss (L1+MSE+LPIPS). Set to False for
                 GAN-only or SPADE-only training without VAE reconstruction (default: True)
+            train_kl: Compute KL divergence loss (default: True)
+            train_colorstats: Compute color statistics loss (default: True)
+            train_histogram: Compute histogram matching loss (default: True)
+            train_contrast: Compute contrast regularization loss (default: True)
+            train_coarseness: Compute coarseness distribution loss (default: True)
             kl_beta: Final KL divergence weight
             kl_warmup_steps: Steps to warmup KL beta
             kl_free_bits: Free bits for KL divergence
@@ -202,6 +212,11 @@ class VAETrainer:
         self.spade_training_mode = spade_training_mode
 
         self.train_reconstruction = train_reconstruction
+        self.train_kl = train_kl
+        self.train_colorstats = train_colorstats
+        self.train_histogram = train_histogram
+        self.train_contrast = train_contrast
+        self.train_coarseness = train_coarseness
 
         # KL settings
         self.kl_beta = kl_beta
@@ -494,7 +509,7 @@ class VAETrainer:
         Returns:
             Histogram matching loss
         """
-        loss = 0.0
+        loss = torch.tensor(0.0, device=pred.device)
         for c in range(3):  # R, G, B channels
             # Flatten spatial dimensions for histogram
             pred_c = pred[:, c].reshape(-1)
@@ -577,6 +592,59 @@ class VAETrainer:
 
         return loss / 4.0  # Average over 3 channels + 1 local component
 
+    def _coarseness_loss(
+        self, pred: torch.Tensor, target: torch.Tensor, patch_size: int = 16, bins: int = 32
+    ) -> torch.Tensor:
+        """
+        Match distribution of local patch variances per channel.
+
+        Encourages the decoder to preserve surface texture coarseness by matching
+        variance distributions between predicted and target images.
+
+        Args:
+            pred: Predicted images [B, 3, H, W]
+            target: Target images [B, 3, H, W]
+            patch_size: Patch size for local variance calculation
+            bins: Number of histogram bins for variance distribution
+
+        Returns:
+            Scalar coarseness loss
+        """
+        if pred.shape[2] < patch_size or pred.shape[3] < patch_size:
+            return torch.tensor(0.0, device=pred.device)
+
+        loss = torch.tensor(0.0, device=pred.device)
+
+        for c in range(3):
+            pred_c = pred[:, c]
+            target_c = target[:, c]
+
+            pred_patches = pred_c.unfold(1, patch_size, patch_size).unfold(
+                2, patch_size, patch_size
+            )
+            target_patches = target_c.unfold(1, patch_size, patch_size).unfold(
+                2, patch_size, patch_size
+            )
+
+            pred_var = pred_patches.var(dim=(-1, -2), unbiased=False).reshape(-1)
+            target_var = target_patches.var(dim=(-1, -2), unbiased=False).reshape(-1)
+
+            pred_var = pred_var.clamp(0.0, 1.0)
+            target_var = target_var.clamp(0.0, 1.0)
+
+            pred_hist = torch.histc(pred_var, bins=bins, min=0.0, max=1.0)
+            target_hist = torch.histc(target_var, bins=bins, min=0.0, max=1.0)
+
+            pred_hist = pred_hist / (pred_hist.sum() + 1e-8)
+            target_hist = target_hist / (target_hist.sum() + 1e-8)
+
+            pred_cdf = torch.cumsum(pred_hist, dim=0)
+            target_cdf = torch.cumsum(target_hist, dim=0)
+
+            loss += torch.mean(torch.abs(pred_cdf - target_cdf))
+
+        return loss / 3.0
+
     def _compute_adaptive_weight(self, loss_type):
         """Balance losses based on magnitude using inverse weighting."""
         if not self.adaptive_weights:
@@ -648,6 +716,7 @@ class VAETrainer:
         losses["color_stats"] = gen_losses.get("color_stats", 0.0)
         losses["hist_loss"] = gen_losses.get("hist_loss", 0.0)
         losses["contrast_loss"] = gen_losses.get("contrast_loss", 0.0)
+        losses["coarseness_loss"] = gen_losses.get("coarseness_loss", 0.0)
 
         # Check if optimizer was actually stepped (could be skipped due to NaN)
         optimizer_was_stepped = gen_losses.pop("_optimizer_stepped", True)
@@ -948,10 +1017,18 @@ class VAETrainer:
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
         # KL divergence with beta annealing (still compute even if not training reconstruction)
-        beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
-        kl = kl_standard_normal(
-            mu, logvar, free_bits_nats=self.kl_free_bits, reduce="mean", normalize_by_dims=True
-        )
+        beta = 0.0
+        if self.train_kl:
+            beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
+            kl = kl_standard_normal(
+                mu,
+                logvar,
+                free_bits_nats=self.kl_free_bits,
+                reduce="mean",
+                normalize_by_dims=True,
+            )
+        else:
+            kl = torch.tensor(0.0, device=real_imgs.device)
 
         # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
         B = real_imgs.shape[0]
@@ -1064,23 +1141,28 @@ class VAETrainer:
 
         # Compute adaptive weights
         w_recon = self._compute_adaptive_weight("recon") if self.train_reconstruction else 0.0
-        w_kl = self._compute_adaptive_weight("kl")
+        w_kl = self._compute_adaptive_weight("kl") if self.train_kl else 0.0
         w_gan = self._compute_adaptive_weight("gan") if self.use_gan else 0.0
 
         # Color/contrast regularization losses
         color_stats_loss = (
             self._color_statistics_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction
+            if self.train_reconstruction and self.train_colorstats
             else torch.tensor(0.0, device=real_imgs.device)
         )
         hist_loss = (
             self._histogram_matching_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction
+            if self.train_reconstruction and self.train_histogram
             else torch.tensor(0.0, device=real_imgs.device)
         )
         contrast_loss = (
             self._contrast_regularization_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction
+            if self.train_reconstruction and self.train_contrast
+            else torch.tensor(0.0, device=real_imgs.device)
+        )
+        coarseness_loss = (
+            self._coarseness_loss(out_imgs_rec, real_imgs)
+            if self.train_reconstruction and self.train_coarseness
             else torch.tensor(0.0, device=real_imgs.device)
         )
 
@@ -1095,9 +1177,14 @@ class VAETrainer:
         total_loss = total_loss + 0.1 * context_alignment_loss
 
         # Add regularization (small weights to not dominate main losses)
-        total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
-        total_loss = total_loss + 0.02 * hist_loss  # Match color distributions
-        total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation
+        if self.train_colorstats:
+            total_loss = total_loss + 0.05 * color_stats_loss  # Match color statistics
+        if self.train_histogram:
+            total_loss = total_loss + 0.02 * hist_loss  # Match color distributions
+        if self.train_contrast:
+            total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation
+        if self.train_coarseness:
+            total_loss = total_loss + 0.02 * coarseness_loss  # Match texture coarseness
 
         # Check for NaN/Inf in loss with detailed diagnostics
         if check_for_nan(total_loss, "vae_total_loss", logger):
@@ -1175,6 +1262,7 @@ class VAETrainer:
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),
+            "coarseness_loss": float(coarseness_loss.detach().item()),
             "_optimizer_stepped": True,  # Signal that optimizer was stepped
         }
 

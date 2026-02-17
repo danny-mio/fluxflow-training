@@ -846,6 +846,15 @@ class TrainingPipelineOrchestrator:
                 use_spade=step.train_spade,
                 spade_training_mode=step.spade_training_mode,
                 train_reconstruction=step.train_vae,  # Only compute recon loss if train_vae=True
+                train_kl=step.train_kl if hasattr(step, "train_kl") else True,
+                train_colorstats=(
+                    step.train_colorstats if hasattr(step, "train_colorstats") else True
+                ),
+                train_histogram=step.train_histogram if hasattr(step, "train_histogram") else True,
+                train_contrast=step.train_contrast if hasattr(step, "train_contrast") else True,
+                train_coarseness=(
+                    step.train_coarseness if hasattr(step, "train_coarseness") else True
+                ),
                 kl_beta=step.kl_beta if hasattr(step, "kl_beta") else 0.0001,
                 kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
                 kl_free_bits=step.kl_free_bits if hasattr(step, "kl_free_bits") else 0.0,
@@ -1327,6 +1336,7 @@ class TrainingPipelineOrchestrator:
                 )  # Color statistics loss
                 hist_loss_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Histogram loss
                 contrast_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Contrast loss
+                coarseness_errors = FloatBuffer(max(args.log_interval * 2, 10))  # Coarseness loss
                 batch_times = FloatBuffer(max(args.log_interval * 2, 10))  # Batch timing
 
                 for batch_idx, (imgs, input_ids) in enumerate(dataloader_for_epoch):
@@ -1356,7 +1366,8 @@ class TrainingPipelineOrchestrator:
                         if trainers.get("vae"):
                             vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
                             vae_errors.add_item(vae_losses["vae"])
-                            kl_errors.add_item(vae_losses["kl"])
+                            if step.train_kl:
+                                kl_errors.add_item(vae_losses["kl"])
 
                             # Track GAN losses if available
                             if "generator" in vae_losses:
@@ -1367,12 +1378,14 @@ class TrainingPipelineOrchestrator:
                                 lpips_errors.add_item(vae_losses["lpips"])
 
                             # Track VAE regularization losses if available
-                            if "color_stats" in vae_losses:
+                            if step.train_colorstats and "color_stats" in vae_losses:
                                 color_stats_errors.add_item(vae_losses["color_stats"])
-                            if "hist_loss" in vae_losses:
+                            if step.train_histogram and "hist_loss" in vae_losses:
                                 hist_loss_errors.add_item(vae_losses["hist_loss"])
-                            if "contrast_loss" in vae_losses:
+                            if step.train_contrast and "contrast_loss" in vae_losses:
                                 contrast_errors.add_item(vae_losses["contrast_loss"])
+                            if step.train_coarseness and "coarseness_loss" in vae_losses:
+                                coarseness_errors.add_item(vae_losses["coarseness_loss"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
@@ -1446,9 +1459,9 @@ class TrainingPipelineOrchestrator:
 
                         # Console logging (show metrics if VAE trainer ran)
                         if len(vae_errors._items) > 0:
-                            log_msg += (
-                                f" | VAE: {vae_errors.average:.4f} | KL: {kl_errors.average:.4f}"
-                            )
+                            log_msg += f" | VAE: {vae_errors.average:.4f}"
+                            if step.train_kl and len(kl_errors._items) > 0:
+                                log_msg += f" | KL: {kl_errors.average:.4f}"
                             # Add GAN losses if active
                             if step.gan_training and len(g_errors._items) > 0:
                                 log_msg += (
@@ -1458,12 +1471,14 @@ class TrainingPipelineOrchestrator:
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
                             # Add VAE regularization losses if available
-                            if len(color_stats_errors._items) > 0:
+                            if step.train_colorstats and len(color_stats_errors._items) > 0:
                                 log_msg += f" | ColorStats: {color_stats_errors.average:.4f}"
-                            if len(hist_loss_errors._items) > 0:
+                            if step.train_histogram and len(hist_loss_errors._items) > 0:
                                 log_msg += f" | Hist: {hist_loss_errors.average:.4f}"
-                            if len(contrast_errors._items) > 0:
+                            if step.train_contrast and len(contrast_errors._items) > 0:
                                 log_msg += f" | Contrast: {contrast_errors.average:.4f}"
+                            if step.train_coarseness and len(coarseness_errors._items) > 0:
+                                log_msg += f" | Coarseness: {coarseness_errors.average:.4f}"
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
@@ -1478,7 +1493,8 @@ class TrainingPipelineOrchestrator:
                         metrics = {}
                         if len(vae_errors._items) > 0:
                             metrics["vae_loss"] = vae_errors.average
-                            metrics["kl_loss"] = kl_errors.average
+                            if step.train_kl and len(kl_errors._items) > 0:
+                                metrics["kl_loss"] = kl_errors.average
                             # Add GAN metrics
                             if step.gan_training and len(g_errors._items) > 0:
                                 metrics["g_loss"] = g_errors.average
@@ -1487,12 +1503,14 @@ class TrainingPipelineOrchestrator:
                             if step.use_lpips and len(lpips_errors._items) > 0:
                                 metrics["lpips_loss"] = lpips_errors.average
                             # Add VAE regularization metrics
-                            if len(color_stats_errors._items) > 0:
+                            if step.train_colorstats and len(color_stats_errors._items) > 0:
                                 metrics["color_stats"] = color_stats_errors.average
-                            if len(hist_loss_errors._items) > 0:
+                            if step.train_histogram and len(hist_loss_errors._items) > 0:
                                 metrics["hist_loss"] = hist_loss_errors.average
-                            if len(contrast_errors._items) > 0:
+                            if step.train_contrast and len(contrast_errors._items) > 0:
                                 metrics["contrast_loss"] = contrast_errors.average
+                            if step.train_coarseness and len(coarseness_errors._items) > 0:
+                                metrics["coarseness_loss"] = coarseness_errors.average
 
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average
