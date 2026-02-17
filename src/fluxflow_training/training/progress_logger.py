@@ -27,7 +27,7 @@ def _sanitize_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Sanitized metrics dictionary with NaN/Inf replaced by None
     """
-    sanitized = {}
+    sanitized: Dict[str, Any] = {}
     for key, value in metrics.items():
         if isinstance(value, float):
             if math.isnan(value) or math.isinf(value):
@@ -223,6 +223,7 @@ class TrainingProgressLogger:
         if extras:
             log_entry["extras"] = extras
 
+        json_str = ""
         try:
             json_str = json.dumps(log_entry, allow_nan=False)
             with open(self.metrics_file, "a") as f:
@@ -230,10 +231,11 @@ class TrainingProgressLogger:
                 self._apply_flush_policy(f)
         except (IOError, OSError) as e:
             logger.error(f"Failed to write metrics: {e}")
-            try:
-                print(f"FALLBACK_METRIC: {json_str}", file=sys.stderr)
-            except Exception:
-                pass
+            if json_str:
+                try:
+                    print(f"FALLBACK_METRIC: {json_str}", file=sys.stderr)
+                except Exception:
+                    pass
         except (ValueError, TypeError) as e:
             logger.error(f"Failed to serialize metrics: {e}")
 
