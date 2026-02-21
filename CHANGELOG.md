@@ -19,11 +19,11 @@ _No unreleased changes._
 
 ## [0.7.1] - 2026-02-17
 
-### Added
+### Features
 - **VAE loss component toggles**: Add configurable enable/disable for KL divergence, color statistics, histogram matching, contrast regularization, and coarseness losses
 - **Coarseness loss**: New per-channel texture loss that matches local patch variance distributions between predicted and target images
 
-### Fixed
+### Fixes
 - **Normalize timesteps**: Base normalization on the active window (`start_step` to `num_train_timesteps`)
 - **Scheduler first step**: Correct `_first_step` handling so the scheduler advances properly
 - **Context optimizer handling**: Prepare/step predictor optimizer safely with accelerator and reinit on dim changes

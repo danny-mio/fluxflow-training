@@ -89,6 +89,13 @@ training:
   kl_warmup_steps: 5000
   kl_free_bits: 0.0
 
+  # VAE loss component settings
+  train_kl: true
+  train_colorstats: true
+  train_histogram: true
+  train_contrast: true
+  train_coarseness: true
+
   # GAN settings
   lambda_adv: 0.5
 
@@ -166,7 +173,7 @@ training:
   #
   #       train_vae: true
   #       train_spade: true
-   spade_training_mode: full  # "full" (always on) or "alternate" (alternate on/off per step)   # SPADE ON
+   #       spade_training_mode: full  # "full" (always on) or "alternate" (alternate on/off per step)
   #       train_flow: false
   #       gan_training: true
   #       use_lpips: true
