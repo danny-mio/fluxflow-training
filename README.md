@@ -29,12 +29,10 @@ pip install -e ".[dev]"
 
 **Models Currently In Training**: FluxFlow is actively training models following a systematic validation plan.
 
-**Current Phase**: Phase 1 - VAE Training (Weeks 1-4)
-
-**Progress**:
-- 🔄 Bezier VAE training in progress
-- ⏳ ReLU baseline VAE pending
-- ⏳ Flow models pending VAE completion
+**Progress** (as of February 2026):
+- Bezier VAE: training in progress
+- ReLU baseline VAE: pending
+- Flow models: pending VAE completion
 
 **When Available**: Trained checkpoints and empirical performance metrics will be published to [MODEL_ZOO.md](https://github.com/danny-mio/fluxflow-core/blob/main/MODEL_ZOO.md) upon validation completion.
 
@@ -44,10 +42,7 @@ pip install -e ".[dev]"
 
 ## Hardware Requirements for Training
 
-**Current Setup** (December 2025 validation):
-- **GPU**: NVIDIA A6000 (48GB VRAM) via Paperspace
-- **Constraint**: Service interrupts every 6 hours
-- **Solution**: Automatic checkpoint/resume (every 30-60 min)
+Tested on NVIDIA A6000 (48GB VRAM); A100 (40GB/80GB) also supported.
 
 **Alternative Options**:
 - Local: 1× RTX 4090 (24GB) or 2× RTX 3090 (24GB each)
@@ -72,14 +67,6 @@ pip install -e ".[dev]"
 - Use FP16 (if supported): `use_fp16: true` (saves ~20-30%)
 - See [TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) "Limited VRAM Strategy"
 
-**Cost Comparison**:
-| Platform | GPU | $/hr | Est. Total (500 hrs) |
-|----------|-----|------|---------------------|
-| **Paperspace** | **A6000 48GB** | **$0.76** | **~$456** ✓ |
-| AWS | p3.2xlarge (V100 16GB) | $3.06 | ~$1,530 |
-| GCP | A100 40GB | $3.67 | ~$1,835 |
-| Lambda Labs | A100 40GB | $1.10 | ~$550 |
-
 ---
 
 ### Pre-download LPIPS Weights (Optional)
@@ -96,17 +83,17 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
 
 ### Core Training Capabilities
 
-- **🎯 Pipeline Training Mode** (v0.2.0+, **FULLY IMPLEMENTED**)
+- **Pipeline Training Mode** (v0.2.0+)
   - Multi-step sequential training with independent configs per step
   - Per-step freeze/unfreeze of model components
   - Loss-threshold transitions with early stopping
   - Full checkpoint resume from any step/epoch/batch
-  - **Multi-dataset support** (Unreleased): Train different steps on different datasets (local/webdataset)
-  - **Auto-create missing models** (Unreleased): Automatic model initialization when transitioning between steps
-  - 1035 lines in `pipeline_orchestrator.py`
+  - **Multi-dataset support**: Train different steps on different datasets (local/webdataset)
+  - **Auto-create missing models**: Automatic model initialization when transitioning between steps
+  - 1609 lines in `pipeline_orchestrator.py`
   - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) and [MULTI_DATASET_TRAINING.md](docs/MULTI_DATASET_TRAINING.md)
 
-- **🎨 GAN-Only Training Mode** (v0.2.0+, **FULLY IMPLEMENTED**)
+- **GAN-Only Training Mode** (v0.2.0+)
   - Train encoder/decoder with adversarial loss only (no reconstruction)
   - Spatial conditioning (SPADE) without pixel-perfect reconstruction
   - Faster training with focused gradient flow
@@ -123,7 +110,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Text-to-image generation with classifier-free guidance (CFG)
   - Industry-standard training approach (same as Stable Diffusion, Flux.1)
 
-- **✨ Classifier-Free Guidance (CFG)** (v0.3.0+)
+- **Classifier-Free Guidance (CFG)** (v0.3.0+)
   - Train models to generate with or without text conditioning
   - Single model learns both conditional p(x|text) and unconditional p(x)
   - Inference-time guidance scale control (1.0-15.0, recommended: 3.0-7.0)
@@ -301,7 +288,7 @@ fluxflow-generate \
 # Training metrics are automatically logged to outputs/graph/training_metrics.jsonl
 # In pipeline mode: outputs/graph/training_metrics_{stepname}.jsonl
 
-# Generate diagrams from logged metrics
+# Generate diagrams from logged metrics (run from project root with fluxflow-training installed)
 python src/fluxflow_training/scripts/generate_training_graphs.py outputs/
 
 # Diagrams are saved to outputs/graph/:
@@ -364,7 +351,7 @@ vae_warmup_001_005_abc123-original.webp
 ## Package Contents
 
 - `fluxflow_training.training` - Training logic and trainers
-  - `pipeline_orchestrator.py` - Multi-step pipeline execution (1035 lines)
+  - `pipeline_orchestrator.py` - Multi-step pipeline execution (1609 lines)
   - `pipeline_config.py` - Pipeline configuration and validation
   - `vae_trainer.py` - VAE/GAN training logic
   - `flow_trainer.py` - Flow model training
@@ -445,7 +432,7 @@ training:
   - Checkpoint format
   - Sample naming conventions
   - Troubleshooting
-  - **Status**: ✅ FULLY IMPLEMENTED (1035 lines in pipeline_orchestrator.py)
+  - **Implementation**: `pipeline_orchestrator.py` (1609 lines)
 
 - **[TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md)** - Complete training guide
   - Detailed configuration options
@@ -466,49 +453,6 @@ training:
 - `test_pipeline_minimal.yaml` - Minimal working pipeline example
 - `config.example.sh` - Environment setup script
 
-## What's New in v0.2.1
-
-### Critical Optimizations (Dec 2025)
-
-- **Memory optimizations** to prevent OOM on 48GB GPUs
-  - Removed LPIPS gradient checkpointing (caused OOM at 47.4GB)
-  - Removed dataloader prefetch_factor (caused memory spikes)
-  - CUDA cache clearing between batches
-  - See CHANGELOG.md for full details
-
-### Major Features (v0.2.0)
-
-- **Pipeline Training Mode** - Multi-step sequential training with per-step configs
-- **GAN-Only Mode** - Train with adversarial loss only (no reconstruction)
-- **Enhanced Logging** - Batch timing, step-specific metrics, correct GAN loss display
-- **Mid-Epoch Samples** - Configurable sample generation with batch numbers
-
-### Bug Fixes
-
-- Fixed encoder gradient flow in GAN-only mode
-- Fixed GAN loss logging (generator/discriminator keys)
-- Fixed EMA creation for GAN-only mode
-- Fixed metrics logging to respect training modes
-- Fixed sample generation to prevent overwrites
-- Fixed R1 penalty gradient computation
-
-### Breaking Changes
-
-**Config format**: Pipeline configs must use `steps:` wrapper:
-
-```yaml
-# OLD (will error)
-training:
-  pipeline:
-    - name: "step1"
-
-# NEW (required)
-training:
-  pipeline:
-    steps:
-      - name: "step1"
-```
-
 See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 
 ## Links
@@ -517,7 +461,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete version history.
 - [Core Package](https://github.com/danny-mio/fluxflow-core)
 - [Web UI](https://github.com/danny-mio/fluxflow-ui)
 - [ComfyUI Plugin](https://github.com/danny-mio/fluxflow-comfyui)
-- [PyPI Package](https://pypi.org/project/fluxflow-training/) (coming soon - not yet published)
+- [PyPI Package](https://pypi.org/project/fluxflow-training/)
 
 ## License
 
