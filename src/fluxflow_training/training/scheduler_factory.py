@@ -3,7 +3,7 @@ Learning rate scheduler factory for creating schedulers based on configuration.
 Supports per-model scheduler selection with customizable parameters.
 """
 
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, cast
 
 import torch.optim as optim
 from torch.optim.lr_scheduler import (
@@ -87,7 +87,7 @@ def validate_scheduler_config(scheduler_config: Dict[str, Any], total_steps: int
 
 def create_scheduler(
     optimizer: optim.Optimizer, scheduler_config: Dict[str, Any], total_steps: int
-) -> Union[_LRScheduler, ReduceLROnPlateau]:  # type: ignore[type-arg]
+) -> Union[_LRScheduler, ReduceLROnPlateau]:
     """
     Create a learning rate scheduler based on configuration.
 
@@ -122,8 +122,6 @@ def create_scheduler(
             f"Supported schedulers: {list(SUPPORTED_SCHEDULERS.keys())}"
         )
 
-    scheduler_class = SUPPORTED_SCHEDULERS[scheduler_type]
-
     # Get the initial LR from optimizer
     initial_lr = optimizer.param_groups[0]["lr"]
 
@@ -131,44 +129,59 @@ def create_scheduler(
     if scheduler_type == "CosineAnnealingLR":
         eta_min_factor = scheduler_config.get("eta_min_factor", 0.1)
         eta_min = initial_lr * eta_min_factor
-        return scheduler_class(optimizer, T_max=total_steps, eta_min=eta_min)  # type: ignore[return-value, call-arg, no-any-return]
+        return cast(
+            _LRScheduler,
+            CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=eta_min),
+        )
 
     elif scheduler_type == "LinearLR":
         start_factor = scheduler_config.get("start_factor", 1.0)
         end_factor = scheduler_config.get("end_factor", 0.1)
         total_iters = scheduler_config.get("total_iters", total_steps)
-        return scheduler_class(
-            optimizer, start_factor=start_factor, end_factor=end_factor, total_iters=total_iters
-        )  # type: ignore[return-value, call-arg, no-any-return]
+        return cast(
+            _LRScheduler,
+            LinearLR(
+                optimizer,
+                start_factor=start_factor,
+                end_factor=end_factor,
+                total_iters=total_iters,
+            ),
+        )
 
     elif scheduler_type == "ExponentialLR":
         gamma = scheduler_config.get("gamma", 0.95)
-        return scheduler_class(optimizer, gamma=gamma)  # type: ignore[return-value, call-arg, no-any-return]
+        return cast(_LRScheduler, ExponentialLR(optimizer, gamma=gamma))
 
     elif scheduler_type == "ConstantLR":
         factor = scheduler_config.get("factor", 1.0)
         total_iters = scheduler_config.get("total_iters", total_steps)
-        return scheduler_class(optimizer, factor=factor, total_iters=total_iters)  # type: ignore[return-value, call-arg, no-any-return]
+        return cast(
+            _LRScheduler,
+            ConstantLR(optimizer, factor=factor, total_iters=total_iters),
+        )
 
     elif scheduler_type == "StepLR":
         step_size = scheduler_config.get("step_size", total_steps // 10)
         gamma = scheduler_config.get("gamma", 0.1)
-        return scheduler_class(optimizer, step_size=step_size, gamma=gamma)  # type: ignore[return-value, call-arg, no-any-return]
+        return cast(_LRScheduler, StepLR(optimizer, step_size=step_size, gamma=gamma))
 
     elif scheduler_type == "ReduceLROnPlateau":
         mode = scheduler_config.get("mode", "min")
         factor = scheduler_config.get("factor", 0.1)
         patience = scheduler_config.get("patience", 10)
         threshold = scheduler_config.get("threshold", 1e-4)
-        return scheduler_class(
+        return ReduceLROnPlateau(
             optimizer, mode=mode, factor=factor, patience=patience, threshold=threshold
-        )  # type: ignore[return-value, call-arg, no-any-return]
+        )
 
     else:
         # Fallback to CosineAnnealingLR
         eta_min_factor = scheduler_config.get("eta_min_factor", 0.1)
         eta_min = initial_lr * eta_min_factor
-        return CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=eta_min)  # type: ignore[return-value]
+        return cast(
+            _LRScheduler,
+            CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=eta_min),
+        )
 
 
 def get_default_scheduler_config(model_name: str) -> Dict[str, Any]:

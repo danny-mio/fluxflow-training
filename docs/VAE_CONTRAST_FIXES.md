@@ -96,7 +96,8 @@ total_loss = (
     w_gan * G_img_loss +                  # GAN generator loss
     0.05 * color_stats_loss +             # Color statistics matching
     0.02 * hist_loss +                    # Histogram matching
-    0.1 * contrast_loss                   # Contrast regularization
+    0.1 * contrast_loss +                  # Contrast regularization
+    0.02 * coarseness_loss +              # Coarseness/texture matching
 )
 ```
 
@@ -104,6 +105,7 @@ total_loss = (
 - `0.05` for color stats: Directly prevents contrast expansion
 - `0.02` for histogram: Refines tonal distribution
 - `0.1` for contrast: Prevents over-saturation
+- `0.02` for coarseness: Matches texture patterns
 
 ## Monitoring
 
@@ -119,6 +121,43 @@ The training logs now include:
 - `ColorStats` staying low → No contrast expansion
 - `Hist` staying low → Good tonal matching
 - `Contrast` staying low → No over-saturation
+
+## Loss Component Toggles
+
+Each VAE loss component can be enabled/disabled via configuration:
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `train_kl` | KL divergence loss | `true` |
+| `train_colorstats` | Color statistics matching | `true` |
+| `train_histogram` | Histogram matching | `true` |
+| `train_contrast` | Contrast regularization | `true` |
+| `train_coarseness` | Coarseness/texture loss | `true` |
+
+**Example YAML configuration:**
+```yaml
+training:
+  pipeline:
+    steps:
+      - name: my_step
+        train_vae: true
+        train_kl: true          # Keep KL for latent regularization
+        train_colorstats: true  # Prevent contrast issues
+        train_histogram: true   # Match tonal distribution
+        train_contrast: true    # Prevent over-saturation
+        train_coarseness: true  # Match texture coarseness
+```
+
+### Coarseness Loss
+
+The coarseness loss teaches the decoder to preserve surface texture patterns by matching local patch variance distributions:
+
+- **What it captures**: Coarse textures (high local variance, rough surfaces) vs fine textures (low local variance, smooth surfaces)
+- **How it works**: Divides each image into patches, computes variance per patch, then matches the distribution of variances between predicted and target
+- **Per-channel**: Computed separately for R, G, B channels
+- **Weight**: 0.02 (same as histogram loss)
+
+Disable coarseness if you want faster training or are not concerned with texture preservation.
 
 ## Tuning Guide
 
@@ -172,7 +211,6 @@ pipeline:
 **Recommended Settings:**
 ```python
 # Regularization weights
-bezier_reg_weight = 0.01
 color_stats_weight = 0.05
 hist_weight = 0.02
 
@@ -212,7 +250,7 @@ After implementing these fixes:
 - **Contrast reg:** ~1% overhead (simple calculations)
 - **Total:** ~5-7% slower per batch
 
-**Worth it?** Yes! Much better visual quality for minimal slowdown.
+Expected impact: modest slowdown (~5-7%) for improved reconstruction fidelity.
 
 ## Summary
 
@@ -220,5 +258,6 @@ All fixes are **training-only** (no model architecture changes):
 1. ✅ Color statistics matching → prevents contrast expansion
 2. ✅ Histogram matching → prevents tonal distortion
 3. ✅ Contrast regularization → prevents over-saturation
+4. ✅ Coarseness matching → preserves local texture patterns
 
 **Result:** Natural-looking reconstructions with proper contrast and saturation.

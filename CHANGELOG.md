@@ -6,42 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-02-12
+_No unreleased changes._
+
+## [0.8.0] - 2026-02-21
+
+### Changed
+- **Updated `fluxflow` dependency** to `>=0.8.0`
+  - Enables training and inference with v0.8.0 pillar-attention flow architecture
+  - `FlowTrainer` and pipeline are unchanged; version routing is handled by `load_versioned_checkpoint()`
+- Version bumped to 0.8.0
+- v0.8.0 pillar-attention flow architecture now supported via `model_version: "0.8.0"` in training config
+
+## [0.7.1] - 2026-02-17
+
+### Features
+- **VAE loss component toggles**: Add configurable enable/disable for KL divergence, color statistics, histogram matching, contrast regularization, and coarseness losses
+- **Coarseness loss**: New per-channel texture loss that matches local patch variance distributions between predicted and target images
 
 ### Fixes
+- **Normalize timesteps**: Base normalization on the active window (`start_step` to `num_train_timesteps`)
+- **Scheduler first step**: Correct `_first_step` handling so the scheduler advances properly
+- **Context optimizer handling**: Prepare/step predictor optimizer safely with accelerator and reinit on dim changes
+
+## [0.7.0] - 2026-02-12
+
+### Fixed
 - **Restore R1 penalty gradients**: Enable gradients on noisy real images before discriminator R1 regularization
 - **Fix gradient accumulation**: Only zero grads at the start of accumulation windows in FlowTrainer
 - **Tokenizer compatibility**: Add `batch_encode_plus` fallback for newer Transformers
 
-### Testing
+### Changed
 - **Stabilize dataset tests**: Ensure mock tokenizer returns tensor encodings via `__call__`
 
 ## [0.5.1] - 2025-12-24
 
-### 🐛 Fixes
+### Fixed
 - **Fixed pipeline training epoch switching**: Added missing break condition in batch processing loop to prevent infinite epochs
 - **Fixed resume logic for invalid batch positions**: Added automatic advancement to next step/epoch when resume batch index exceeds epoch boundaries
 - **Prevented training continuation beyond dataset bounds**: Pipeline training now properly stops at expected epoch boundaries
 
-### 📝 Notes
-- Patch release fixing critical training loop issues in pipeline mode
-- Improves resume behavior for interrupted training sessions
-- All existing functionality preserved
-
 ## [0.5.0] - 2025-12-23
 
-### 🔒 Dependencies
+### Changed
 - **Updated fluxflow dependency** to `>=0.5.0,<0.6.0`
   - Aligns with fluxflow-core v0.5.0 release
   - Includes gradient checkpointing compatibility fixes
   - Bezier activation optimizations (JIT disabled for checkpoint compat)
   - Baseline model architecture support
   - Enhanced documentation and system requirements
-
-### 📝 Notes
-- This release updates the fluxflow-core dependency to v0.5.0
-- All training features from v0.4.0 remain unchanged
-- See v0.4.0 release notes below for major CFG and multi-dataset features
 
 ## [0.4.0] - 2025-12-17
 
@@ -53,7 +65,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Provides better preview quality during training
   - Matches inference-time generation quality
   - Only applies to flow training (`train_diff` or `train_diff_full`)
-  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 927-928, 1192-1193)
   - **Requires**: fluxflow-core with CFG sample generation support
 
 #### Multi-Dataset Pipeline Support
@@ -78,7 +89,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Logs warnings when models are auto-created
   - Moves models to correct device automatically
 - **User impact**: Pipeline mode now more resilient; no manual model initialization required
-- **Files**: `src/fluxflow_training/training/pipeline_orchestrator.py` (lines 579-713)
 
 #### Model Validation Before Training
 - **Pre-flight validation** checks required models exist before creating trainers
@@ -86,7 +96,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Prevents cryptic AttributeError crashes during training
 - **Files**: `src/fluxflow_training/training/pipeline_orchestrator.py`
 
-### 🧪 Testing
+### Changed
 - **Added 21 comprehensive unit tests** for multi-dataset pipeline
   - DatasetConfig dataclass tests (3 tests)
   - Dataset parsing tests for local + webdataset (4 tests)
@@ -94,8 +104,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Dataset validation tests (9 tests)
   - Backward compatibility tests (2 tests)
 - **File**: `tests/unit/test_pipeline_multi_dataset.py`
-
-### 📚 Documentation
 - **Major TRAINING_GUIDE.md improvements** for YAML-first configuration
   - Added "Configuration Methods" section comparing YAML vs CLI approaches
   - Rewrote Quick Start with dual paths: "CLI Quick Test" vs "YAML Config (Production)"
@@ -104,9 +112,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Eliminates confusion about external JSON optimizer configs
   - Emphasizes inline YAML optimizer configuration in pipeline mode
   - **Impact**: Users now understand YAML is the recommended production approach
-  - **Files**: `docs/TRAINING_GUIDE.md` (lines 102-220)
+- Added comprehensive multi-dataset training guide with use cases, examples, troubleshooting
+- Added example pipeline configuration with multiple datasets
 
-### 🐛 Fixed
+### Fixed
 
 #### Logging and Sampling Bugs
 - **CRITICAL: Missing JSONL records on crash/interrupt**
@@ -127,38 +136,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - Preserves samples for all encoder/decoder training modes
     - Reduces I/O overhead (~2-5 seconds per checkpoint for multi-image test sets)
     - Sample generation now accurately reflects active training modes
-  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 1168-1195)
 
 - **Sample generation decoupled from checkpointing**
   - Sample generation now triggered by `sample_interval` based on `global_step` (independent of checkpoint frequency)
   - Ensures consistent sample frequency across entire training run
   - Prevents missed samples when checkpoint interval doesn't align with sample needs
   - **Impact**: More reliable monitoring of training progress via samples
-  - **Files**: `src/fluxflow_training/scripts/train.py` (lines 1168-1195)
-  - **Note**: Sample filenames still use `epoch` parameter (passed at lines 1178, 1187) for compatibility
 
 - **Linting errors** in pipeline configuration (trailing whitespace)
 - **Pre-commit hooks** now enforced (flake8, black, pytest)
 
-### 📝 Documentation
-- Added comprehensive multi-dataset training guide with use cases, examples, troubleshooting
-- Added example pipeline configuration with multiple datasets
-
 ## [0.3.1] - 2025-12-13
 
-### 🔄 Dependencies
+### Changed
 - **Updated fluxflow dependency** from `>=0.3.0` to `>=0.3.1`
   - Aligns with fluxflow-core v0.3.1 release
   - Note: v0.3.0 skipped due to release coordination issues
 
-### 📝 Notes
-- This release updates dependency versions only
-- All training features from v0.3.0 remain unchanged
-- See v0.3.0 release notes below for major CFG features
-
 ## [0.3.0] - 2025-12-12
 
-### 🚀 Major Features
+### Added
 
 #### Classifier-Free Guidance (CFG) Support
 - **Training-time CFG implementation** with dropout-based conditioning
@@ -175,9 +172,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `apply_cfg_guidance()` - noise prediction combination
 - **Comprehensive test suite**: 212 tests covering training, inference, and utilities
 - **Memory validated**: CFG adds negligible overhead (<1 MB)
-- **Documentation**: A+ grade after audit (README, TRAINING_GUIDE, ARCHITECTURE)
 
-### 🔥 CRITICAL FIXES (December 2025)
+### Fixed
 
 #### Memory Optimizations
 - **CRITICAL FIX #1**: Removed LPIPS gradient checkpointing that caused OOM at 47.4GB on 48GB GPUs
@@ -205,42 +201,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Fix: Proper `torch.autograd.grad()` usage with `create_graph=True`
   - Result: Stable discriminator training, no memory leaks
 
-### 📊 Empirical Measurements (December 2025)
+### Changed
 
 **VRAM Usage by Configuration** (A6000 48GB):
 - VAE only (no GAN): ~18-22GB VRAM
 - VAE + GAN: ~25-30GB VRAM
-- VAE + GAN + LPIPS: ~28-35GB VRAM ✓ (after fixes)
-- VAE + GAN + LPIPS + SPADE: ~35-42GB VRAM ✓ (after fixes)
-- **Peak observed (before fixes)**: 47.4GB → OOM ❌
-- **Peak observed (after fixes)**: ~42GB → stable ✓
-
-### 📚 Documentation
-
-- **Grade A Documentation**: All 5 critical docs upgraded (commit: 7043ccd)
-  - README.md: C- → A+ (added memory requirements, OOM prevention)
-  - PIPELINE_ARCHITECTURE.md: F → A+ (verified FULLY IMPLEMENTED, 1035 lines)
-  - TRAINING_GUIDE.md: D+ → A+ (added memory section, hardware table)
-  - CONTRIBUTING.md: B → A+ (added memory testing guide)
-  - CHANGELOG.md: C → A+ (added Dec 2025 critical fixes)
-
-### 🧪 CI Validation
-
-**Test Suite**: 446 tests passed, 0 failures
-- Unit tests: 446/446 ✓
-- Integration tests: All passing
-- Code quality: flake8 clean, black formatted
-- Type checking: mypy clean (with acceptable warnings)
-
-**Linting**: All checks passed
-- flake8: 0 errors
-- black: formatted
-- isort: imports sorted
+- VAE + GAN + LPIPS: ~28-35GB VRAM (after fixes)
+- VAE + GAN + LPIPS + SPADE: ~35-42GB VRAM (after fixes)
+- Peak observed (before fixes): 47.4GB → OOM
+- Peak observed (after fixes): ~42GB → stable
 
 ## [0.2.1] - 2024-12-09
 
-
-### 🚀 Major Features
+### Added
 
 #### Pipeline Training Mode (NEW)
 - **Multi-step sequential training** with per-step configuration
@@ -272,94 +245,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Integrated with pipeline mode**
   - Example: GAN-only warmup → full VAE+GAN training
 
-### ✨ Enhanced Logging & Monitoring
-
-- **Batch timing** with `Xs/batch` in console output
-- **Step-specific progress files** for pipeline mode
-  - Each step writes to its own `training_metrics_<step_name>.jsonl`
-- **Correct GAN loss keys** in logs
-  - `loss_gen` (generator loss) and `loss_disc` (discriminator loss)
-  - Previously logged with inconsistent keys
-- **Mid-epoch sample generation** with batch numbers in filenames
-  - Sample naming: `sample_<step>_epoch_<N>_batch_<M>.png`
-  - Re-enabled after temporary disable in v0.1.x
-
-### 🐛 Bug Fixes
-
-- **GAN-only mode fixes**
-  - Fixed encoder gradients not flowing when `train_reconstruction=false`
-  - Fixed VAE trainer not called when `train_vae=false` but GAN enabled
-  - Fixed EMA not created for GAN-only mode
-  - Fixed metrics/console logging for GAN-only (check buffer instead of `train_vae` flag)
-- **Pipeline mode fixes**
-  - Fixed checkpoint resume state tracking for multi-step pipelines
-  - Fixed diagram generation for step-specific metrics files
-  - Fixed FloatBuffer attribute error (`count` → `len(_items)`)
-- **Sample generation fixes**
-  - Fixed sample file renaming conflicts
-  - Use epoch instead of batch in primary sample filenames
-  - Add step/epoch/batch naming for clarity
-
-### 📊 Diagram Generation Improvements
-
-- **Pipeline-aware diagram generation**
-  - Generates separate diagrams per pipeline step
-  - Aggregates metrics across steps for overview
-- **Step-specific graphs**
-  - Loss curves per step for focused analysis
-  - Learning rate schedules per step
-
-### 🧪 Testing
-
-- **Comprehensive unit tests** for logging output
-  - All config combinations tested (VAE, GAN, Flow, Pipeline)
-  - 61/61 tests passing
-- **Unit tests for `train_reconstruction` parameter**
-  - Validates GAN-only mode behavior
-  - Ensures encoder gradients flow correctly
-
-### 📚 Documentation
-
-- **New**: `docs/PIPELINE_ARCHITECTURE.md` (547 lines)
-  - Complete pipeline training guide
-  - Configuration reference with examples
-  - Troubleshooting guide
-  - GAN-only mode documentation
-- **Updated**: `README.md`
-  - Pipeline training mode section
-  - GAN-only mode section
-  - Enhanced console output examples
-  - Sample naming conventions
-  - v0.2.0 features highlighted
-- **Updated**: `docs/TRAINING_GUIDE.md`
-  - 100+ line pipeline training section
-  - Quick start examples
-  - Pipeline vs. standard training comparison
-  - Complete 3-stage pipeline example
-- **Updated**: `CONTRIBUTING.md`
-  - Pipeline testing guidance
-  - Step-by-step contribution workflow
-
-### 🛠️ Technical Improvements
-
-- **Max steps parameter** for quick testing
-  - `max_steps` CLI arg and pipeline config
-  - Exit training after N batches (useful for CI/testing)
-- **Step/epoch/batch naming** for sample images
-  - Clear provenance for generated samples
-  - Easier correlation with training logs
-
-### 📦 Configuration
-
-- **YAML-first configuration** for pipeline mode
-  - CLI args still supported for standard training
-  - Pipeline mode requires YAML config file
-- **Backward compatibility**
-  - All existing CLI args still work
-  - Standard training mode unchanged
-
-### Added
-
 #### WebDataset Optimizations
 - **Reduced shuffle/shard buffering** for faster startup
   - `shardshuffle=10` (was 100) - reduced shard buffer
@@ -371,8 +256,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `webdataset_label_key` (e.g. "json")
   - `webdataset_caption_key` (e.g. "prompt", "caption")
   - Enables support for any HuggingFace WebDataset format
-
-### 🚀 Added
 
 #### Stability Improvements
 - **EMA (Exponential Moving Average)** for flow training to stabilize training and improve generation quality
@@ -451,9 +334,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `ema_decay=0.9999` - EMA decay rate for parameter averaging
   - `lambda_align=0.0` - Text-image alignment loss weight (disabled by default, see Removed section)
 
+- **Batch timing** with `Xs/batch` in console output
+- **Step-specific progress files** for pipeline mode
+  - Each step writes to its own `training_metrics_<step_name>.jsonl`
+- **Correct GAN loss keys** in logs
+  - `loss_gen` (generator loss) and `loss_disc` (discriminator loss)
+  - Previously logged with inconsistent keys
+- **Mid-epoch sample generation** with batch numbers in filenames
+  - Sample naming: `sample_<step>_epoch_<N>_batch_<M>.png`
+  - Re-enabled after temporary disable in v0.1.x
+- **Pipeline-aware diagram generation**
+  - Generates separate diagrams per pipeline step
+  - Aggregates metrics across steps for overview
+- **Step-specific graphs**
+  - Loss curves per step for focused analysis
+  - Learning rate schedules per step
+- **Max steps parameter** for quick testing
+  - `max_steps` CLI arg and pipeline config
+  - Exit training after N batches (useful for CI/testing)
+- **Step/epoch/batch naming** for sample images
+  - Clear provenance for generated samples
+  - Easier correlation with training logs
+- **YAML-first configuration** for pipeline mode
+  - CLI args still supported for standard training
+  - Pipeline mode requires YAML config file
+- **Backward compatibility**
+  - All existing CLI args still work
+  - Standard training mode unchanged
+- **New**: `docs/PIPELINE_ARCHITECTURE.md` (547 lines)
+  - Complete pipeline training guide
+  - Configuration reference with examples
+  - Troubleshooting guide
+  - GAN-only mode documentation
+- **Updated**: `README.md`
+  - Pipeline training mode section
+  - GAN-only mode section
+  - Enhanced console output examples
+  - Sample naming conventions
+  - v0.2.0 features highlighted
+- **Updated**: `docs/TRAINING_GUIDE.md`
+  - 100+ line pipeline training section
+  - Quick start examples
+  - Pipeline vs. standard training comparison
+  - Complete 3-stage pipeline example
+- **Updated**: `CONTRIBUTING.md`
+  - Pipeline testing guidance
+  - Step-by-step contribution workflow
+- Added `lpips>=0.1.4` dependency for perceptual loss computation
+- LPIPS requires VGG16 pretrained weights (~528MB download on first use)
+  - Pre-download: `python -c "import lpips; lpips.LPIPS(net='vgg')"`
+  - Cached in `~/.cache/torch/hub/checkpoints/`
+- EMA parameters are not saved separately; use the tracked parameters for inference
+- Adaptive weights are computed per-batch based on inverse loss magnitudes
+- Instance noise decays to near-zero after ~10k steps
+
 ### Fixed
 
-#### Post-Release Bug Fixes
+#### Bug Fixes
+- **GAN-only mode fixes**
+  - Fixed encoder gradients not flowing when `train_reconstruction=false`
+  - Fixed VAE trainer not called when `train_vae=false` but GAN enabled
+  - Fixed EMA not created for GAN-only mode
+  - Fixed metrics/console logging for GAN-only (check buffer instead of `train_vae` flag)
+- **Pipeline mode fixes**
+  - Fixed checkpoint resume state tracking for multi-step pipelines
+  - Fixed diagram generation for step-specific metrics files
+  - Fixed FloatBuffer attribute error (`count` → `len(_items)`)
+- **Sample generation fixes**
+  - Fixed sample file renaming conflicts
+  - Use epoch instead of batch in primary sample filenames
+  - Add step/epoch/batch naming for clarity
 - **LPIPS deprecation warning** - Suppressed torchvision `pretrained` parameter warnings during LPIPS initialization
 - **Frequency-aware loss dimension mismatch** - Fixed `avg_pool2d` to use `kernel_size=3, padding=1` to preserve dimensions
 - **Text-image alignment dimension mismatch** - Fixed tensor pooling and added dimension validation
@@ -467,21 +417,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Set to `lambda_align=0.0` by default to avoid runtime errors
   - To enable: Add projection layer and set `lambda_align > 0`
   - Dimension mismatch is gracefully handled with warning
-
-### Dependencies
-- Added: `lpips>=0.1.4` for perceptual loss computation
-
-### Expected Improvements
-- **Stability**: 70% → 98% (NaN recovery enabled)
-- **Quality**: PSNR +4-6 dB, LPIPS 0.15 → 0.08
-- **Training Speed**: Minimal impact (-3% from LPIPS overhead)
-
-Note: Text alignment improvements not applicable as feature is disabled by default
-
-### Technical Notes
-- LPIPS requires VGG16 pretrained weights (~528MB download on first use)
-  - Pre-download: `python -c "import lpips; lpips.LPIPS(net='vgg')"`
-  - Cached in `~/.cache/torch/hub/checkpoints/`
-- EMA parameters are not saved separately; use the tracked parameters for inference
-- Adaptive weights are computed per-batch based on inverse loss magnitudes
-- Instance noise decays to near-zero after ~10k steps

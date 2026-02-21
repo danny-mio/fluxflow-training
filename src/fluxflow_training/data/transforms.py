@@ -1,7 +1,7 @@
 """Image preprocessing and collate functions for FluxFlow."""
 
 import math
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import torch
@@ -9,10 +9,11 @@ from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
 from torchvision import transforms
 
-try:
-    resample_filter: Any = Image.Resampling.LANCZOS  # type: ignore[attr-defined]
-except AttributeError:
-    resample_filter = Image.LANCZOS  # type: ignore[attr-defined, misc]
+resample_attr: Any = getattr(Image, "Resampling", None)
+if resample_attr is not None:
+    RESAMPLE_LANCZOS: Any = resample_attr.LANCZOS
+else:
+    RESAMPLE_LANCZOS = getattr(Image, "LANCZOS", getattr(Image, "BICUBIC"))
 
 
 def resize_preserving_aspect_min_distortion(
@@ -34,10 +35,11 @@ def resize_preserving_aspect_min_distortion(
     orig_w, orig_h = image.size
     key = (orig_w, orig_h, min_size, max_size)
 
-    if not hasattr(resize_preserving_aspect_min_distortion, "_cache"):
-        resize_preserving_aspect_min_distortion._cache = {}  # type: ignore
-
-    cache = resize_preserving_aspect_min_distortion._cache  # type: ignore
+    cache = getattr(resize_preserving_aspect_min_distortion, "_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(resize_preserving_aspect_min_distortion, "_cache", cache)
+    cache = cast(Dict[Tuple[int, int, int, int], Tuple[int, int]], cache)
 
     if key in cache:
         best_w, best_h = cache[key]
@@ -66,7 +68,7 @@ def resize_preserving_aspect_min_distortion(
 
     if best_h == orig_h and best_w == orig_w:
         return image
-    return image.resize((best_w, best_h), Image.LANCZOS)  # type: ignore[attr-defined, misc]
+    return image.resize((best_w, best_h), RESAMPLE_LANCZOS)
 
 
 def upscale_image(
@@ -178,7 +180,7 @@ def generate_reduced_versions(
             new_h = max(16, (new_h // 16) * 16)
 
             # Resize using Lanczos for high-quality downscaling
-            reduced_img = image.resize((new_w, new_h), resample_filter)
+            reduced_img = image.resize((new_w, new_h), RESAMPLE_LANCZOS)
             reduced_images.append(reduced_img)
 
     return reduced_images
@@ -259,7 +261,7 @@ def collate_fn_variable(
             resized_imgs = []
             for img in imgs:
                 if img.size != most_common_size:
-                    img = img.resize(most_common_size, resample_filter)
+                    img = img.resize(most_common_size, RESAMPLE_LANCZOS)
                 resized_imgs.append(img)
             imgs = resized_imgs
 
