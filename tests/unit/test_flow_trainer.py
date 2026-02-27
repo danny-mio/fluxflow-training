@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from unittest.mock import MagicMock, patch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ConstantLR
@@ -249,8 +250,6 @@ class TestFlowTrainerContextDimsLoss:
         """
         ctx_loss formula: zero prediction vs perfect prediction must produce different losses.
         """
-        import torch.nn.functional as F
-
         vae_dim, ctx_dim = 32, 5
         B, T = 2, 16
 

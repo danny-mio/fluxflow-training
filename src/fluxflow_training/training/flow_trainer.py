@@ -250,7 +250,7 @@ class FlowTrainer:
             logger.error("NaN detected in flow prediction - skipping batch")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
-        # Fixed normalization for large latent values
+        # Determine VAE dim boundary; context dims (if any) follow in the last positions.
         vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
 
         # Compute v-prediction target: v = alpha_t * noise - sigma_t * x0.
@@ -268,7 +268,7 @@ class FlowTrainer:
             # Normalise by latent std. v_target has latent units so latent_std is correct.
             # Mean is not subtracted from v_target because it is a difference; its mean ≈ 0.
             latent_std = vae_latents.detach().std() + 1e-8
-            normalized_v_target = v_target.detach() / latent_std
+            normalized_v_target = v_target.detach() / latent_std  # detach: no grad through target
             pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
             normalized_pred_vae = pred_vae / latent_std
 
@@ -292,13 +292,13 @@ class FlowTrainer:
             v_target = alpha_t * noise_fp32 - sigma_t * img_seq_fp32  # [B, T, D]
 
             latent_std = img_seq_fp32.detach().std() + 1e-8
-            normalized_v_target = v_target.detach() / latent_std
+            normalized_v_target = v_target.detach() / latent_std  # detach: no grad through target
             normalized_pred = pred_seq.float() / latent_std
 
             diff_loss = nn.functional.smooth_l1_loss(
                 normalized_pred, normalized_v_target, beta=0.01
             )
-            ctx_loss = torch.tensor(0.0, device=img_seq.device)
+            ctx_loss = torch.tensor(0.0, device=img_seq.device)  # no context dims in v0.6
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
@@ -419,7 +419,7 @@ class FlowTrainer:
             "pred_mean": pred_seq.mean().item(),
             "pred_std": pred_seq.std().item(),
             # Latent statistics for monitoring normalization effectiveness
-            "latent_mean": (
+            "vae_latent_mean": (
                 float(img_seq[:, :, :vae_dims].mean().item())
                 if context_dims > 0
                 else float(img_seq.mean().item())
