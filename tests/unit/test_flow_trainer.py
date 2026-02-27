@@ -88,10 +88,52 @@ class TestFlowTrainerVPredLoss:
 
     def test_loss_target_is_not_x0(self):
         """
-        Capture the target passed to smooth_l1_loss.
-        Before the fix this equals normalized x0 — after the fix it must not.
+        The loss target must be the v-prediction vector, not normalized x0.
+        Uses a deterministic compressor so the captured target can be
+        meaningfully compared against what the buggy code would produce.
         """
-        trainer, flow, compressor = _make_trainer(vae_dim=32, context_dims=0, token_count=16)
+        # Use context_dims=0 so loss goes through the v0.6 branch (simpler to verify)
+        from fluxflow_training.training.flow_trainer import FlowTrainer
+
+        vae_dim = 8
+        token_count = 4
+        B = 2
+
+        # Deterministic fixed latent packet — same tensor every call
+        fixed_packet = torch.zeros(B, token_count + 1, vae_dim)
+        fixed_packet[:, :-1, :] = 1.0  # all image tokens = 1.0 (x0)
+        fixed_packet[:, -1, 0] = 4 / 64.0
+        fixed_packet[:, -1, 1] = 4 / 64.0
+
+        flow = _MinimalFlow(vae_dim)
+        text_encoder = MagicMock()
+        text_encoder.parameters = lambda recurse=True: iter([])
+        text_encoder.side_effect = lambda ids, attention_mask=None: torch.randn(ids.shape[0], 64)
+        text_encoder.eval = MagicMock()
+        text_encoder.train = MagicMock()
+
+        compressor = MagicMock()
+        compressor.get_context_dims.return_value = 0  # no context dims → v0.6 branch
+        compressor.use_gradient_checkpointing = False
+        compressor.side_effect = lambda imgs: fixed_packet.clone()
+        compressor.parameters = lambda recurse=True: iter([])
+
+        optimizer = AdamW(flow.parameters(), lr=1e-4)
+        lr_sched = ConstantLR(optimizer)
+        mock_acc = MagicMock()
+        mock_acc.backward = lambda loss: loss.backward()
+        mock_acc.clip_grad_norm_ = nn.utils.clip_grad_norm_
+
+        trainer = FlowTrainer(
+            flow_processor=flow,
+            text_encoder=text_encoder,
+            compressor=compressor,
+            optimizer=optimizer,
+            scheduler=lr_sched,
+            gradient_clip_norm=1.0,
+            num_train_timesteps=100,
+            accelerator=mock_acc,
+        )
 
         captured = {}
         orig = nn.functional.smooth_l1_loss
@@ -101,25 +143,30 @@ class TestFlowTrainerVPredLoss:
                 captured["target"] = target.detach().clone()
             return orig(pred, target, **kw)
 
-        with patch("torch.nn.functional.smooth_l1_loss", side_effect=capture):
+        with patch(
+            "fluxflow_training.training.flow_trainer.nn.functional.smooth_l1_loss",
+            side_effect=capture,
+        ):
             trainer.train_step(
-                torch.randn(2, 3, 64, 64),
-                torch.zeros(2, 8, dtype=torch.long),
-                torch.ones(2, 8, dtype=torch.long),
+                torch.randn(B, 3, 16, 16),
+                torch.zeros(B, 8, dtype=torch.long),
+                torch.ones(B, 8, dtype=torch.long),
                 global_step=0,
             )
 
         assert "target" in captured, "smooth_l1_loss was never called"
 
-        # Build the normalized x0 as the buggy code would produce it
-        packet = compressor(torch.randn(2, 3, 64, 64))
-        img_seq = packet[:, :-1, :].float()
-        latent_std = img_seq.detach().std() + 1e-8
-        normalized_x0 = (img_seq - img_seq.detach().mean()) / latent_std
+        # Build what the BUGGY code would have used as target: normalized x0
+        x0 = fixed_packet[:, :-1, :].float()  # [B, T, vae_dim] — all ones
+        latent_std = x0.detach().std() + 1e-8
+        buggy_target = (x0 - x0.detach().mean()) / latent_std
 
-        assert not torch.allclose(
-            captured["target"], normalized_x0, atol=1e-3
-        ), "diff_loss target equals normalized x0 — v-prediction target not computed."
+        # After the fix, the captured target must be the v-prediction vector, not x0.
+        # v_target depends on sampled noise and alphas_cumprod — it differs from x0.
+        assert not torch.allclose(captured["target"], buggy_target, atol=1e-3), (
+            "diff_loss target equals normalized x0 — v-prediction target not computed. "
+            "The bug is still present."
+        )
 
     def test_v_target_at_t0_equals_noise(self):
         """At t=0: alpha_cumprod≈1, sigma≈0 → v_target ≈ noise."""
