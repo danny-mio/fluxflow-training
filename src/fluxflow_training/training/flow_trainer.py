@@ -361,30 +361,19 @@ class FlowTrainer:
 
         # Get loss value for metrics (defined before accumulation check)
         loss_value = float(total_loss.detach().item())
+        grad_norm: float = 0.0
 
         # Only update weights after accumulating gradients
         self._accumulation_step += 1
         should_step = (self._accumulation_step % self.gradient_accumulation_steps) == 0
 
         if should_step:
-            # Adaptive gradient clipping for better training stability
-            # Compute global gradient norm
-            grad_norms = []
-            for param in self.flow_processor.parameters():
-                if param.grad is not None:
-                    grad_norms.append(torch.norm(param.grad.detach()))
-
-            if grad_norms:
-                total_norm = torch.norm(torch.stack(grad_norms))
-
-                # Adaptive clipping: scale clip norm based on current gradient magnitude
-                adaptive_clip_norm = min(self.gradient_clip_norm, total_norm.item() * 1.5)
-
-                # Apply adaptive clipping
-                self.accelerator.clip_grad_norm_(
-                    self.flow_processor.parameters(),
-                    adaptive_clip_norm,
-                )
+            # Clip gradients to configured norm. Returns the pre-clip total norm.
+            clipped = self.accelerator.clip_grad_norm_(
+                self.flow_processor.parameters(),
+                self.gradient_clip_norm,
+            )
+            grad_norm = float(clipped) if isinstance(clipped, torch.Tensor) else float(clipped)
 
             self.optimizer.step()
             if self.text_encoder_optimizer is not None:
@@ -424,7 +413,7 @@ class FlowTrainer:
             "diff_loss": float(diff_loss.detach().item()),
             "ctx_loss": float(ctx_loss.detach().item()),
             "align_loss": float(align_loss.detach().item()),
-            "grad_norm_flow": compute_grad_norm(self.flow_processor.parameters()),
+            "grad_norm_flow": grad_norm,
             "grad_norm_text": compute_grad_norm(self.text_encoder.parameters()),
             "lr_flow": self.optimizer.param_groups[0]["lr"],
             "pred_mean": pred_seq.mean().item(),

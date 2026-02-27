@@ -266,3 +266,46 @@ class TestFlowTrainerContextDimsLoss:
 
         assert loss_perfect.item() < 1e-6, "Perfect prediction should give ~0 loss"
         assert loss_zero_pred.item() > 0.1, "Zero prediction should give significant loss"
+
+
+# ---------------------------------------------------------------------------
+# Task 3: gradient clipping
+# ---------------------------------------------------------------------------
+
+
+class TestFlowTrainerGradientClipping:
+    """Gradient clipping must be effective and not over-clip small gradients."""
+
+    def test_large_gradients_clipped_to_clip_norm(self):
+        """After clipping, grad norm must be <= gradient_clip_norm."""
+        trainer, flow, _ = _make_trainer()
+        for p in flow.parameters():
+            p.grad = torch.ones_like(p) * 100.0
+
+        pre_norm = sum(p.grad.norm().item() ** 2 for p in flow.parameters()) ** 0.5
+        assert pre_norm > trainer.gradient_clip_norm
+
+        nn.utils.clip_grad_norm_(flow.parameters(), trainer.gradient_clip_norm)
+
+        post_norm = sum(p.grad.norm().item() ** 2 for p in flow.parameters()) ** 0.5
+        assert (
+            post_norm <= trainer.gradient_clip_norm + 1e-3
+        ), f"Post-clip norm {post_norm:.4f} exceeds clip_norm {trainer.gradient_clip_norm}"
+
+    def test_small_gradients_not_over_clipped(self):
+        """When grad norm < clip_norm, gradients must not be reduced."""
+        trainer, flow, _ = _make_trainer()
+        n_params = sum(p.numel() for p in flow.parameters())
+        small_val = trainer.gradient_clip_norm * 0.1 / (n_params**0.5)
+        for p in flow.parameters():
+            p.grad = torch.full_like(p, small_val)
+
+        pre_norm = sum(p.grad.norm().item() ** 2 for p in flow.parameters()) ** 0.5
+        assert pre_norm < trainer.gradient_clip_norm, "pre_norm should be small for this test"
+
+        nn.utils.clip_grad_norm_(flow.parameters(), trainer.gradient_clip_norm)
+
+        post_norm = sum(p.grad.norm().item() ** 2 for p in flow.parameters()) ** 0.5
+        assert (
+            abs(post_norm - pre_norm) < 1e-5
+        ), f"Small gradients ({pre_norm:.6f}) were incorrectly clipped to {post_norm:.6f}."
