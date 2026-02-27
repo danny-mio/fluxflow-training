@@ -253,35 +253,41 @@ class FlowTrainer:
         # Fixed normalization for large latent values
         vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
 
+        # Compute v-prediction target: v = alpha_t * noise - sigma_t * x0.
+        # alphas_cumprod[t] is [B]; reshape to [B, 1, 1] for broadcasting with [B, T, D].
+        alpha_cumprod_t = self.alphas_cumprod[t].float()  # [B]
+        alpha_t = alpha_cumprod_t.sqrt().view(-1, 1, 1)  # [B, 1, 1]
+        sigma_t = (1.0 - alpha_cumprod_t).sqrt().view(-1, 1, 1)  # [B, 1, 1]
+
         if context_dims > 0:
-            # v0.7.0: Use global normalization for stability
-            vae_latents = img_seq[:, :, :vae_dims].float()
-            vae_noise = noise
+            # v0.7+: noise applied only to VAE dims — compute v-target for those dims.
+            vae_latents = img_seq[:, :, :vae_dims].float()  # [B, T, vae_dims]
+            vae_noise = noise.float()  # [B, T, vae_dims]
+            v_target = alpha_t * vae_noise - sigma_t * vae_latents  # [B, T, vae_dims]
 
-            # Global statistics across batch and sequence for stability
-            latent_mean = vae_latents.detach().mean()
+            # Normalise by latent std. v_target has latent units so latent_std is correct.
+            # Mean is not subtracted from v_target because it is a difference; its mean ≈ 0.
             latent_std = vae_latents.detach().std() + 1e-8
-
-            normalized_latents = (vae_latents - latent_mean) / latent_std
-            normalized_noise = (vae_noise.float() - latent_mean) / latent_std
-
-            # Simple normalized reconstruction loss
+            normalized_v_target = v_target.detach() / latent_std
             pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
-            normalized_pred = (pred_vae - latent_mean) / latent_std
+            normalized_pred_vae = pred_vae / latent_std
 
-            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_latents, beta=0.01)
+            diff_loss = nn.functional.smooth_l1_loss(
+                normalized_pred_vae, normalized_v_target, beta=0.01
+            )
         else:
-            # v0.6.0 and earlier: Global normalization
+            # v0.6 and earlier: all dims were noised.
             img_seq_fp32 = img_seq.float()
-            latent_mean = img_seq_fp32.detach().mean()
+            noise_fp32 = noise.float()
+            v_target = alpha_t * noise_fp32 - sigma_t * img_seq_fp32  # [B, T, D]
+
             latent_std = img_seq_fp32.detach().std() + 1e-8
+            normalized_v_target = v_target.detach() / latent_std
+            normalized_pred = pred_seq.float() / latent_std
 
-            normalized_img_seq = (img_seq_fp32 - latent_mean) / latent_std
-            normalized_noise = (noise.float() - latent_mean) / latent_std
-
-            normalized_pred = (pred_seq.float() - latent_mean) / latent_std
-
-            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_img_seq, beta=0.01)
+            diff_loss = nn.functional.smooth_l1_loss(
+                normalized_pred, normalized_v_target, beta=0.01
+            )
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
