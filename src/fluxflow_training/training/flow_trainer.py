@@ -68,6 +68,7 @@ class FlowTrainer:
         ema_decay: float = 0.9999,
         lambda_align: float = 0.0,
         cfg_dropout_prob: float = 0.0,
+        ctx_loss_weight: float = 1.0,
         accelerator=None,
     ):
         """
@@ -88,6 +89,10 @@ class FlowTrainer:
             lambda_align: Text-image alignment loss weight (default: 0.1)
             cfg_dropout_prob: Classifier-free guidance dropout probability (default: 0.0)
                               Set to 0.10 for standard CFG training
+            ctx_loss_weight: Scale factor applied to the context-dim v-prediction loss
+                             relative to the VAE-dim v-prediction loss. Default 1.0 (equal).
+                             Increase if context dims are under-trained; decrease if they
+                             dominate early and destabilise the VAE loss.
             accelerator: Accelerate accelerator instance
         """
         self.flow_processor = flow_processor
@@ -102,6 +107,7 @@ class FlowTrainer:
         self._accumulation_step = 0  # Track current accumulation step
         self.lambda_align = lambda_align
         self.cfg_dropout_prob = cfg_dropout_prob
+        self.ctx_loss_weight = ctx_loss_weight
         self.accelerator = accelerator
 
         # Setup EMA for flow processor and text encoder
@@ -224,19 +230,14 @@ class FlowTrainer:
                 f"Timestep range: {t.min().item()}-{t.max().item()} (mean: {t.float().mean().item():.1f})"
             )
 
-        if context_dims > 0:
-            # v0.7.0: Only add noise to VAE dimensions, keep context clean
-            vae_dims = img_seq.size(-1) - context_dims
-            noise = torch.randn_like(img_seq[:, :, :vae_dims])
-            # Add noise only to VAE part
-            noised_vae = self.noise_scheduler.add_noise(img_seq[:, :, :vae_dims], noise, t)
-            # Keep context unchanged
-            noised_seq = torch.cat([noised_vae, img_seq[:, :, vae_dims:]], dim=-1)
-        else:
-            # v0.6.0 and earlier: Add noise to all dimensions
-            vae_dims = img_seq.size(-1)
-            noise = torch.randn_like(img_seq)
-            noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
+        # Noise all dims uniformly — matches inference exactly.
+        # Inference starts from torch.randn over all D dims (VAE + context) and the
+        # scheduler denoises them with a single alpha_t/sigma_t schedule.  Training
+        # must present the same noisy input distribution so the model learns to
+        # denoise context dims from noise, not from their own clean values.
+        vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
+        noise = torch.randn_like(img_seq)  # [B, T, D+context_dims]
+        noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)  # [B, T, D+context_dims]
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
         # Predict (flow processor expects normalized timesteps in [0, 1]).
@@ -250,55 +251,49 @@ class FlowTrainer:
             logger.error("NaN detected in flow prediction - skipping batch")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
-        # Determine VAE dim boundary; context dims (if any) follow in the last positions.
-        vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
-
         # Compute v-prediction target: v = alpha_t * noise - sigma_t * x0.
         # alphas_cumprod[t] is [B]; reshape to [B, 1, 1] for broadcasting with [B, T, D].
         alpha_cumprod_t = self.alphas_cumprod[t].float()  # [B]
         alpha_t = alpha_cumprod_t.sqrt().view(-1, 1, 1)  # [B, 1, 1]
         sigma_t = (1.0 - alpha_cumprod_t).sqrt().view(-1, 1, 1)  # [B, 1, 1]
 
+        # v-prediction target over all dims: v = alpha_t * noise - sigma_t * x0.
+        # All dims (VAE + context) are noised identically above, so the same
+        # alpha_t / sigma_t applies to both groups.
+        img_seq_fp32 = img_seq.float()
+        noise_fp32 = noise.float()
+        v_target = alpha_t * noise_fp32 - sigma_t * img_seq_fp32  # [B, T, D+context_dims]
+
         if context_dims > 0:
-            # v0.7+: noise applied only to VAE dims — compute v-target for those dims.
-            vae_latents = img_seq[:, :, :vae_dims].float()  # [B, T, vae_dims]
-            vae_noise = noise.float()  # [B, T, vae_dims]
-            v_target = alpha_t * vae_noise - sigma_t * vae_latents  # [B, T, vae_dims]
+            # Split v_target and prediction into VAE and context groups, normalise each
+            # separately to equalise loss scale across the two very different dynamic ranges.
+            # VAE dims (~unit Gaussian) and context dims (~0.1-0.5 range after mean-pooling)
+            # would otherwise produce a ~10x loss imbalance under a shared normalisation.
+            vae_v_target = v_target[:, :, :vae_dims].detach()  # [B, T, vae_dims]
+            ctx_v_target = v_target[:, :, vae_dims:].detach()  # [B, T, context_dims]
 
-            # Normalise by latent std. v_target has latent units so latent_std is correct.
-            # Mean is not subtracted from v_target because it is a difference; its mean ≈ 0.
-            latent_std = vae_latents.detach().std() + 1e-8
-            normalized_v_target = v_target.detach() / latent_std  # detach: no grad through target
             pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
-            normalized_pred_vae = pred_vae / latent_std
-
-            diff_loss = nn.functional.smooth_l1_loss(
-                normalized_pred_vae, normalized_v_target, beta=0.01
-            )
-
-            # Context dims are not noised — supervise with direct x0-reconstruction.
-            # Use separate scale since context dims have different dynamic range than VAE dims.
-            ctx_target = img_seq[:, :, vae_dims:].float()  # [B, T, context_dims]
             pred_ctx = pred_seq[:, :, vae_dims:].contiguous().float()
-            ctx_std = ctx_target.detach().std() + 1e-8
-            ctx_loss = nn.functional.smooth_l1_loss(
-                pred_ctx / ctx_std, ctx_target / ctx_std, beta=0.01
+
+            vae_std = img_seq_fp32[:, :, :vae_dims].detach().std() + 1e-8
+            ctx_std = img_seq_fp32[:, :, vae_dims:].detach().std() + 1e-8
+
+            vae_loss = nn.functional.smooth_l1_loss(
+                pred_vae / vae_std, vae_v_target / vae_std, beta=0.01
             )
-            diff_loss = diff_loss + ctx_loss
+            ctx_loss = nn.functional.smooth_l1_loss(
+                pred_ctx / ctx_std, ctx_v_target / ctx_std, beta=0.01
+            )
+            diff_loss = vae_loss + self.ctx_loss_weight * ctx_loss
         else:
-            # v0.6 and earlier: all dims were noised.
-            img_seq_fp32 = img_seq.float()
-            noise_fp32 = noise.float()
-            v_target = alpha_t * noise_fp32 - sigma_t * img_seq_fp32  # [B, T, D]
-
+            # v0.6 and earlier: no context dims, single normalised loss.
             latent_std = img_seq_fp32.detach().std() + 1e-8
-            normalized_v_target = v_target.detach() / latent_std  # detach: no grad through target
+            normalized_v_target = v_target.detach() / latent_std
             normalized_pred = pred_seq.float() / latent_std
-
             diff_loss = nn.functional.smooth_l1_loss(
                 normalized_pred, normalized_v_target, beta=0.01
             )
-            ctx_loss = torch.tensor(0.0, device=img_seq.device)  # no context dims in v0.6
+            ctx_loss = torch.tensor(0.0, device=img_seq.device)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
