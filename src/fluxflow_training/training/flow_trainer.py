@@ -275,6 +275,16 @@ class FlowTrainer:
             diff_loss = nn.functional.smooth_l1_loss(
                 normalized_pred_vae, normalized_v_target, beta=0.01
             )
+
+            # Context dims are not noised — supervise with direct x0-reconstruction.
+            # Use separate scale since context dims have different dynamic range than VAE dims.
+            ctx_target = img_seq[:, :, vae_dims:].float()  # [B, T, context_dims]
+            pred_ctx = pred_seq[:, :, vae_dims:].contiguous().float()
+            ctx_std = ctx_target.detach().std() + 1e-8
+            ctx_loss = nn.functional.smooth_l1_loss(
+                pred_ctx / ctx_std, ctx_target / ctx_std, beta=0.01
+            )
+            diff_loss = diff_loss + ctx_loss
         else:
             # v0.6 and earlier: all dims were noised.
             img_seq_fp32 = img_seq.float()
@@ -288,6 +298,7 @@ class FlowTrainer:
             diff_loss = nn.functional.smooth_l1_loss(
                 normalized_pred, normalized_v_target, beta=0.01
             )
+            ctx_loss = torch.tensor(0.0, device=img_seq.device)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
@@ -411,6 +422,7 @@ class FlowTrainer:
         metrics = {
             "flow_loss": loss_value,
             "diff_loss": float(diff_loss.detach().item()),
+            "ctx_loss": float(ctx_loss.detach().item()),
             "align_loss": float(align_loss.detach().item()),
             "grad_norm_flow": compute_grad_norm(self.flow_processor.parameters()),
             "grad_norm_text": compute_grad_norm(self.text_encoder.parameters()),

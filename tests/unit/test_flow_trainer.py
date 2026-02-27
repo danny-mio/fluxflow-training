@@ -202,3 +202,67 @@ class TestFlowTrainerVPredLoss:
 
         assert not torch.allclose(v, noise, atol=0.01)
         assert not torch.allclose(v, x0, atol=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Task 2: context dim supervision
+# ---------------------------------------------------------------------------
+
+
+class TestFlowTrainerContextDimsLoss:
+    """Context dims must have gradient signal and be included in the loss."""
+
+    def test_context_dims_receive_gradient(self):
+        """flow.proj.weight.grad must be non-None and finite after train_step."""
+        trainer, flow, _ = _make_trainer(vae_dim=32, context_dims=5, token_count=16)
+
+        captured_grad = {}
+        flow.proj.weight.register_hook(lambda g: captured_grad.update({"g": g}))
+
+        trainer.train_step(
+            torch.randn(2, 3, 64, 64),
+            torch.zeros(2, 8, dtype=torch.long),
+            torch.ones(2, 8, dtype=torch.long),
+            global_step=0,
+        )
+
+        assert "g" in captured_grad, "No gradient reached flow.proj.weight"
+        assert torch.isfinite(captured_grad["g"]).all(), "NaN/Inf in gradients"
+
+    def test_ctx_loss_present_in_metrics(self):
+        """train_step must return a 'ctx_loss' key in metrics."""
+        trainer, _, _ = _make_trainer(vae_dim=32, context_dims=5, token_count=16)
+        metrics = trainer.train_step(
+            torch.randn(2, 3, 64, 64),
+            torch.zeros(2, 8, dtype=torch.long),
+            torch.ones(2, 8, dtype=torch.long),
+            global_step=0,
+        )
+        assert "ctx_loss" in metrics, (
+            "Metrics must include 'ctx_loss'. " "Missing means context dims are not supervised."
+        )
+        assert (
+            metrics["ctx_loss"] > 0.0
+        ), "ctx_loss should be positive (context dims not trivially zero)"
+
+    def test_loss_is_sensitive_to_context_dim_prediction(self):
+        """
+        ctx_loss formula: zero prediction vs perfect prediction must produce different losses.
+        """
+        import torch.nn.functional as F
+
+        vae_dim, ctx_dim = 32, 5
+        B, T = 2, 16
+
+        ctx_target = torch.randn(B, T, ctx_dim) * 3.0  # non-trivial scale
+        ctx_std = ctx_target.detach().std() + 1e-8
+
+        # Perfect prediction → zero loss
+        loss_perfect = F.smooth_l1_loss(ctx_target / ctx_std, ctx_target / ctx_std, beta=0.01)
+        # Zero prediction → non-zero loss
+        loss_zero_pred = F.smooth_l1_loss(
+            torch.zeros_like(ctx_target) / ctx_std, ctx_target / ctx_std, beta=0.01
+        )
+
+        assert loss_perfect.item() < 1e-6, "Perfect prediction should give ~0 loss"
+        assert loss_zero_pred.item() > 0.1, "Zero prediction should give significant loss"
