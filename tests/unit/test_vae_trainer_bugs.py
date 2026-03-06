@@ -148,12 +148,11 @@ class TestDiscriminatorUsesStochasticLatents:
 
     @staticmethod
     def _source():
+        import importlib.util
         import pathlib
 
-        return pathlib.Path(
-            "/Volumes/DanieleExt/ai/ffnew/fluxflow-training/src/"
-            "fluxflow_training/training/vae_trainer.py"
-        ).read_text()
+        spec = importlib.util.find_spec("fluxflow_training.training.vae_trainer")
+        return pathlib.Path(spec.origin).read_text()
 
     def test_discriminator_compressor_called_with_training_true(self):
         """Discriminator must call compressor(real_imgs, training=True) not training=False.
@@ -186,12 +185,11 @@ class TestNoDeadCodeAfterRaise:
 
     @staticmethod
     def _source():
+        import importlib.util
         import pathlib
 
-        return pathlib.Path(
-            "/Volumes/DanieleExt/ai/ffnew/fluxflow-training/src/"
-            "fluxflow_training/training/vae_trainer.py"
-        ).read_text()
+        spec = importlib.util.find_spec("fluxflow_training.training.vae_trainer")
+        return pathlib.Path(spec.origin).read_text()
 
     def test_no_unreachable_code_in_get_effective_spade_usage(self):
         """vae_trainer.py must not contain dead code with noqa: F821 or the old dead block."""

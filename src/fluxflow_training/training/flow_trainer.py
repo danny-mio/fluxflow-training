@@ -275,8 +275,11 @@ class FlowTrainer:
             pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
             pred_ctx = pred_seq[:, :, vae_dims:].contiguous().float()
 
-            vae_std = img_seq_fp32[:, :, :vae_dims].detach().std() + 1e-8
-            ctx_std = img_seq_fp32[:, :, vae_dims:].detach().std() + 1e-8
+            # Normalise by the v-target's own std so the scale is consistent across
+            # all timesteps.  Using clean-x0 std (ctx ~0.1-0.5) would over-weight
+            # ctx_loss ~11x at high-noise timesteps where v_target ≈ noise (std ~1).
+            vae_std = vae_v_target.std() + 1e-8
+            ctx_std = ctx_v_target.std() + 1e-8
 
             vae_loss = nn.functional.smooth_l1_loss(
                 pred_vae / vae_std, vae_v_target / vae_std, beta=0.01
