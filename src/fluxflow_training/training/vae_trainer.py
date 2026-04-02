@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 # Context encoder uses SiLU activation
 from fluxflow.utils import get_logger
+from fluxflow.utils.mps import mps_safe_pool2d
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
@@ -43,24 +44,7 @@ class ContextEncoder(nn.Module):
         # Encode
         features = self.encoder(x)  # [B, C, H, W]
 
-        # Handle MPS adaptive pooling issue
-        try:
-            # Try MPS-compatible pooling
-            pooled = F.adaptive_avg_pool2d(features, (self.context_height, self.context_width))
-        except RuntimeError as e:
-            if "MPS" in str(e) and "divisible" in str(e):
-                # Fallback: interpolate to target size
-                pooled = F.interpolate(
-                    features,
-                    size=(self.context_height, self.context_width),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-                pooled = torch.mean(pooled, dim=[2, 3], keepdim=True).expand(
-                    -1, -1, self.context_height, self.context_width
-                )
-            else:
-                raise e
+        pooled = mps_safe_pool2d(features, output_size=(self.context_height, self.context_width))
 
         return pooled
 
