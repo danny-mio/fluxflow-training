@@ -35,6 +35,14 @@ def compute_grad_norm(parameters):
     return total_norm**0.5
 
 
+def _empty_cache(device: torch.device) -> None:
+    """Free cached memory for the current device."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+
+
 class FlowTrainer:
     """
     Handles flow-based diffusion model training.

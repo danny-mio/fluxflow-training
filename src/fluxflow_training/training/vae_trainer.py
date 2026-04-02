@@ -80,6 +80,14 @@ def compute_grad_norm(parameters):
     return total_norm**0.5
 
 
+def _empty_cache(device: torch.device) -> None:
+    """Free cached memory for the current device."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+
+
 class VAETrainer:
     """
     Handles VAE (Variational Autoencoder) training.
@@ -1194,10 +1202,7 @@ class VAETrainer:
 
         # CRITICAL: Clear cache before backward to prevent OOM
         # Gradient checkpointing in VAE causes memory spikes during backward pass
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        elif torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        _empty_cache(real_imgs.device)
 
         self.accelerator.backward(total_loss)
 
