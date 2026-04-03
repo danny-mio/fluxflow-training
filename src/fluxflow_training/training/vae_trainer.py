@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 # Context encoder uses SiLU activation
 from fluxflow.utils import get_logger
+from fluxflow.utils.mps import mps_safe_pool2d
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
@@ -43,24 +44,7 @@ class ContextEncoder(nn.Module):
         # Encode
         features = self.encoder(x)  # [B, C, H, W]
 
-        # Handle MPS adaptive pooling issue
-        try:
-            # Try MPS-compatible pooling
-            pooled = F.adaptive_avg_pool2d(features, (self.context_height, self.context_width))
-        except RuntimeError as e:
-            if "MPS" in str(e) and "divisible" in str(e):
-                # Fallback: interpolate to target size
-                pooled = F.interpolate(
-                    features,
-                    size=(self.context_height, self.context_width),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-                pooled = torch.mean(pooled, dim=[2, 3], keepdim=True).expand(
-                    -1, -1, self.context_height, self.context_width
-                )
-            else:
-                raise e
+        pooled = mps_safe_pool2d(features, output_size=(self.context_height, self.context_width))
 
         return pooled
 
@@ -81,10 +65,6 @@ def check_for_nan(tensor, name, logger_inst):
 
 def add_instance_noise(x, noise_std=0.01, decay_rate=0.9999, step=0):
     """Add decaying Gaussian noise to prevent discriminator overfitting."""
-    if not x.requires_grad:  # Only during training
-        return x
-
-    # Decay noise over training
     current_std = noise_std * (decay_rate**step)
     noise = torch.randn_like(x) * current_std
     return x + noise
@@ -98,6 +78,14 @@ def compute_grad_norm(parameters):
             param_norm = p.grad.data.norm(2)
             total_norm += param_norm.item() ** 2
     return total_norm**0.5
+
+
+def _empty_cache(device: torch.device) -> None:
+    """Free cached memory for the current device."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
 
 
 class VAETrainer:
@@ -436,39 +424,6 @@ class VAETrainer:
         else:
             raise ValueError(f"Unknown SPADE training mode: {self.spade_training_mode}")
 
-        # LPIPS perceptual loss
-        self.use_lpips = use_lpips  # noqa: F821
-        self.lambda_lpips = lambda_lpips  # noqa: F821
-        self.lpips_fn = None
-        if self.use_lpips:
-            import warnings
-
-            import lpips
-
-            # Suppress all torchvision/lpips deprecation warnings
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=UserWarning)
-                warnings.filterwarnings("ignore", category=FutureWarning)
-                # Use spatial=True for detailed perceptual loss maps
-                self.lpips_fn = lpips.LPIPS(net="vgg", spatial=True).eval()
-            # Freeze parameters (device will be set dynamically)
-            for param in self.lpips_fn.parameters():
-                param.requires_grad = False
-
-        # Metrics buffers
-        self.vae_loss_buffer = FloatBuffer(max_items=20)
-        self.kl_loss_buffer = FloatBuffer(max_items=20)
-        self.d_loss_buffer = FloatBuffer(max_items=20)
-        self.g_loss_buffer = FloatBuffer(max_items=20)
-        self.lpips_loss_buffer = FloatBuffer(max_items=20)
-
-        # Loss history for adaptive weighting
-        self.loss_history = {
-            "recon": FloatBuffer(100),
-            "kl": FloatBuffer(100),
-            "gan": FloatBuffer(100),
-        }
-
     def _frequency_weighted_loss(self, pred, target, alpha=1.0):
         """
         Frequency-aware reconstruction loss emphasizing high-frequency details.
@@ -658,8 +613,13 @@ class VAETrainer:
 
         return loss / 3.0
 
-    def _compute_adaptive_weight(self, loss_type):
-        """Balance losses based on magnitude using inverse weighting."""
+    def _compute_adaptive_weight(self, loss_type, max_weight: float = 5.0):
+        """Balance losses based on magnitude using inverse weighting, clamped to max_weight.
+
+        The weight is clamped to prevent any single loss (especially GAN at startup,
+        when its magnitude is near zero) from receiving an explosive gradient multiplier
+        that overwhelms the reconstruction signal and causes divergence.
+        """
         if not self.adaptive_weights:
             return 1.0
 
@@ -673,7 +633,7 @@ class VAETrainer:
 
         if total > 0 and num_losses > 0:
             target = total / num_losses
-            return target / (avg + 1e-8)
+            return min(target / (avg + 1e-8), max_weight)
         return 1.0
 
     def train_step(
@@ -801,9 +761,13 @@ class VAETrainer:
         """
         self.discriminator.train()
 
-        # Generate fake images with VAE frozen (no gradients to VAE due to frozen params)
-        # Note: torch.no_grad() removed to avoid gradient checkpointing warnings
-        packed = self.compressor(real_imgs, training=False)
+        # Generate fake images using the stochastic (reparameterised) path so the
+        # discriminator sees the same distribution of reconstructions as the generator.
+        # torch.no_grad() prevents stale encoder gradients from accumulating here;
+        # they would be zeroed at the start of _train_generator anyway, but being
+        # explicit avoids any subtle interaction with gradient checkpointing.
+        with torch.no_grad():
+            packed, _, _ = self.compressor(real_imgs, training=True)
         img_seq = packed[:, :-1, :].contiguous()
         ctx_vec = img_seq.mean(dim=1)
 
@@ -1238,10 +1202,7 @@ class VAETrainer:
 
         # CRITICAL: Clear cache before backward to prevent OOM
         # Gradient checkpointing in VAE causes memory spikes during backward pass
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        elif torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        _empty_cache(real_imgs.device)
 
         self.accelerator.backward(total_loss)
 

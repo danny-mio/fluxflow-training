@@ -168,6 +168,7 @@ def plot_losses(
         "recon_loss": {"label": "Reconstruction Loss", "color": "#17becf", "linestyle": "-"},
         "lpips_loss": {"label": "LPIPS (Perceptual)", "color": "#bcbd22", "linestyle": "-"},
         "flow_loss": {"label": "Flow Loss", "color": "#2ca02c", "linestyle": "-"},
+        "ctx_loss": {"label": "Context Dim Loss", "color": "#8c564b", "linestyle": "--"},
         "discriminator_loss": {
             "label": "Discriminator Loss",
             "color": "#d62728",
@@ -402,6 +403,17 @@ def plot_combined_overview(
         steps, flow_vals = extract_metric_series(metrics, "flow_loss")
         if steps and flow_vals:
             ax.plot(steps, flow_vals, label="Flow Loss", color="#2ca02c", linewidth=2)
+
+        steps_ctx, ctx_vals = extract_metric_series(metrics, "ctx_loss")
+        if steps_ctx and ctx_vals:
+            ax.plot(
+                steps_ctx,
+                ctx_vals,
+                label="Context Dim Loss",
+                color="#8c564b",
+                linewidth=2,
+                linestyle="--",
+            )
 
         ax.set_xlabel("Global Step", fontsize=11)
         ax.set_ylabel("Loss (log scale)", fontsize=11)
