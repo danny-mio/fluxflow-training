@@ -1,0 +1,19 @@
+# MPS-optimised training config for Apple Silicon Macs.
+# Key differences from CUDA config:
+#   - Smaller batch size (MPS memory pressure is different from CUDA)
+#   - fp16 disabled (MPS fp16 is numerically unstable for training)
+#   - Gradient checkpointing enabled (saves memory at modest compute cost)
+
+model:
+  use_gradient_checkpointing: true  # Recommended on <32GB unified memory
+
+training:
+  batch_size: 2           # MPS: small batch avoids Metal buffer thrashing
+  workers: 0              # MPS + multiprocessing can deadlock; use 0
+  use_fp16: false         # MPS fp16 training is unstable; use fp32
+  train_vae: true
+  use_lpips: true
+  lambda_lpips: 0.1
+  kl_beta: 1.0e-4
+  lr: 1.0e-4
+  lr_min: 1.0e-6

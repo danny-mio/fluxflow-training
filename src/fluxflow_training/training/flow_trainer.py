@@ -35,6 +35,14 @@ def compute_grad_norm(parameters):
     return total_norm**0.5
 
 
+def _empty_cache(device: torch.device) -> None:
+    """Free cached memory for the current device."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+
+
 class FlowTrainer:
     """
     Handles flow-based diffusion model training.
@@ -68,6 +76,7 @@ class FlowTrainer:
         ema_decay: float = 0.9999,
         lambda_align: float = 0.0,
         cfg_dropout_prob: float = 0.0,
+        ctx_loss_weight: float = 1.0,
         accelerator=None,
     ):
         """
@@ -88,6 +97,10 @@ class FlowTrainer:
             lambda_align: Text-image alignment loss weight (default: 0.1)
             cfg_dropout_prob: Classifier-free guidance dropout probability (default: 0.0)
                               Set to 0.10 for standard CFG training
+            ctx_loss_weight: Scale factor applied to the context-dim v-prediction loss
+                             relative to the VAE-dim v-prediction loss. Default 1.0 (equal).
+                             Increase if context dims are under-trained; decrease if they
+                             dominate early and destabilise the VAE loss.
             accelerator: Accelerate accelerator instance
         """
         self.flow_processor = flow_processor
@@ -102,6 +115,7 @@ class FlowTrainer:
         self._accumulation_step = 0  # Track current accumulation step
         self.lambda_align = lambda_align
         self.cfg_dropout_prob = cfg_dropout_prob
+        self.ctx_loss_weight = ctx_loss_weight
         self.accelerator = accelerator
 
         # Setup EMA for flow processor and text encoder
@@ -224,19 +238,14 @@ class FlowTrainer:
                 f"Timestep range: {t.min().item()}-{t.max().item()} (mean: {t.float().mean().item():.1f})"
             )
 
-        if context_dims > 0:
-            # v0.7.0: Only add noise to VAE dimensions, keep context clean
-            vae_dims = img_seq.size(-1) - context_dims
-            noise = torch.randn_like(img_seq[:, :, :vae_dims])
-            # Add noise only to VAE part
-            noised_vae = self.noise_scheduler.add_noise(img_seq[:, :, :vae_dims], noise, t)
-            # Keep context unchanged
-            noised_seq = torch.cat([noised_vae, img_seq[:, :, vae_dims:]], dim=-1)
-        else:
-            # v0.6.0 and earlier: Add noise to all dimensions
-            vae_dims = img_seq.size(-1)
-            noise = torch.randn_like(img_seq)
-            noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)
+        # Noise all dims uniformly — matches inference exactly.
+        # Inference starts from torch.randn over all D dims (VAE + context) and the
+        # scheduler denoises them with a single alpha_t/sigma_t schedule.  Training
+        # must present the same noisy input distribution so the model learns to
+        # denoise context dims from noise, not from their own clean values.
+        vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
+        noise = torch.randn_like(img_seq)  # [B, T, D+context_dims]
+        noised_seq = self.noise_scheduler.add_noise(img_seq, noise, t)  # [B, T, D+context_dims]
         full_input = torch.cat([noised_seq, hw_vec], dim=1)
 
         # Predict (flow processor expects normalized timesteps in [0, 1]).
@@ -250,38 +259,52 @@ class FlowTrainer:
             logger.error("NaN detected in flow prediction - skipping batch")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
-        # Fixed normalization for large latent values
-        vae_dims = img_seq.size(-1) - context_dims if context_dims > 0 else img_seq.size(-1)
+        # Compute v-prediction target: v = alpha_t * noise - sigma_t * x0.
+        # alphas_cumprod[t] is [B]; reshape to [B, 1, 1] for broadcasting with [B, T, D].
+        alpha_cumprod_t = self.alphas_cumprod[t].float()  # [B]
+        alpha_t = alpha_cumprod_t.sqrt().view(-1, 1, 1)  # [B, 1, 1]
+        sigma_t = (1.0 - alpha_cumprod_t).sqrt().view(-1, 1, 1)  # [B, 1, 1]
+
+        # v-prediction target over all dims: v = alpha_t * noise - sigma_t * x0.
+        # All dims (VAE + context) are noised identically above, so the same
+        # alpha_t / sigma_t applies to both groups.
+        img_seq_fp32 = img_seq.float()
+        noise_fp32 = noise.float()
+        v_target = alpha_t * noise_fp32 - sigma_t * img_seq_fp32  # [B, T, D+context_dims]
 
         if context_dims > 0:
-            # v0.7.0: Use global normalization for stability
-            vae_latents = img_seq[:, :, :vae_dims].float()
-            vae_noise = noise
+            # Split v_target and prediction into VAE and context groups, normalise each
+            # separately to equalise loss scale across the two very different dynamic ranges.
+            # VAE dims (~unit Gaussian) and context dims (~0.1-0.5 range after mean-pooling)
+            # would otherwise produce a ~10x loss imbalance under a shared normalisation.
+            vae_v_target = v_target[:, :, :vae_dims].detach()  # [B, T, vae_dims]
+            ctx_v_target = v_target[:, :, vae_dims:].detach()  # [B, T, context_dims]
 
-            # Global statistics across batch and sequence for stability
-            latent_mean = vae_latents.detach().mean()
-            latent_std = vae_latents.detach().std() + 1e-8
-
-            normalized_latents = (vae_latents - latent_mean) / latent_std
-            normalized_noise = (vae_noise.float() - latent_mean) / latent_std
-
-            # Simple normalized reconstruction loss
             pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
-            normalized_pred = (pred_vae - latent_mean) / latent_std
+            pred_ctx = pred_seq[:, :, vae_dims:].contiguous().float()
 
-            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_latents, beta=0.01)
+            # Normalise by the v-target's own std so the scale is consistent across
+            # all timesteps.  Using clean-x0 std (ctx ~0.1-0.5) would over-weight
+            # ctx_loss ~11x at high-noise timesteps where v_target ≈ noise (std ~1).
+            vae_std = vae_v_target.std() + 1e-8
+            ctx_std = ctx_v_target.std() + 1e-8
+
+            vae_loss = nn.functional.smooth_l1_loss(
+                pred_vae / vae_std, vae_v_target / vae_std, beta=0.01
+            )
+            ctx_loss = nn.functional.smooth_l1_loss(
+                pred_ctx / ctx_std, ctx_v_target / ctx_std, beta=0.01
+            )
+            diff_loss = vae_loss + self.ctx_loss_weight * ctx_loss
         else:
-            # v0.6.0 and earlier: Global normalization
-            img_seq_fp32 = img_seq.float()
-            latent_mean = img_seq_fp32.detach().mean()
+            # v0.6 and earlier: no context dims, single normalised loss.
             latent_std = img_seq_fp32.detach().std() + 1e-8
-
-            normalized_img_seq = (img_seq_fp32 - latent_mean) / latent_std
-            normalized_noise = (noise.float() - latent_mean) / latent_std
-
-            normalized_pred = (pred_seq.float() - latent_mean) / latent_std
-
-            diff_loss = nn.functional.smooth_l1_loss(normalized_pred, normalized_img_seq, beta=0.01)
+            normalized_v_target = v_target.detach() / latent_std
+            normalized_pred = pred_seq.float() / latent_std
+            diff_loss = nn.functional.smooth_l1_loss(
+                normalized_pred, normalized_v_target, beta=0.01
+            )
+            ctx_loss = torch.tensor(0.0, device=img_seq.device)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
         # Only compute if lambda_align > 0
@@ -344,30 +367,19 @@ class FlowTrainer:
 
         # Get loss value for metrics (defined before accumulation check)
         loss_value = float(total_loss.detach().item())
+        grad_norm: float = 0.0
 
         # Only update weights after accumulating gradients
         self._accumulation_step += 1
         should_step = (self._accumulation_step % self.gradient_accumulation_steps) == 0
 
         if should_step:
-            # Adaptive gradient clipping for better training stability
-            # Compute global gradient norm
-            grad_norms = []
-            for param in self.flow_processor.parameters():
-                if param.grad is not None:
-                    grad_norms.append(torch.norm(param.grad.detach()))
-
-            if grad_norms:
-                total_norm = torch.norm(torch.stack(grad_norms))
-
-                # Adaptive clipping: scale clip norm based on current gradient magnitude
-                adaptive_clip_norm = min(self.gradient_clip_norm, total_norm.item() * 1.5)
-
-                # Apply adaptive clipping
-                self.accelerator.clip_grad_norm_(
-                    self.flow_processor.parameters(),
-                    adaptive_clip_norm,
-                )
+            # Clip gradients to configured norm. Returns the pre-clip total norm.
+            clipped = self.accelerator.clip_grad_norm_(
+                self.flow_processor.parameters(),
+                self.gradient_clip_norm,
+            )
+            grad_norm = float(clipped) if isinstance(clipped, torch.Tensor) else float(clipped)
 
             self.optimizer.step()
             if self.text_encoder_optimizer is not None:
@@ -405,14 +417,15 @@ class FlowTrainer:
         metrics = {
             "flow_loss": loss_value,
             "diff_loss": float(diff_loss.detach().item()),
+            "ctx_loss": float(ctx_loss.detach().item()),
             "align_loss": float(align_loss.detach().item()),
-            "grad_norm_flow": compute_grad_norm(self.flow_processor.parameters()),
+            "grad_norm_flow": grad_norm,
             "grad_norm_text": compute_grad_norm(self.text_encoder.parameters()),
             "lr_flow": self.optimizer.param_groups[0]["lr"],
             "pred_mean": pred_seq.mean().item(),
             "pred_std": pred_seq.std().item(),
             # Latent statistics for monitoring normalization effectiveness
-            "latent_mean": (
+            "vae_latent_mean": (
                 float(img_seq[:, :, :vae_dims].mean().item())
                 if context_dims > 0
                 else float(img_seq.mean().item())
