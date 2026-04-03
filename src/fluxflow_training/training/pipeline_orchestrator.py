@@ -1328,6 +1328,7 @@ class TrainingPipelineOrchestrator:
                 vae_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 kl_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 flow_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))  # context dim loss
                 g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
                 d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
                 lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
@@ -1401,6 +1402,8 @@ class TrainingPipelineOrchestrator:
                                 else flow_losses
                             )
                             flow_errors.add_item(flow_loss)
+                            if isinstance(flow_losses, dict) and "ctx_loss" in flow_losses:
+                                ctx_errors.add_item(flow_losses["ctx_loss"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"flow_loss": flow_loss})
@@ -1482,6 +1485,8 @@ class TrainingPipelineOrchestrator:
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
+                            if len(ctx_errors._items) > 0:
+                                log_msg += f" | Ctx: {ctx_errors.average:.4f}"
 
                         # Add average batch time
                         if len(batch_times._items) > 0:
@@ -1514,6 +1519,8 @@ class TrainingPipelineOrchestrator:
 
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average
+                            if len(ctx_errors._items) > 0:
+                                metrics["ctx_loss"] = ctx_errors.average
 
                         progress_logger.log_metrics(
                             epoch=epoch,
