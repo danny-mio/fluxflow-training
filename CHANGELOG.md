@@ -8,9 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 _No unreleased changes._
 
-## [0.8.1] - 2026-02-27
+## [0.8.1] - 2026-04-03
+
+### Added
+- **`examples/config-mps.yaml`**: Recommended training config for Apple Silicon (`batch_size=2`, `use_fp16=false`, `use_gradient_checkpointing=true`, `workers=0`).
+- **`scripts/profile_mps.py`**: Profiles CPU fallbacks during a VAE forward+backward pass on MPS. Run on Apple Silicon to identify remaining bottlenecks.
+- **`ctx_loss` console logging**: Context dim loss is now shown in the training progress line (` | Ctx: 0.0123`) alongside the flow loss.
+- **`ctx_loss` graph curve**: Context dim loss is plotted as a separate curve in `training_losses.png` and the combined overview.
+- **`ctx_loss_weight` config param**: Allows tuning the relative weight of the context-dim v-prediction loss in the flow training config.
 
 ### Fixed
+- **MPS cache clearing**: `torch.mps.empty_cache()` added alongside `torch.cuda.empty_cache()` in VAETrainer and FlowTrainer.
+- **MPS adaptive pooling**: Replaced ad-hoc try/except in VAETrainer with `mps_safe_pool2d` from `fluxflow.utils.mps`.
 - **v-prediction loss target**: Flow trainer was computing loss against clean x0 despite `prediction_type="v_prediction"`. Now correctly computes `v = alpha_t * noise - sigma_t * x0` using `alphas_cumprod[t]`.
 - **Context dim train/inference mismatch**: Previously only VAE dims were noised during training while context dims were passed clean, but inference denoises all 133 dims from noise. Training now noises all dims uniformly to match inference. The trivial x0-reconstruction ctx_loss is replaced with v-prediction over all dims.
 - **Context dim loss scale**: VAE dims (~unit Gaussian) and context dims (~0.1–0.5 range) are normalised independently to prevent a ~10x loss imbalance. A `ctx_loss_weight` knob (default `1.0`) allows tuning.
@@ -20,10 +29,8 @@ _No unreleased changes._
 - **Discriminator trained on deterministic latents**: `_train_discriminator` called `compressor(real_imgs, training=False)` which returns a deterministic tensor; the generator always sees stochastic samples. Changed to `training=True` (wrapped in `torch.no_grad()`) so real images are encoded with reparameterisation, matching the distribution the generator learns against.
 - **ctx_loss normalisation scale**: Flow trainer normalised per-group losses by the clean-x0 std of each group (~0.1–0.5 for context dims). At noisy timesteps `v_target ≈ noise` (std ~1.0), this amplified `ctx_loss` ~11× relative to `vae_loss`. Now normalises by the v-target's own std so scale is consistent across all timesteps.
 
-### Added
-- **`ctx_loss` console logging**: Context dim loss is now shown in the training progress line (` | Ctx: 0.0123`) alongside the flow loss.
-- **`ctx_loss` graph curve**: Context dim loss is plotted as a separate curve in `training_losses.png` and the combined overview.
-- **`ctx_loss_weight` config param**: Allows tuning the relative weight of the context-dim v-prediction loss in the flow training config.
+### Changed
+- **`fluxflow` dependency bumped to `>=0.8.1`**: Required for `fluxflow.utils.mps.mps_safe_pool2d`.
 
 ## [0.8.0] - 2026-02-21
 
