@@ -161,6 +161,17 @@ class PipelineStepConfig:
     lambda_adv: float = 0.5
     lambda_lpips: float = 0.1
     mse_weight: float = 0.1
+    # v0.10.0: auxiliary context reconstruction loss weight (stop-grad MSE vs z_tokens).
+    # Applied only during VAE training. Default 0.01 per plan §4.1 / DP-1 decision.
+    lambda_ctx_aux: float = 0.01
+    # v0.10.0: relative weight of context-dim v-prediction loss vs VAE-dim loss in FlowTrainer.
+    # Default 0.5 per plan §3.8.11 DP-1 decision from user.
+    ctx_loss_weight: float = 0.5
+
+    # v0.10.0: freeze context branch independently from the rest of the compressor.
+    # When True, ctx_encoder_first_step / ctx_encoder_z / ctx_proj / ctx_token_attn /
+    # ctx_final_norm are frozen while the z-path parameters remain trainable.
+    freeze_context_branch: bool = False
 
     # GAN settings
     r1_interval: int = 16
@@ -197,6 +208,8 @@ class PipelineConfigValidator:
         "text_encoder",
         "discriminator",
         "D_img",
+        # v0.10.0: freeze context branch independently from rest of compressor
+        "context_branch",
     }
 
     VALID_OPTIMIZER_TYPES = {
@@ -640,6 +653,9 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         instance_noise_std=step_dict.get("instance_noise_std", 0.01),
         instance_noise_decay=step_dict.get("instance_noise_decay", 0.9999),
         adaptive_weights=step_dict.get("adaptive_weights", True),
+        lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
+        ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
+        freeze_context_branch=step_dict.get("freeze_context_branch", False),
         optimization=optimization,
         transition_on=transition,
     )

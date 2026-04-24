@@ -201,6 +201,66 @@ class TrainingPipelineOrchestrator:
         num_params = sum(p.numel() for p in model.parameters())
         logger.info(f"✓ Unfrozen: {model_name} ({num_params:,} parameters)")
 
+    def freeze_context_branch(self, model_name: str = "compressor") -> None:
+        """Freeze context branch parameters in v0.10.0 compressor.
+
+        Freezes the five context-branch sub-modules
+        (ctx_encoder_first_step, ctx_encoder_z, ctx_proj, ctx_token_attn, ctx_final_norm)
+        while leaving z-path parameters trainable.  No-ops gracefully for v0.8.0 and earlier
+        compressors that lack these attributes.
+
+        Args:
+            model_name: Key into self.models (default: 'compressor').
+        """
+        model = self.models.get(model_name)
+        if model is None:
+            logger.warning(f"freeze_context_branch: '{model_name}' not in models dict")
+            return
+        ctx_attrs = (
+            "ctx_encoder_first_step",
+            "ctx_encoder_z",
+            "ctx_proj",
+            "ctx_token_attn",
+            "ctx_final_norm",
+        )
+        frozen = 0
+        for attr in ctx_attrs:
+            module = getattr(model, attr, None)
+            if module is not None:
+                for param in module.parameters():
+                    param.requires_grad = False
+                frozen += sum(p.numel() for p in module.parameters())
+        logger.info(f"Frozen context branch in '{model_name}' ({frozen:,} parameters)")
+
+    def unfreeze_context_branch(self, model_name: str = "compressor") -> None:
+        """Unfreeze context branch parameters in v0.10.0 compressor.
+
+        Mirrors freeze_context_branch — re-enables gradient computation for the five
+        context-branch sub-modules.  No-ops gracefully for v0.8.0 and earlier compressors.
+
+        Args:
+            model_name: Key into self.models (default: 'compressor').
+        """
+        model = self.models.get(model_name)
+        if model is None:
+            logger.warning(f"unfreeze_context_branch: '{model_name}' not in models dict")
+            return
+        ctx_attrs = (
+            "ctx_encoder_first_step",
+            "ctx_encoder_z",
+            "ctx_proj",
+            "ctx_token_attn",
+            "ctx_final_norm",
+        )
+        unfrozen = 0
+        for attr in ctx_attrs:
+            module = getattr(model, attr, None)
+            if module is not None:
+                for param in module.parameters():
+                    param.requires_grad = True
+                unfrozen += sum(p.numel() for p in module.parameters())
+        logger.info(f"Unfrozen context branch in '{model_name}' ({unfrozen:,} parameters)")
+
     def configure_step_models(
         self, step: PipelineStepConfig, models: dict[str, nn.Module] = None
     ) -> None:
@@ -216,6 +276,11 @@ class TrainingPipelineOrchestrator:
 
         # Freeze specified models
         for model_name in step.freeze:
+            if model_name == "context_branch":
+                # v0.10.0: freeze context branch sub-modules inside the compressor
+                self.models = models_dict  # ensure helper reads the right dict
+                self.freeze_context_branch("compressor")
+                continue
             if model_name not in models_dict:
                 logger.warning(f"Cannot freeze '{model_name}': not found in models dict")
                 continue
@@ -226,6 +291,11 @@ class TrainingPipelineOrchestrator:
 
         # Unfreeze specified models
         for model_name in step.unfreeze:
+            if model_name == "context_branch":
+                # v0.10.0: unfreeze context branch sub-modules inside the compressor
+                self.models = models_dict
+                self.unfreeze_context_branch("compressor")
+                continue
             if model_name not in models_dict:
                 logger.warning(f"Cannot unfreeze '{model_name}': not found in models dict")
                 continue
@@ -233,6 +303,11 @@ class TrainingPipelineOrchestrator:
             for param in model.parameters():
                 param.requires_grad = True
             logger.info(f"Unfrozen model: {model_name}")
+
+        # v0.10.0: apply freeze_context_branch config key
+        if getattr(step, "freeze_context_branch", False):
+            self.models = models_dict
+            self.freeze_context_branch("compressor")
 
         # Log final state
         if models_dict:
@@ -814,12 +889,20 @@ class TrainingPipelineOrchestrator:
                 channels = getattr(args, "channels", 3)
                 vae_dim = getattr(args, "vae_dim", 128)
 
-                # Calculate expected context dimension
+                # Calculate expected context dimension.
+                # ctx_vec = img_seq.mean(dim=1) has dim = packed_token_width = vae_dim +
+                # context_dims.  For v0.10.0, get_context_dims() returns d_model (== vae_dim)
+                # so packed_token_width = 2 * d_model = 256.  For v0.8.0 and earlier,
+                # get_context_dims() is not defined; fall back to the legacy constant
+                # vae_dim + 5 = 133 (CONTEXT_DIMS from v070).
                 try:
                     context_dims = models["compressor"].get_context_dims()
+                    # v0.10.0 compressors: context_dims == d_model, so packed width = 2*vae_dim.
+                    # Earlier compressors expose the same method returning their smaller constant.
                     expected_ctx_dim = vae_dim + context_dims
                 except (AttributeError, TypeError):
-                    expected_ctx_dim = vae_dim
+                    # v0.7.0/v0.8.0 compressors without get_context_dims(); use legacy value.
+                    expected_ctx_dim = vae_dim + 5  # CONTEXT_DIMS = 5 for v070/v080
 
                 # Check if we have a loaded discriminator
                 if "D_img" not in models or models["D_img"] is None:
@@ -834,6 +917,18 @@ class TrainingPipelineOrchestrator:
                         f"Using loaded discriminator (ctx_dim={actual_ctx_dim}, "
                         f"expected {expected_ctx_dim}) - padding will handle differences"
                     )
+
+            # v0.10.0: compute ctx_input_dim for the context predictor.
+            # ctx_vec = img_seq.mean(dim=1) has width = packed_token_dim = vae_dim + context_dims.
+            # For v0.10.0 compressors get_context_dims() returns d_model; for earlier versions
+            # the attribute may not exist or returns 5. Fall back gracefully.
+            _ctx_input_dim: Optional[int] = None
+            try:
+                _ctx_input_dim = getattr(args, "vae_dim", 128) + models[
+                    "compressor"
+                ].get_context_dims()
+            except (AttributeError, TypeError):
+                pass  # legacy compressor; VAETrainer will auto-detect
 
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
@@ -878,6 +973,8 @@ class TrainingPipelineOrchestrator:
                     step.adaptive_weights if hasattr(step, "adaptive_weights") else True
                 ),
                 mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
+                lambda_ctx_aux=step.lambda_ctx_aux if hasattr(step, "lambda_ctx_aux") else 0.01,
+                ctx_input_dim=_ctx_input_dim,
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
             )
@@ -949,6 +1046,10 @@ class TrainingPipelineOrchestrator:
                 num_train_timesteps=step.num_train_timesteps,
                 start_step=step.start_step,
                 gradient_accumulation_steps=step.gradient_accumulation_steps,
+                # v0.10.0: relative weight of context-dim v-prediction loss. Default 0.5 per
+                # plan §3.8.11 DP-1. Context dims are now 50% of total packed width vs ~4%
+                # in v0.8.0, so equal weighting (1.0) risks over-fitting context denoising.
+                ctx_loss_weight=step.ctx_loss_weight if hasattr(step, "ctx_loss_weight") else 0.5,
                 accelerator=self.accelerator,
             )
             logger.info("Created Flow trainer")
