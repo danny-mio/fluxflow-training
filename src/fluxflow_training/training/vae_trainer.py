@@ -146,6 +146,14 @@ class VAETrainer:
         context_height: int = 16,
         context_width: int = 16,
         context_predictor_path: Optional[str] = None,
+        # v0.10.0: explicit input dim for context_predictor.
+        # For v0.10.0 compressors ctx_vec = img_seq.mean(dim=1) has dim 2*d_model (256).
+        # Pass compressor.get_context_dims() * 2 from the orchestrator.
+        # None triggers legacy runtime detection (for v0.8.0 and earlier).
+        ctx_input_dim: Optional[int] = None,
+        # v0.10.0: auxiliary context reconstruction loss weight (plan §4.1 / DP-1).
+        lambda_ctx_aux: float = 0.01,
+        train_ctx_aux: bool = True,
         lambda_lpips: float = 0.1,
         instance_noise_std: float = 0.01,
         instance_noise_decay: float = 0.9999,
@@ -186,6 +194,13 @@ class VAETrainer:
             gradient_clip_norm: Gradient clipping norm
             use_lpips: Enable LPIPS perceptual loss (default: True)
             lambda_lpips: LPIPS loss weight (default: 0.1)
+            ctx_input_dim: Explicit input dim for context_predictor (v0.10.0). Pass
+                compressor.get_context_dims() * 2 from the orchestrator. None triggers
+                legacy runtime detection from a test forward pass (v0.8.0 and earlier).
+            lambda_ctx_aux: Weight for auxiliary context reconstruction loss (plan §4.1).
+                Applied as MSE(context_tokens, stop_grad(z_tokens)) during VAE training.
+                Default 0.01. Only active when train_ctx_aux=True.
+            train_ctx_aux: Compute auxiliary context reconstruction loss (default: True).
             accelerator: Accelerate accelerator instance
         """
         self.compressor = compressor
@@ -277,38 +292,37 @@ class VAETrainer:
         self.context_height = context_height
         self.context_width = context_width
         self.context_predictor_path = context_predictor_path
+        self.lambda_ctx_aux = lambda_ctx_aux
+        self.train_ctx_aux = train_ctx_aux
 
-        # Initialize context predictor with SiLU activation
-        # Detect actual latent dimension from compressor
-        latent_dim = 27  # Based on training error, actual dimension is 27
-        try:
-            # Try to infer latent dimension from a test forward pass
-            with torch.no_grad():
-                test_device = next(self.compressor.parameters()).device
-                test_input = torch.randn(1, 3, 64, 64).to(test_device)
-                # Use training=True to get (packed, mu, logvar) tuple
-                compressor_output = self.compressor(test_input, training=True)
-                if isinstance(compressor_output, tuple):
-                    if len(compressor_output) >= 2:
+        # Initialize context predictor with SiLU activation.
+        # ctx_input_dim is the dim of ctx_vec = img_seq.mean(dim=1), i.e. the full packed
+        # token width.  For v0.10.0 this is 2*d_model (256); for v0.8.0 it is d_model+5 (133).
+        # When provided explicitly (from the orchestrator) skip the expensive runtime detection.
+        if ctx_input_dim is not None:
+            latent_dim = ctx_input_dim
+            logger.info(f"Using explicit ctx_input_dim for context_predictor: {latent_dim}")
+        else:
+            # Legacy runtime detection for v0.8.0 and earlier compressors.
+            latent_dim = 27  # conservative fallback
+            try:
+                with torch.no_grad():
+                    test_device = next(self.compressor.parameters()).device
+                    test_input = torch.randn(1, 3, 64, 64).to(test_device)
+                    compressor_output = self.compressor(test_input, training=True)
+                    if isinstance(compressor_output, tuple) and len(compressor_output) >= 2:
                         _, test_mu, _ = compressor_output
-                        # For v0.7.0 VAE, mu has shape [B, latent_dim, H, W], so channel dim is latent_dim
-                        if len(test_mu.shape) == 4:  # [B, C, H, W]
-                            detected_dim = test_mu.shape[1]  # Channel dimension
-                        else:
-                            detected_dim = test_mu.shape[-1]  # Fallback
-                        logger.info(f"Detected VAE latent dimension: {detected_dim}")
-                        latent_dim = detected_dim
-                else:
-                    # Fallback: try to infer from single output (inference mode)
-                    packed = compressor_output
-                    detected_dim = packed.shape[-1]  # type: ignore
-                    logger.info(f"Detected VAE latent dimension: {detected_dim}")
-                    latent_dim = detected_dim
-        except Exception as e:
-            logger.warning(f"Could not detect latent dimension, using fallback {latent_dim}: {e}")
-            import traceback
-
-            traceback.print_exc()
+                        # mu shape: [B, d_model, H, W] — channel dim is d_model
+                        latent_dim = test_mu.shape[1] if test_mu.dim() == 4 else test_mu.shape[-1]
+                        logger.info(f"Detected VAE latent dimension: {latent_dim}")
+                    else:
+                        packed = compressor_output
+                        latent_dim = packed.shape[-1]  # type: ignore
+                        logger.info(f"Detected VAE latent dimension from packed: {latent_dim}")
+            except Exception as exc:
+                logger.warning(
+                    f"Could not detect latent dimension, using fallback {latent_dim}: {exc}"
+                )
 
         context_output_dim = context_channels * context_height * context_width
 
@@ -690,6 +704,8 @@ class VAETrainer:
         losses["hist_loss"] = gen_losses.get("hist_loss", 0.0)
         losses["contrast_loss"] = gen_losses.get("contrast_loss", 0.0)
         losses["coarseness_loss"] = gen_losses.get("coarseness_loss", 0.0)
+        # v0.10.0: auxiliary context reconstruction loss
+        losses["ctx_aux_loss"] = gen_losses.get("ctx_aux_loss", 0.0)
 
         # Check if optimizer was actually stepped (could be skipped due to NaN)
         optimizer_was_stepped = gen_losses.pop("_optimizer_stepped", True)
@@ -920,6 +936,7 @@ class VAETrainer:
                 "generator": 0.0,
                 "lpips": 0.0,
                 "recon": 0.0,
+                "ctx_aux_loss": 0.0,
                 "_optimizer_stepped": False,
             }
 
@@ -942,6 +959,7 @@ class VAETrainer:
                 "generator": 0.0,
                 "lpips": 0.0,
                 "recon": 0.0,
+                "ctx_aux_loss": 0.0,
                 "_optimizer_stepped": False,
             }
 
@@ -961,6 +979,7 @@ class VAETrainer:
                 "generator": 0.0,
                 "lpips": 0.0,
                 "recon": 0.0,
+                "ctx_aux_loss": 0.0,
                 "_optimizer_stepped": False,
             }
 
@@ -996,7 +1015,7 @@ class VAETrainer:
                 perceptual_loss = lpips_fn(out_imgs_rec, real_imgs).mean()
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
-        # KL divergence with beta annealing (still compute even if not training reconstruction)
+        # KL divergence with beta annealing (z branch only; context branch is deterministic).
         beta = 0.0
         if self.train_kl:
             beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
@@ -1009,6 +1028,27 @@ class VAETrainer:
             )
         else:
             kl = torch.tensor(0.0, device=real_imgs.device)
+
+        # v0.10.0: auxiliary context reconstruction loss (plan §4.1).
+        # L_ctx_aux = MSE(context_tokens, sg(z_tokens)) where sg = stop-gradient.
+        # Gently encourages context branch to learn a representation aligned with z
+        # without forcing them to be identical (independent parameter sets).
+        # Active only when train_ctx_aux=True and the packed tensor is wide enough to
+        # contain both z and context halves (i.e. v0.10.0 compressor).
+        ctx_aux_loss = torch.tensor(0.0, device=real_imgs.device)
+        if self.train_ctx_aux:
+            try:
+                # packed_rec shape: [B, T+1, 2D] for v0.10.0 or [B, T+1, D+5] for earlier.
+                # Split at dim // 2 only if total_dim is even (true for v0.10.0 where dim=2D).
+                total_dim = packed_rec.size(-1)
+                half = total_dim // 2
+                if total_dim % 2 == 0 and half > 0:
+                    img_seq_rec = packed_rec[:, :-1, :]  # [B, T, 2D]
+                    z_tokens_half = img_seq_rec[:, :, :half]  # [B, T, D]
+                    ctx_tokens_half = img_seq_rec[:, :, half:]  # [B, T, D]
+                    ctx_aux_loss = F.mse_loss(ctx_tokens_half, z_tokens_half.detach())
+            except Exception as exc:
+                logger.warning(f"ctx_aux_loss computation skipped: {exc}")
 
         # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
         B = real_imgs.shape[0]
@@ -1156,6 +1196,10 @@ class VAETrainer:
         if self.use_gan:
             total_loss = total_loss + w_gan * G_img_loss
 
+        # v0.10.0: auxiliary context reconstruction loss (plan §4.1 / DP-1).
+        if self.train_ctx_aux:
+            total_loss = total_loss + self.lambda_ctx_aux * ctx_aux_loss
+
         # Add context alignment loss (Step 2)
         total_loss = total_loss + 0.1 * context_alignment_loss
 
@@ -1197,6 +1241,7 @@ class VAETrainer:
                 "generator": 0.0,
                 "lpips": 0.0,
                 "recon": 0.0,
+                "ctx_aux_loss": 0.0,
                 "_optimizer_stepped": False,  # Signal that optimizer was not stepped
             }
 
@@ -1238,6 +1283,8 @@ class VAETrainer:
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
             "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
             "recon": float(recon_loss.detach().item()),
+            # v0.10.0: auxiliary context reconstruction loss (plan §4.1)
+            "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
             "context_alignment": float(context_alignment_loss.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
