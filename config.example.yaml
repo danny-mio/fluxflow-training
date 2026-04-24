@@ -104,6 +104,22 @@ training:
   # Higher weight = smoother outputs (prioritizes perceptual similarity)
   lambda_lpips: 0.1  # Recommended: 0.05-0.2 range
 
+  # v0.10.0: auxiliary context reconstruction loss (plan §4.1 / DP-1).
+  # MSE(context_tokens, stop_grad(z_tokens)); encourages context branch alignment.
+  # Active only during VAE training steps. Default 0.01.
+  lambda_ctx_aux: 0.01
+
+  # v0.10.0: relative weight of context-dim v-prediction loss in FlowTrainer.
+  # Context dims are now 50% of packed width (128/256 vs ~4% in v0.8.0).
+  # Default 0.5 prevents context denoising from dominating VAE-dim denoising.
+  ctx_loss_weight: 0.5
+
+  # v0.10.0: freeze context branch independently from z-path encoder.
+  # Useful for phased training: train z-path first, then unfreeze context branch.
+  # Set true to freeze ctx_encoder_first_step, ctx_encoder_z, ctx_proj,
+  # ctx_token_attn, ctx_final_norm inside the compressor. Default false.
+  freeze_context_branch: false
+
   # ============================================================================
   # PIPELINE MODE (Optional - enables multi-step training)
   # ============================================================================
