@@ -26,7 +26,9 @@ classifiers = [
 ]
 
 dependencies = [
-    "fluxflow>=0.8.1",
+    # Feature-branch pin — temporary for v0.10.0 development. Revert to a PyPI
+    # version pin ("fluxflow>=0.10.0") before merging to main.
+    "fluxflow @ git+https://github.com/danny-mio/fluxflow-core.git@feature/model-v0.10.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "accelerate>=0.20.0",
