@@ -785,22 +785,26 @@ class VAETrainer:
         img_seq = packed[:, :-1, :].contiguous()
         ctx_vec = img_seq.mean(dim=1)
 
-        # Pad or truncate context vector to match discriminator expectations
-        expected_ctx_dim = self.discriminator.ctx_proj.in_features
-        if ctx_vec.shape[-1] < expected_ctx_dim:
-            padding = expected_ctx_dim - ctx_vec.shape[-1]
-            ctx_vec = torch.nn.functional.pad(ctx_vec, (0, padding))
-        elif ctx_vec.shape[-1] > expected_ctx_dim:
-            # Truncate if context vector is larger than expected
-            ctx_vec = ctx_vec[..., :expected_ctx_dim]
+        # Validate context vector dimension against discriminator expectation
+        if hasattr(self.discriminator, "ctx_proj") and self.discriminator.ctx_dim > 0:
+            expected_ctx_dim = self.discriminator.ctx_proj.in_features
+            if ctx_vec.shape[-1] != expected_ctx_dim:
+                raise RuntimeError(
+                    f"Discriminator ctx_dim={expected_ctx_dim} does not match "
+                    f"compressor ctx_vec dim={ctx_vec.shape[-1]}. "
+                    f"Delete D_img.safetensors and restart to create a fresh discriminator."
+                )
+        else:
+            ctx_vec = None
 
         # Generate conditional reconstructions (VAE doesn't receive gradients here)
-        out_imgs_for_D = self.expander(
-            packed, use_context=self._get_effective_spade_usage(global_step)
-        )
+        with torch.no_grad():
+            out_imgs_for_D = self.expander(
+                packed, use_context=self._get_effective_spade_usage(global_step)
+            )
 
-        # Also generate unconditional reconstructions for discriminator training
-        out_imgs_uncond_for_D = self.expander(packed, use_context=False)
+            # Also generate unconditional reconstructions for discriminator training
+            out_imgs_uncond_for_D = self.expander(packed, use_context=False)
 
         # Discriminator step
         self.discriminator_optimizer.zero_grad(set_to_none=True)
@@ -851,24 +855,25 @@ class VAETrainer:
                     B, self.context_channels, self.context_height, self.context_width
                 )
 
-            # Set context for expander
-            self.expander.ctx_vec = predicted_context
-
         # Context vectors: None when SPADE is active (conditioning happens in generator)
         # Actual context when SPADE is inactive (traditional conditional GAN)
-        disc_ctx = None if spade_active else ctx_vec.detach()
+        disc_ctx = None if spade_active else (ctx_vec.detach() if ctx_vec is not None else None)
 
-        if (global_step % self.r1_interval) == 0:
-            real_imgs_noisy.requires_grad_(True)
+        do_r1 = (global_step % self.r1_interval) == 0
+
+        # Only keep grad graph on real images when R1 penalty is needed
+        real_noisy_base = real_imgs_noisy if do_r1 else real_imgs_noisy.detach()
+        if do_r1:
+            real_noisy_base = real_noisy_base.detach().requires_grad_(True)
 
         # Real images
-        real_logits = self.discriminator(real_imgs_noisy, disc_ctx)
+        real_logits = self.discriminator(real_noisy_base, disc_ctx)
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
 
         # R1 gradient penalty (periodic) - only on real images
-        if (global_step % self.r1_interval) == 0:
-            r1 = r1_penalty(real_imgs_noisy, real_logits)
+        if do_r1:
+            r1 = r1_penalty(real_noisy_base, real_logits)
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
 
         # Fake images - use same context logic as real images
@@ -881,26 +886,6 @@ class VAETrainer:
         d_hinge_uncond = d_hinge_loss(real_logits, fake_uncond_logits)
         d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
         d_img_loss = d_img_loss + d_hinge
-
-        # SPADE-Aware GAN Loss: Evaluate conditioning quality (Step 3)
-        if spade_active and predicted_context is not None:
-            # Generate with poor context (random noise)
-            poor_context = torch.randn_like(predicted_context)
-            self.expander.ctx_vec = poor_context
-            poor_imgs = self.expander(packed, use_context=True)
-
-            # Evaluate conditioning quality
-            poor_imgs_noisy = add_instance_noise(
-                poor_imgs.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
-            )
-            poor_logits = self.discriminator(poor_imgs_noisy, None)  # SPADE internal context
-
-            # Conditioning loss: encourage discriminator to prefer good over poor conditioning
-            conditioning_loss = F.relu(poor_logits - fake_logits).mean()  # poor should be < good
-            d_img_loss = d_img_loss + 0.05 * conditioning_loss  # Small weight
-
-            # Reset to good context
-            self.expander.ctx_vec = predicted_context
 
         self.accelerator.backward(d_img_loss)
         self.discriminator_optimizer.step()
@@ -1094,46 +1079,39 @@ class VAETrainer:
         ideal_context = self.context_encoder(real_imgs.detach())
         context_alignment_loss = F.mse_loss(predicted_context, ideal_context)
 
-        # Set predicted context for expander (SPADE conditioning)
-        spade_active = self._get_effective_spade_usage(global_step)
-        if spade_active:
-            self.expander.ctx_vec = predicted_context
-
         # GAN generator loss
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
+        spade_active = self._get_effective_spade_usage(global_step)
         if self.use_gan and self.discriminator is not None:
-            # Always detach latents for GAN training to freeze encoder
-            # - Encoder learns from KL (and reconstruction if enabled)
-            # - Decoder learns conditional generation via GAN + SPADE conditioning
-            # - This provides stable context vectors and focuses SPADE on conditioning
-            packed_rec_for_gan = packed_rec.detach()
+            # Reuse already-decoded images; detach so GAN loss only trains the decoder
+            out_imgs_gan = out_imgs_rec.detach()
+            ctx_vec_rec = packed_rec[:, :-1, :].contiguous().mean(dim=1).detach()
 
-            out_imgs_gan = self.expander(
-                packed_rec_for_gan, use_context=self._get_effective_spade_usage(global_step)
-            )
-            ctx_vec_rec = packed_rec_for_gan[:, :-1, :].contiguous().mean(dim=1)
-
-            # Pad or truncate context vector to match discriminator expectations
-            expected_ctx_dim = self.discriminator.ctx_proj.in_features
-            if ctx_vec_rec.shape[-1] < expected_ctx_dim:
-                padding = expected_ctx_dim - ctx_vec_rec.shape[-1]
-                ctx_vec_rec = torch.nn.functional.pad(ctx_vec_rec, (0, padding))
-            elif ctx_vec_rec.shape[-1] > expected_ctx_dim:
-                # Truncate if context vector is larger than expected
-                ctx_vec_rec = ctx_vec_rec[:, :expected_ctx_dim]
+            # Validate context vector dimension against discriminator expectation
+            if hasattr(self.discriminator, "ctx_proj") and self.discriminator.ctx_dim > 0:
+                expected_ctx_dim = self.discriminator.ctx_proj.in_features
+                if ctx_vec_rec.shape[-1] != expected_ctx_dim:
+                    raise RuntimeError(
+                        f"Discriminator ctx_dim={expected_ctx_dim} does not match "
+                        f"compressor ctx_vec dim={ctx_vec_rec.shape[-1]}. "
+                        f"Delete D_img.safetensors and restart to create a fresh discriminator."
+                    )
+            else:
+                ctx_vec_rec = None
 
             # Check inputs to discriminator
             if check_for_nan(out_imgs_gan, "out_imgs_gan", logger):
                 logger.error("NaN in discriminator input images")
                 G_img_loss = torch.tensor(0.0, device=real_imgs.device)
-            elif check_for_nan(ctx_vec_rec, "ctx_vec_rec", logger):
+            elif ctx_vec_rec is not None and check_for_nan(ctx_vec_rec, "ctx_vec_rec", logger):
                 logger.error("NaN in discriminator context vector")
                 G_img_loss = torch.tensor(0.0, device=real_imgs.device)
             else:
-                # Use same context logic as discriminator training
-                spade_active = self._get_effective_spade_usage(global_step)
                 gen_ctx = None if spade_active else ctx_vec_rec
+                # Discriminator is read-only during generator update
+                self.discriminator.eval()
                 g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
+                self.discriminator.train()
 
                 # Check discriminator output
                 if check_for_nan(g_real_logits, "g_real_logits", logger):
@@ -1141,9 +1119,10 @@ class VAETrainer:
                     logger.error(
                         f"  out_imgs_gan stats: min={out_imgs_gan.min().item():.4f}, max={out_imgs_gan.max().item():.4f}, mean={out_imgs_gan.mean().item():.4f}"
                     )
-                    logger.error(
-                        f"  ctx_vec_rec stats: min={ctx_vec_rec.min().item():.4f}, max={ctx_vec_rec.max().item():.4f}, mean={ctx_vec_rec.mean().item():.4f}"
-                    )
+                    if ctx_vec_rec is not None:
+                        logger.error(
+                            f"  ctx_vec_rec stats: min={ctx_vec_rec.min().item():.4f}, max={ctx_vec_rec.max().item():.4f}, mean={ctx_vec_rec.mean().item():.4f}"
+                        )
                     # Check discriminator weights for NaN
                     for name, param in self.discriminator.named_parameters():
                         if torch.isnan(param).any():
@@ -1151,9 +1130,10 @@ class VAETrainer:
                             break
                     G_img_loss = torch.tensor(0.0, device=real_imgs.device)
                 else:
-                    G_img_loss = self.lambda_adv * g_hinge_loss(g_real_logits)
+                    # Raw hinge loss; lambda_adv applied when adding to total_loss
+                    G_img_loss = g_hinge_loss(g_real_logits)
 
-        # Update loss history for adaptive weighting
+        # Update loss history for adaptive weighting (record unscaled G_img_loss)
         if self.train_reconstruction:
             self.loss_history["recon"].add_item(float(recon_loss.item()))
         self.loss_history["kl"].add_item(float(kl.item()))
@@ -1192,7 +1172,7 @@ class VAETrainer:
         if self.train_reconstruction:
             total_loss = total_loss + w_recon * recon_loss
         if self.use_gan:
-            total_loss = total_loss + w_gan * G_img_loss
+            total_loss = total_loss + self.lambda_adv * w_gan * G_img_loss
 
         # v0.10.0: auxiliary context reconstruction loss (plan §4.1 / DP-1).
         if self.train_ctx_aux:

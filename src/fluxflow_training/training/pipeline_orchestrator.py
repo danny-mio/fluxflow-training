@@ -911,12 +911,18 @@ class TrainingPipelineOrchestrator:
                         in_channels=channels, ctx_dim=expected_ctx_dim
                     ).to(self.device)
                 else:
-                    # Use loaded discriminator - padding will handle dimension differences
-                    actual_ctx_dim = models["D_img"].ctx_proj.in_features
-                    logger.info(
-                        f"Using loaded discriminator (ctx_dim={actual_ctx_dim}, "
-                        f"expected {expected_ctx_dim}) - padding will handle differences"
-                    )
+                    actual_ctx_dim = getattr(models["D_img"], "ctx_dim", 0)
+                    if actual_ctx_dim != expected_ctx_dim:
+                        logger.warning(
+                            f"Loaded discriminator ctx_dim={actual_ctx_dim} != expected "
+                            f"{expected_ctx_dim}. Rebuilding discriminator from scratch "
+                            f"(GAN warm-up will restart)."
+                        )
+                        models["D_img"] = PatchDiscriminator(
+                            in_channels=channels, ctx_dim=expected_ctx_dim
+                        ).to(self.device)
+                    else:
+                        logger.info(f"Using loaded discriminator (ctx_dim={actual_ctx_dim})")
 
             # v0.10.0: compute ctx_input_dim for the context predictor.
             # ctx_vec = img_seq.mean(dim=1) has width = packed_token_dim = vae_dim + context_dims.
@@ -1462,7 +1468,7 @@ class TrainingPipelineOrchestrator:
 
                     # Train on all resolutions
                     for ri in imgs:
-                        real_imgs = ri.to(self.device).requires_grad_(True)
+                        real_imgs = ri.to(self.device)
 
                         # VAE/GAN/SPADE training (runs if trainer exists, even with train_vae=false)
                         if trainers.get("vae"):

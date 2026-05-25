@@ -137,6 +137,7 @@ class TestTrainScriptSetup:
             use_spade=False,
             r1_gamma=5.0,
             r1_interval=16,
+            use_lpips=False,
             accelerator=mock_accelerator,
         )
 
@@ -309,6 +310,7 @@ class TestTrainScriptTrainerIntegration:
             use_spade=False,
             r1_gamma=5.0,
             r1_interval=16,
+            use_lpips=False,
             accelerator=mock_accelerator,
         )
 
