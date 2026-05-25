@@ -310,15 +310,13 @@ class VAETrainer:
                     test_device = next(self.compressor.parameters()).device
                     test_input = torch.randn(1, 3, 64, 64).to(test_device)
                     compressor_output = self.compressor(test_input, training=True)
-                    if isinstance(compressor_output, tuple) and len(compressor_output) >= 2:
-                        _, test_mu, _ = compressor_output
-                        # mu shape: [B, d_model, H, W] — channel dim is d_model
-                        latent_dim = test_mu.shape[1] if test_mu.dim() == 4 else test_mu.shape[-1]
-                        logger.info(f"Detected VAE latent dimension: {latent_dim}")
+                    if isinstance(compressor_output, tuple):
+                        packed = compressor_output[0]
                     else:
                         packed = compressor_output
-                        latent_dim = packed.shape[-1]  # type: ignore
-                        logger.info(f"Detected VAE latent dimension from packed: {latent_dim}")
+                    # packed: [B, T+1, 2*d_model] — last dim is the full packed token width
+                    latent_dim = packed.shape[-1]  # type: ignore
+                    logger.info(f"Detected ctx_input_dim from packed output: {latent_dim}")
             except Exception as exc:
                 logger.warning(
                     f"Could not detect latent dimension, using fallback {latent_dim}: {exc}"
