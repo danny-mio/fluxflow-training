@@ -349,25 +349,26 @@ def initialize_models(args, config, device, checkpoint_manager):
             image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded image_encoder checkpoint")
         if loaded_states.get("D_img"):
-            # Check if loaded discriminator is compatible with current architecture
+            # Check if loaded discriminator is compatible with current architecture.
+            # Both ctx_proj (ctx_dim) and backbone.0 (base_ch) must match; a size
+            # mismatch raises RuntimeError even with strict=False.
             try:
-                saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+                saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]
+                saved_base_ch = loaded_states["D_img"]["backbone.0.weight"].shape[0]
                 current_ctx_dim = D_img.ctx_proj.in_features
-                if saved_ctx_dim == current_ctx_dim:
+                current_base_ch = D_img.backbone[0].out_channels
+                if saved_ctx_dim == current_ctx_dim and saved_base_ch == current_base_ch:
                     D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
                     print("✓ Loaded D_img checkpoint")
                 else:
                     print(
-                        f"⚠️  D_img checkpoint incompatible (saved ctx_dim={saved_ctx_dim}, current ctx_dim={current_ctx_dim}). Skipping load."
+                        f"⚠️  D_img checkpoint incompatible "
+                        f"(saved base_ch={saved_base_ch}/ctx_dim={saved_ctx_dim}, "
+                        f"current base_ch={current_base_ch}/ctx_dim={current_ctx_dim}). "
+                        f"Reinitialising from scratch."
                     )
-            except (KeyError, AttributeError) as e:
-                print(f"⚠️  Could not check D_img compatibility: {e}. Attempting load anyway.")
-                # Try loading anyway with strict=False in case it's compatible
-                try:
-                    D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
-                    print("✓ Loaded D_img checkpoint (compatibility check failed)")
-                except RuntimeError:
-                    print("⚠️  D_img checkpoint incompatible. Skipping load.")
+            except (KeyError, AttributeError, RuntimeError) as e:
+                print(f"⚠️  D_img checkpoint incompatible: {e}. Reinitialising from scratch.")
 
             # Validate discriminator weights for NaN/Inf
             nan_found = False
