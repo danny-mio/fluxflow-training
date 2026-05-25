@@ -1035,14 +1035,9 @@ class VAETrainer:
 
         # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
         B = real_imgs.shape[0]
-        # Use mu as the latent representation (VAE latent distribution mean)
-        # mu may have shape [B, latent_dim, H, W], so we need to handle that
-        if mu.dim() == 4:  # [B, C, H, W] - pool spatially
-            latent_repr = mu.mean(dim=[2, 3])  # [B, latent_dim]
-        elif mu.dim() == 2:  # [B, latent_dim] - already correct
-            latent_repr = mu
-        else:
-            raise ValueError(f"Unexpected mu shape: {mu.shape}")
+        # Use packed_rec ctx_vec — identical to _train_discriminator so context_predictor
+        # dimensions stay consistent across both training methods.
+        latent_repr = packed_rec[:, :-1, :].contiguous().mean(dim=1)  # [B, 2*d_model]
 
         context_input_dim = self._get_context_input_dim()
         # Ensure context_predictor matches actual latent dimension (may differ from init detection)
