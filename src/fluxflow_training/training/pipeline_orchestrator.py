@@ -904,25 +904,40 @@ class TrainingPipelineOrchestrator:
                     # v0.7.0/v0.8.0 compressors without get_context_dims(); use legacy value.
                     expected_ctx_dim = vae_dim + 5  # CONTEXT_DIMS = 5 for v070/v080
 
+                base_ch = getattr(args, "feature_maps_dim_disc", 32)
+
                 # Check if we have a loaded discriminator
                 if "D_img" not in models or models["D_img"] is None:
-                    logger.info(f"Creating new PatchDiscriminator with ctx_dim={expected_ctx_dim}")
+                    logger.info(
+                        f"Creating new PatchDiscriminator with base_ch={base_ch}, ctx_dim={expected_ctx_dim}"
+                    )
                     models["D_img"] = PatchDiscriminator(
-                        in_channels=channels, ctx_dim=expected_ctx_dim
+                        in_channels=channels, base_ch=base_ch, ctx_dim=expected_ctx_dim
                     ).to(self.device)
                 else:
                     actual_ctx_dim = getattr(models["D_img"], "ctx_dim", 0)
-                    if actual_ctx_dim != expected_ctx_dim:
+                    actual_base_ch = getattr(
+                        (
+                            models["D_img"].backbone[0]
+                            if hasattr(models["D_img"], "backbone")
+                            else None
+                        ),
+                        "out_channels",
+                        base_ch,
+                    )
+                    if actual_ctx_dim != expected_ctx_dim or actual_base_ch != base_ch:
                         logger.warning(
-                            f"Loaded discriminator ctx_dim={actual_ctx_dim} != expected "
-                            f"{expected_ctx_dim}. Rebuilding discriminator from scratch "
-                            f"(GAN warm-up will restart)."
+                            f"Loaded discriminator (base_ch={actual_base_ch}, ctx_dim={actual_ctx_dim}) "
+                            f"!= expected (base_ch={base_ch}, ctx_dim={expected_ctx_dim}). "
+                            f"Rebuilding discriminator from scratch (GAN warm-up will restart)."
                         )
                         models["D_img"] = PatchDiscriminator(
-                            in_channels=channels, ctx_dim=expected_ctx_dim
+                            in_channels=channels, base_ch=base_ch, ctx_dim=expected_ctx_dim
                         ).to(self.device)
                     else:
-                        logger.info(f"Using loaded discriminator (ctx_dim={actual_ctx_dim})")
+                        logger.info(
+                            f"Using loaded discriminator (base_ch={actual_base_ch}, ctx_dim={actual_ctx_dim})"
+                        )
 
             # v0.10.0: compute ctx_input_dim for the context predictor.
             # ctx_vec = img_seq.mean(dim=1) has width = vae_dim + context_dims.
