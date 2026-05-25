@@ -301,10 +301,10 @@ def initialize_models(args, config, device, checkpoint_manager):
 
     D_img = PatchDiscriminator(
         in_channels=args.channels,
-        base_ch=32,  # Reduced from 64 (50% less channels)
-        depth=3,  # Reduced from 4 (25% less depth)
+        base_ch=args.feature_maps_dim_disc,
+        depth=3,
         ctx_dim=ctx_dim,
-        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+        use_spectral_norm=False,
     )
 
     # Create diffuser pipeline
@@ -325,10 +325,10 @@ def initialize_models(args, config, device, checkpoint_manager):
 
     D_img = PatchDiscriminator(
         in_channels=args.channels,
-        base_ch=32,  # Reduced from 64 (50% less channels)
-        depth=3,  # Reduced from 4 (25% less depth)
+        base_ch=args.feature_maps_dim_disc,
+        depth=3,
         ctx_dim=ctx_dim,
-        use_spectral_norm=False,  # Disabled for speed (can be enabled if needed)
+        use_spectral_norm=False,
     )
 
     # Load model checkpoints
@@ -379,7 +379,9 @@ def initialize_models(args, config, device, checkpoint_manager):
                 print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
                 # Use context dimension that matches the loaded model
                 ctx_dim = 256
-                D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
+                D_img = PatchDiscriminator(
+                    in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
+                )
 
     # Move to device
     diffuser.to(device)
@@ -745,7 +747,9 @@ def train_legacy(args):
         ctx_dim = args.vae_dim
         print(f"Creating discriminator with ctx_dim={ctx_dim} (fallback: no context dims method)")
 
-    D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=ctx_dim)
+    D_img = PatchDiscriminator(
+        in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
+    )
 
     # Initialize checkpoint manager for easier model management
     checkpoint_manager = CheckpointManager(
@@ -789,7 +793,9 @@ def train_legacy(args):
                 nan_found = True
         if nan_found:
             print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-            D_img = PatchDiscriminator(in_channels=args.channels, ctx_dim=args.vae_dim)
+            D_img = PatchDiscriminator(
+                in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=args.vae_dim
+            )
 
     diffuser.to(device)
     text_encoder.to(device)

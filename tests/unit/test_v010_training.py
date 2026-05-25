@@ -22,7 +22,6 @@ from fluxflow_training.training.pipeline_config import (
 )
 from fluxflow_training.training.pipeline_orchestrator import TrainingPipelineOrchestrator
 
-
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
 # ---------------------------------------------------------------------------
@@ -104,9 +103,7 @@ class TestPipelineConfigV010Fields:
                         "n_epochs": 2,
                         "train_diff": True,
                         "ctx_loss_weight": 0.3,
-                        "optimization": {
-                            "optimizers": {"flow": {"type": "AdamW", "lr": 1e-4}}
-                        },
+                        "optimization": {"optimizers": {"flow": {"type": "AdamW", "lr": 1e-4}}},
                     }
                 ]
             }
@@ -336,8 +333,6 @@ class TestVAETrainerV010:
 
     def test_ctx_aux_loss_computed_for_even_packed_dim(self):
         """ctx_aux_loss must be non-zero for a packed tensor with even last dim."""
-        from fluxflow_training.training.vae_trainer import VAETrainer
-
         trainer = self._make_minimal_trainer(ctx_input_dim=128)
 
         # Directly test the loss computation path via a mock packed tensor
@@ -384,22 +379,27 @@ class TestVAETrainerV010:
 class TestFlowTrainerV010:
     """Verify ctx_loss_weight is wired correctly in FlowTrainer."""
 
+    def _make_stub_modules(self):
+        """Return minimal real nn.Module instances for FlowTrainer construction."""
+
+        class _Stub(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.p = nn.Parameter(torch.zeros(1))
+
+        flow = _Stub()
+        text_enc = _Stub()
+        comp = _Stub()
+        comp.use_gradient_checkpointing = False
+        return flow, text_enc, comp
+
     def test_ctx_loss_weight_attribute_exists(self):
         """FlowTrainer must store ctx_loss_weight as an instance attribute."""
         from fluxflow_training.training.flow_trainer import FlowTrainer
 
-        flow = MagicMock(spec=nn.Module)
-        flow.parameters = Mock(return_value=iter([nn.Parameter(torch.zeros(1))]))
-        text_enc = MagicMock(spec=nn.Module)
-        text_enc.parameters = Mock(return_value=iter([nn.Parameter(torch.zeros(1))]))
-        comp = MagicMock(spec=nn.Module)
-        comp.parameters = Mock(return_value=iter([nn.Parameter(torch.zeros(1))]))
-        comp.use_gradient_checkpointing = False
-
-        opt = torch.optim.SGD([nn.Parameter(torch.zeros(1))], lr=1e-3)
+        flow, text_enc, comp = self._make_stub_modules()
+        opt = torch.optim.SGD(flow.parameters(), lr=1e-3)
         sched = torch.optim.lr_scheduler.ConstantLR(opt)
-
-        accel = MagicMock()
 
         trainer = FlowTrainer(
             flow_processor=flow,
@@ -408,7 +408,7 @@ class TestFlowTrainerV010:
             optimizer=opt,
             scheduler=sched,
             ctx_loss_weight=0.5,
-            accelerator=accel,
+            accelerator=MagicMock(),
         )
         assert trainer.ctx_loss_weight == 0.5
 
@@ -416,17 +416,9 @@ class TestFlowTrainerV010:
         """Default ctx_loss_weight is 1.0 in FlowTrainer (plan: tuned via YAML)."""
         from fluxflow_training.training.flow_trainer import FlowTrainer
 
-        flow = MagicMock(spec=nn.Module)
-        flow.parameters = Mock(return_value=iter([nn.Parameter(torch.zeros(1))]))
-        text_enc = MagicMock(spec=nn.Module)
-        text_enc.parameters = Mock(return_value=iter([nn.Parameter(torch.zeros(1))]))
-        comp = MagicMock(spec=nn.Module)
-        comp.parameters = Mock(return_value=iter([nn.Parameter(torch.zeros(1))]))
-        comp.use_gradient_checkpointing = False
-
-        opt = torch.optim.SGD([nn.Parameter(torch.zeros(1))], lr=1e-3)
+        flow, text_enc, comp = self._make_stub_modules()
+        opt = torch.optim.SGD(flow.parameters(), lr=1e-3)
         sched = torch.optim.lr_scheduler.ConstantLR(opt)
-        accel = MagicMock()
 
         trainer = FlowTrainer(
             flow_processor=flow,
@@ -434,7 +426,7 @@ class TestFlowTrainerV010:
             compressor=comp,
             optimizer=opt,
             scheduler=sched,
-            accelerator=accel,
+            accelerator=MagicMock(),
         )
         # Default in FlowTrainer is 1.0; YAML default in PipelineStepConfig is 0.5
         assert trainer.ctx_loss_weight == 1.0

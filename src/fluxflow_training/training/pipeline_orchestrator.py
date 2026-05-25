@@ -924,9 +924,9 @@ class TrainingPipelineOrchestrator:
             # the attribute may not exist or returns 5. Fall back gracefully.
             _ctx_input_dim: Optional[int] = None
             try:
-                _ctx_input_dim = getattr(args, "vae_dim", 128) + models[
-                    "compressor"
-                ].get_context_dims()
+                _ctx_input_dim = (
+                    getattr(args, "vae_dim", 128) + models["compressor"].get_context_dims()
+                )
             except (AttributeError, TypeError):
                 pass  # legacy compressor; VAETrainer will auto-detect
 
