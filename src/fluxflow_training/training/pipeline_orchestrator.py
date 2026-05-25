@@ -887,18 +887,18 @@ class TrainingPipelineOrchestrator:
                 from fluxflow.models import PatchDiscriminator
 
                 channels = getattr(args, "channels", 3)
-                vae_dim = getattr(args, "vae_dim", 128)
+                # Use the loaded compressor's actual d_model — never args.vae_dim which
+                # may be missing, wrong, or not match the checkpoint on disk.
+                vae_dim = models["compressor"].d_model
 
                 # Calculate expected context dimension.
                 # ctx_vec = img_seq.mean(dim=1) has dim = packed_token_width = vae_dim +
                 # context_dims.  For v0.10.0, get_context_dims() returns d_model (== vae_dim)
-                # so packed_token_width = 2 * d_model = 256.  For v0.8.0 and earlier,
+                # so packed_token_width = 2 * d_model.  For v0.8.0 and earlier,
                 # get_context_dims() is not defined; fall back to the legacy constant
                 # vae_dim + 5 = 133 (CONTEXT_DIMS from v070).
                 try:
                     context_dims = models["compressor"].get_context_dims()
-                    # v0.10.0 compressors: context_dims == d_model, so packed width = 2*vae_dim.
-                    # Earlier compressors expose the same method returning their smaller constant.
                     expected_ctx_dim = vae_dim + context_dims
                 except (AttributeError, TypeError):
                     # v0.7.0/v0.8.0 compressors without get_context_dims(); use legacy value.
@@ -925,13 +925,12 @@ class TrainingPipelineOrchestrator:
                         logger.info(f"Using loaded discriminator (ctx_dim={actual_ctx_dim})")
 
             # v0.10.0: compute ctx_input_dim for the context predictor.
-            # ctx_vec = img_seq.mean(dim=1) has width = packed_token_dim = vae_dim + context_dims.
-            # For v0.10.0 compressors get_context_dims() returns d_model; for earlier versions
-            # the attribute may not exist or returns 5. Fall back gracefully.
+            # ctx_vec = img_seq.mean(dim=1) has width = vae_dim + context_dims.
+            # Always derive from the loaded compressor, never from args.
             _ctx_input_dim: Optional[int] = None
             try:
                 _ctx_input_dim = (
-                    getattr(args, "vae_dim", 128) + models["compressor"].get_context_dims()
+                    models["compressor"].d_model + models["compressor"].get_context_dims()
                 )
             except (AttributeError, TypeError):
                 pass  # legacy compressor; VAETrainer will auto-detect
