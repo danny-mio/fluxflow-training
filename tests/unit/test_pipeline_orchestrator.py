@@ -906,3 +906,68 @@ class TestCreateStepOptimizersTextEncoderSplit:
         assert "text_encoder_projection" in optimizers
         assert "text_encoder_backbone" in optimizers
         assert "text_encoder" not in optimizers
+
+
+class TestConfigureStepModelsTextEncoderSubComponents:
+    """configure_step_models handles text_encoder_backbone/projection names."""
+
+    def _make_orchestrator(self):
+        from fluxflow_training.training.pipeline_config import PipelineConfig, PipelineStepConfig
+
+        step = PipelineStepConfig(name="flow", n_epochs=1, train_diff=True)
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.models = {}
+        orch.device = "cpu"
+        return orch
+
+    def _make_encoder(self):
+        from fluxflow.models.encoders import BertTextEncoder
+
+        return BertTextEncoder(embed_dim=64, pretrain_model=None)
+
+    def test_freeze_projection(self):
+        from fluxflow_training.training.pipeline_config import PipelineStepConfig
+
+        orch = self._make_orchestrator()
+        enc = self._make_encoder()
+        models = {"text_encoder": enc}
+        for p in enc.parameter_groups()["projection"]:
+            p.requires_grad = True
+        step = PipelineStepConfig(
+            name="flow", n_epochs=1, train_diff=True, freeze=["text_encoder_projection"]
+        )
+        orch.configure_step_models(step, models)
+        assert all(not p.requires_grad for p in enc.parameter_groups()["projection"])
+
+    def test_unfreeze_backbone(self):
+        from fluxflow_training.training.pipeline_config import PipelineStepConfig
+
+        orch = self._make_orchestrator()
+        enc = self._make_encoder()
+        models = {"text_encoder": enc}
+        for p in enc.parameter_groups()["backbone"]:
+            p.requires_grad = False
+        step = PipelineStepConfig(
+            name="flow", n_epochs=1, train_diff=True, unfreeze=["text_encoder_backbone"]
+        )
+        orch.configure_step_models(step, models)
+        assert all(p.requires_grad for p in enc.parameter_groups()["backbone"])
+
+    def test_freeze_backbone_unfreeze_projection(self):
+        from fluxflow_training.training.pipeline_config import PipelineStepConfig
+
+        orch = self._make_orchestrator()
+        enc = self._make_encoder()
+        models = {"text_encoder": enc}
+        step = PipelineStepConfig(
+            name="flow",
+            n_epochs=1,
+            train_diff=True,
+            freeze=["text_encoder_backbone"],
+            unfreeze=["text_encoder_projection"],
+        )
+        orch.configure_step_models(step, models)
+        assert all(not p.requires_grad for p in enc.parameter_groups()["backbone"])
+        assert all(p.requires_grad for p in enc.parameter_groups()["projection"])

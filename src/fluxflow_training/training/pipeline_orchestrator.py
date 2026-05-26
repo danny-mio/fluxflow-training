@@ -281,6 +281,34 @@ class TrainingPipelineOrchestrator:
                 self.models = models_dict  # ensure helper reads the right dict
                 self.freeze_context_branch("compressor")
                 continue
+            if model_name == "text_encoder_projection":
+                te = models_dict.get("text_encoder")
+                if te is None:
+                    logger.warning(
+                        "Cannot freeze text_encoder_projection: text_encoder not in models"
+                    )
+                    continue
+                params = te.parameter_groups()["projection"]
+                for p in params:
+                    p.requires_grad = False
+                logger.info(
+                    f"Frozen text_encoder_projection ({sum(p.numel() for p in params):,} params)"
+                )
+                continue
+            if model_name == "text_encoder_backbone":
+                te = models_dict.get("text_encoder")
+                if te is None:
+                    logger.warning(
+                        "Cannot freeze text_encoder_backbone: text_encoder not in models"
+                    )
+                    continue
+                params = te.parameter_groups()["backbone"]
+                for p in params:
+                    p.requires_grad = False
+                logger.info(
+                    f"Frozen text_encoder_backbone ({sum(p.numel() for p in params):,} params)"
+                )
+                continue
             if model_name not in models_dict:
                 logger.warning(f"Cannot freeze '{model_name}': not found in models dict")
                 continue
@@ -295,6 +323,34 @@ class TrainingPipelineOrchestrator:
                 # v0.10.0: unfreeze context branch sub-modules inside the compressor
                 self.models = models_dict
                 self.unfreeze_context_branch("compressor")
+                continue
+            if model_name == "text_encoder_projection":
+                te = models_dict.get("text_encoder")
+                if te is None:
+                    logger.warning(
+                        "Cannot unfreeze text_encoder_projection: text_encoder not in models"
+                    )
+                    continue
+                params = te.parameter_groups()["projection"]
+                for p in params:
+                    p.requires_grad = True
+                logger.info(
+                    f"Unfrozen text_encoder_projection ({sum(p.numel() for p in params):,} params)"
+                )
+                continue
+            if model_name == "text_encoder_backbone":
+                te = models_dict.get("text_encoder")
+                if te is None:
+                    logger.warning(
+                        "Cannot unfreeze text_encoder_backbone: text_encoder not in models"
+                    )
+                    continue
+                params = te.parameter_groups()["backbone"]
+                for p in params:
+                    p.requires_grad = True
+                logger.info(
+                    f"Unfrozen text_encoder_backbone ({sum(p.numel() for p in params):,} params)"
+                )
                 continue
             if model_name not in models_dict:
                 logger.warning(f"Cannot unfreeze '{model_name}': not found in models dict")
