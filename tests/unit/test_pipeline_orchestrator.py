@@ -798,3 +798,111 @@ class TestLoggingOutput:
         # Verify metrics logging checks buffer length
         # (appears twice: once for console, once for metrics dict)
         assert content.count("if len(vae_errors._items) > 0:") >= 2
+
+
+class TestCreateStepOptimizersTextEncoderSplit:
+    """_create_step_optimizers correctly routes sub-component keys."""
+
+    def _make_orchestrator(self):
+        from fluxflow_training.training.pipeline_config import PipelineConfig, PipelineStepConfig
+
+        step = PipelineStepConfig(name="flow", n_epochs=1, train_diff=True)
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        return orch
+
+    def _make_models(self):
+        import torch.nn as nn
+        from fluxflow.models.encoders import BertTextEncoder
+
+        te = BertTextEncoder(embed_dim=64, pretrain_model=None)
+        flow = nn.Linear(4, 4)
+        return {"text_encoder": te, "flow_processor": flow}
+
+    def test_projection_only_optimizer(self):
+        from unittest.mock import MagicMock
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        orch = self._make_orchestrator()
+        models = self._make_models()
+        step = PipelineStepConfig(
+            name="flow",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-5),
+                },
+            ),
+        )
+        optimizers = orch._create_step_optimizers(step, models, MagicMock())
+        assert "text_encoder_projection" in optimizers
+        assert "text_encoder_backbone" not in optimizers
+        proj_ids = {id(p) for p in models["text_encoder"].parameter_groups()["projection"]}
+        opt_ids = {
+            id(p) for pg in optimizers["text_encoder_projection"].param_groups for p in pg["params"]
+        }
+        assert opt_ids == proj_ids
+
+    def test_backbone_only_optimizer(self):
+        from unittest.mock import MagicMock
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        orch = self._make_orchestrator()
+        models = self._make_models()
+        step = PipelineStepConfig(
+            name="flow",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4),
+                    "text_encoder_backbone": OptimizerConfig(lr=5e-8),
+                },
+            ),
+        )
+        optimizers = orch._create_step_optimizers(step, models, MagicMock())
+        assert "text_encoder_backbone" in optimizers
+        bb_ids = {id(p) for p in models["text_encoder"].parameter_groups()["backbone"]}
+        opt_ids = {
+            id(p) for pg in optimizers["text_encoder_backbone"].param_groups for p in pg["params"]
+        }
+        assert opt_ids == bb_ids
+
+    def test_both_sub_components(self):
+        from unittest.mock import MagicMock
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        orch = self._make_orchestrator()
+        models = self._make_models()
+        step = PipelineStepConfig(
+            name="flow",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-5),
+                    "text_encoder_backbone": OptimizerConfig(lr=5e-8),
+                },
+            ),
+        )
+        optimizers = orch._create_step_optimizers(step, models, MagicMock())
+        assert "text_encoder_projection" in optimizers
+        assert "text_encoder_backbone" in optimizers
+        assert "text_encoder" not in optimizers

@@ -760,6 +760,20 @@ class TrainingPipelineOrchestrator:
                 params = models["flow_processor"].parameters()
             elif name == "text_encoder":
                 params = models["text_encoder"].parameters()
+            elif name == "text_encoder_projection":
+                if not models.get("text_encoder"):
+                    logger.warning(
+                        "text_encoder_projection optimizer: text_encoder not in models, skipping"
+                    )
+                    continue
+                params = models["text_encoder"].parameter_groups()["projection"]
+            elif name == "text_encoder_backbone":
+                if not models.get("text_encoder"):
+                    logger.warning(
+                        "text_encoder_backbone optimizer: text_encoder not in models, skipping"
+                    )
+                    continue
+                params = models["text_encoder"].parameter_groups()["backbone"]
             else:
                 logger.warning(f"Unknown optimizer name: {name}, skipping")
                 continue
