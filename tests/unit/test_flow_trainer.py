@@ -383,6 +383,58 @@ class TestFlowTrainerSplitTextEncoderOptimizers:
         assert "lr_text_backbone" in metrics
         assert "lr_text_projection" in metrics
 
+    def test_ema_with_backbone_frozen_projection_drifts_backbone_stable(self):
+        """EMA shadow for projection drifts after training; backbone shadow stays at init."""
+        from fluxflow.models.encoders import BertTextEncoder
+        from fluxflow_training.training.flow_trainer import FlowTrainer
+
+        enc = BertTextEncoder(embed_dim=64, pretrain_model=None)
+        flow = _MinimalFlow(64)
+
+        for p in enc.parameter_groups()["backbone"]:
+            p.requires_grad = False
+
+        proj_params = enc.parameter_groups()["projection"]
+        proj_opt = AdamW(proj_params, lr=1e-3)
+        flow_opt = AdamW(flow.parameters(), lr=1e-4)
+
+        accel = MagicMock()
+        accel.backward = lambda loss: loss.backward()
+        accel.clip_grad_norm_ = lambda params, norm: torch.tensor(0.0)
+
+        trainer = FlowTrainer(
+            flow_processor=flow,
+            text_encoder=enc,
+            compressor=_make_mock_compressor(vae_dim=64, context_dims=0, token_count=4),
+            optimizer=flow_opt,
+            scheduler=MagicMock(scheduler=MagicMock()),
+            text_encoder_extra_optimizers={"projection": proj_opt},
+            accelerator=accel,
+        )
+
+        # Capture initial EMA shadow values for backbone params
+        bb_before = {
+            n: v.clone()
+            for n, v in trainer.ema.shadow.items()
+            if "text_encoder" in n and "language_model" in n
+        }
+
+        B, N = 2, 5
+        for i in range(N):
+            trainer.train_step(
+                torch.randn(B, 3, 32, 32),
+                torch.randint(0, 30522, (B, 8)),
+                torch.ones(B, 8),
+                global_step=i,
+            )
+
+        # Backbone EMA shadows must not have changed
+        for n, before_val in bb_before.items():
+            after_val = trainer.ema.shadow[n]
+            assert torch.allclose(
+                after_val, before_val, atol=1e-5
+            ), f"Backbone EMA shadow {n} changed despite backbone being frozen"
+
     def test_extra_optimizer_zero_grad_called_once_per_accumulation_window(self):
         """With gradient_accumulation_steps=2, extra optimizer zero_grad fires once per two micro-steps."""
         from fluxflow_training.training.flow_trainer import FlowTrainer
