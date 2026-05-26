@@ -1,5 +1,7 @@
 """Unit tests for pipeline configuration and validation."""
 
+import pytest
+
 from fluxflow_training.training.pipeline_config import (
     OptimizationConfig,
     OptimizerConfig,
@@ -584,3 +586,68 @@ class TestEdgeCases:
         errors = validator.validate()
         assert any("cannot freeze and train the same component" in e.lower() for e in errors)
         assert any("discriminator" in e for e in errors)
+
+
+class TestValidatorNewComponents:
+    """Validator accepts text encoder sub-component names."""
+
+    def _make_step(self, **kwargs):
+        defaults = dict(name="flow", n_epochs=1, train_diff=True, freeze=[], unfreeze=[])
+        defaults.update(kwargs)
+        return PipelineStepConfig(**defaults)
+
+    def _make_config(self, step):
+        return PipelineConfig(steps=[step])
+
+    def test_text_encoder_projection_valid_freeze(self):
+        step = self._make_step(freeze=["text_encoder_projection"])
+        validator = PipelineConfigValidator(self._make_config(step))
+        errors = validator.validate()
+        assert not errors
+
+    def test_text_encoder_backbone_valid_unfreeze(self):
+        step = self._make_step(unfreeze=["text_encoder_backbone"])
+        validator = PipelineConfigValidator(self._make_config(step))
+        errors = validator.validate()
+        assert not errors
+
+    def test_text_encoder_projection_valid_optimizer_key(self):
+        step = self._make_step(
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-5),
+                },
+                schedulers={},
+            )
+        )
+        validator = PipelineConfigValidator(self._make_config(step))
+        errors = validator.validate()
+        assert not errors
+
+    def test_text_encoder_backbone_valid_optimizer_key(self):
+        step = self._make_step(
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(),
+                    "text_encoder_backbone": OptimizerConfig(lr=5e-8),
+                },
+                schedulers={},
+            )
+        )
+        validator = PipelineConfigValidator(self._make_config(step))
+        errors = validator.validate()
+        assert not errors
+
+    def test_conflict_guard_raises_when_whole_and_split_both_present(self):
+        step = self._make_step(
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4),
+                    "text_encoder": OptimizerConfig(lr=1e-5),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-5),
+                },
+            )
+        )
+        with pytest.raises(ValueError, match="text_encoder.*text_encoder_projection"):
+            PipelineConfigValidator(self._make_config(step)).validate()

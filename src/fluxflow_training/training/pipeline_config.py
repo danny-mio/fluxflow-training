@@ -206,6 +206,8 @@ class PipelineConfigValidator:
         "flow_processor",
         "flow",
         "text_encoder",
+        "text_encoder_backbone",  # DistilBERT language_model sub-component
+        "text_encoder_projection",  # ouput_layer sub-component
         "discriminator",
         "D_img",
         # v0.10.0: freeze context branch independently from rest of compressor
@@ -430,6 +432,16 @@ class PipelineConfigValidator:
         self, opt_config: OptimizationConfig, step_name: str, step_index: int
     ) -> None:
         """Validate optimization configuration."""
+        # B2: guard against whole-encoder + split-key co-existence
+        _opt_keys = set(opt_config.optimizers.keys())
+        _split_keys = {"text_encoder_backbone", "text_encoder_projection"}
+        if "text_encoder" in _opt_keys and (_opt_keys & _split_keys):
+            raise ValueError(
+                f"Step '{step_name}': 'text_encoder' optimizer key cannot be combined with "
+                f"{sorted(_opt_keys & _split_keys)} — use either the whole-encoder key or "
+                f"the split sub-component keys, not both."
+            )
+
         # Validate optimizer types
         for name, opt in opt_config.optimizers.items():
             if opt.type not in self.VALID_OPTIMIZER_TYPES:
