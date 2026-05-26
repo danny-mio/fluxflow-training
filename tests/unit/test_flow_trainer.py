@@ -308,3 +308,115 @@ class TestFlowTrainerGradientClipping:
         assert (
             abs(post_norm - pre_norm) < 1e-5
         ), f"Small gradients ({pre_norm:.6f}) were incorrectly clipped to {post_norm:.6f}."
+
+
+# ---------------------------------------------------------------------------
+# Task 5: split text-encoder optimizers
+# ---------------------------------------------------------------------------
+
+
+class _SimpleTextEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Linear(4, 4)
+
+    def forward(self, ids, attention_mask=None):
+        return torch.randn(ids.shape[0], 4)
+
+
+def _make_minimal_trainer(text_encoder_extra_optimizers=None):
+    from fluxflow_training.training.flow_trainer import FlowTrainer
+
+    flow = _MinimalFlow(4)
+    text = _SimpleTextEncoder()
+    comp = _make_mock_compressor(vae_dim=4, context_dims=0, token_count=4)
+
+    opt = AdamW(flow.parameters(), lr=1e-4)
+    sched = MagicMock()
+    sched.scheduler = sched
+
+    accel = MagicMock()
+    accel.backward = lambda loss: loss.backward()
+    accel.clip_grad_norm_ = lambda params, norm: torch.tensor(0.0)
+
+    return FlowTrainer(
+        flow_processor=flow,
+        text_encoder=text,
+        compressor=comp,
+        optimizer=opt,
+        scheduler=sched,
+        text_encoder_extra_optimizers=text_encoder_extra_optimizers,
+        accelerator=accel,
+    )
+
+
+class TestFlowTrainerSplitTextEncoderOptimizers:
+    """FlowTrainer accepts split backbone/projection optimizers."""
+
+    def test_init_accepts_extra_optimizers_dict(self):
+        enc = nn.Linear(4, 4)
+        extras = {
+            "backbone": AdamW([{"params": list(enc.parameters())}], lr=5e-8),
+            "projection": AdamW([{"params": list(enc.parameters())}], lr=1e-5),
+        }
+        trainer = _make_minimal_trainer(text_encoder_extra_optimizers=extras)
+        assert trainer.text_encoder_extra_optimizers == extras
+
+    def test_init_none_extra_optimizers_is_empty_dict(self):
+        trainer = _make_minimal_trainer(text_encoder_extra_optimizers=None)
+        assert trainer.text_encoder_extra_optimizers == {}
+
+    def test_metrics_include_lr_backbone_and_projection(self):
+        enc = nn.Linear(4, 4)
+        extras = {
+            "backbone": AdamW([{"params": list(enc.parameters())}], lr=5e-8),
+            "projection": AdamW([{"params": list(enc.parameters())}], lr=1e-5),
+        }
+        trainer = _make_minimal_trainer(text_encoder_extra_optimizers=extras)
+
+        B = 2
+        real_imgs = torch.randn(B, 3, 32, 32)
+        input_ids = torch.randint(0, 100, (B, 8))
+        attn = torch.ones(B, 8)
+
+        metrics = trainer.train_step(real_imgs, input_ids, attn, global_step=0)
+        assert "lr_text_backbone" in metrics
+        assert "lr_text_projection" in metrics
+
+    def test_extra_optimizer_zero_grad_called_once_per_accumulation_window(self):
+        """With gradient_accumulation_steps=2, extra optimizer zero_grad fires once per two micro-steps."""
+        from fluxflow_training.training.flow_trainer import FlowTrainer
+
+        flow = _MinimalFlow(4)
+        text = _SimpleTextEncoder()
+        proj_opt = AdamW(text.parameters(), lr=1e-5)
+
+        accel = MagicMock()
+        accel.backward = lambda loss: loss.backward()
+        accel.clip_grad_norm_ = lambda params, norm: torch.tensor(0.0)
+
+        trainer = FlowTrainer(
+            flow_processor=flow,
+            text_encoder=text,
+            compressor=_make_mock_compressor(vae_dim=4, context_dims=0, token_count=4),
+            optimizer=AdamW(flow.parameters(), lr=1e-4),
+            scheduler=MagicMock(scheduler=MagicMock()),
+            text_encoder_extra_optimizers={"projection": proj_opt},
+            gradient_accumulation_steps=2,
+            accelerator=accel,
+        )
+
+        B = 2
+        real_imgs = torch.randn(B, 3, 32, 32)
+        input_ids = torch.randint(0, 100, (B, 8))
+        attn = torch.ones(B, 8)
+
+        zero_grad_calls = []
+        original_zero_grad = proj_opt.zero_grad
+        proj_opt.zero_grad = lambda **kw: zero_grad_calls.append(1) or original_zero_grad(**kw)
+
+        trainer.train_step(real_imgs, input_ids, attn, global_step=0)
+        trainer.train_step(real_imgs, input_ids, attn, global_step=1)
+        assert (
+            len(zero_grad_calls) == 1
+        ), f"Expected 1 zero_grad call over 2 micro-steps, got {len(zero_grad_calls)}"

@@ -69,6 +69,8 @@ class FlowTrainer:
         scheduler: _LRScheduler,  # type: ignore[type-arg]
         text_encoder_optimizer: Optional[Optimizer] = None,
         text_encoder_scheduler: Optional[_LRScheduler] = None,  # type: ignore[type-arg]
+        text_encoder_extra_optimizers: Optional[dict] = None,
+        text_encoder_extra_schedulers: Optional[dict] = None,
         gradient_clip_norm: float = 1.0,
         gradient_accumulation_steps: int = 1,
         num_train_timesteps: int = 1000,
@@ -110,6 +112,9 @@ class FlowTrainer:
         self.scheduler = scheduler
         self.text_encoder_optimizer = text_encoder_optimizer
         self.text_encoder_scheduler = text_encoder_scheduler
+        # Split text encoder optimizers: keys are "backbone" and/or "projection".
+        self.text_encoder_extra_optimizers: dict = text_encoder_extra_optimizers or {}
+        self.text_encoder_extra_schedulers: dict = text_encoder_extra_schedulers or {}
         self.gradient_clip_norm = gradient_clip_norm
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self._accumulation_step = 0  # Track current accumulation step
@@ -165,8 +170,26 @@ class FlowTrainer:
             Dictionary with loss and metric values
         """
         self.flow_processor.train()
-        if self.text_encoder_optimizer is not None:
+
+        # B1: fine-grained per-sub-module train/eval mode based on active optimizers.
+        _has_whole_te_opt = self.text_encoder_optimizer is not None
+        _has_backbone_opt = "backbone" in self.text_encoder_extra_optimizers
+        _has_projection_opt = "projection" in self.text_encoder_extra_optimizers
+
+        if _has_whole_te_opt or (_has_backbone_opt and _has_projection_opt):
             self.text_encoder.train()
+        elif _has_projection_opt and not _has_backbone_opt:
+            if hasattr(self.text_encoder, "language_model"):
+                self.text_encoder.language_model.eval()
+                self.text_encoder.ouput_layer.train()
+            else:
+                self.text_encoder.train()
+        elif _has_backbone_opt and not _has_projection_opt:
+            if hasattr(self.text_encoder, "language_model"):
+                self.text_encoder.language_model.train()
+                self.text_encoder.ouput_layer.eval()
+            else:
+                self.text_encoder.train()
         else:
             self.text_encoder.eval()
 
@@ -174,6 +197,9 @@ class FlowTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             if self.text_encoder_optimizer is not None:
                 self.text_encoder_optimizer.zero_grad(set_to_none=True)
+            # B4: extra optimizer zero_grad must be inside the accumulation guard
+            for opt in self.text_encoder_extra_optimizers.values():
+                opt.zero_grad(set_to_none=True)
 
         # Encode text
         text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
@@ -384,6 +410,8 @@ class FlowTrainer:
             self.optimizer.step()
             if self.text_encoder_optimizer is not None:
                 self.text_encoder_optimizer.step()
+            for opt in self.text_encoder_extra_optimizers.values():
+                opt.step()
 
             # Update EMA
             self.ema.update()
@@ -409,6 +437,13 @@ class FlowTrainer:
                     self.text_encoder_scheduler.step(loss_value)  # type: ignore[arg-type]
                 else:
                     self.text_encoder_scheduler.step()  # type: ignore[call-arg]
+
+            for sched in self.text_encoder_extra_schedulers.values():
+                base = getattr(sched, "scheduler", sched)
+                if isinstance(base, ReduceLROnPlateau):
+                    sched.step(loss_value)
+                else:
+                    sched.step()
 
             if self._first_step:
                 self._first_step = False
@@ -450,6 +485,9 @@ class FlowTrainer:
         # Add text encoder LR only if optimizer exists
         if self.text_encoder_optimizer is not None:
             metrics["lr_text"] = self.text_encoder_optimizer.param_groups[0]["lr"]
+
+        for key, opt in self.text_encoder_extra_optimizers.items():
+            metrics[f"lr_text_{key}"] = opt.param_groups[0]["lr"]
 
         return metrics
 
