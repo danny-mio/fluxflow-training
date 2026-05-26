@@ -823,6 +823,7 @@ class TestCreateStepOptimizersTextEncoderSplit:
 
     def test_projection_only_optimizer(self):
         from unittest.mock import MagicMock
+
         from fluxflow_training.training.pipeline_config import (
             OptimizationConfig,
             OptimizerConfig,
@@ -853,6 +854,7 @@ class TestCreateStepOptimizersTextEncoderSplit:
 
     def test_backbone_only_optimizer(self):
         from unittest.mock import MagicMock
+
         from fluxflow_training.training.pipeline_config import (
             OptimizationConfig,
             OptimizerConfig,
@@ -882,6 +884,7 @@ class TestCreateStepOptimizersTextEncoderSplit:
 
     def test_both_sub_components(self):
         from unittest.mock import MagicMock
+
         from fluxflow_training.training.pipeline_config import (
             OptimizationConfig,
             OptimizerConfig,
@@ -978,6 +981,7 @@ class TestCreateStepTrainersTextEncoderSplit:
 
     def _make_orch_with_step(self, step):
         from unittest.mock import MagicMock
+
         from fluxflow_training.training.pipeline_config import PipelineConfig
 
         config = PipelineConfig(steps=[step])
@@ -988,8 +992,9 @@ class TestCreateStepTrainersTextEncoderSplit:
         return orch
 
     def _make_flow_models(self):
-        import torch.nn as nn
         from unittest.mock import MagicMock
+
+        import torch.nn as nn
         from fluxflow.models.encoders import BertTextEncoder
 
         te = BertTextEncoder(embed_dim=64, pretrain_model=None)
@@ -1002,6 +1007,7 @@ class TestCreateStepTrainersTextEncoderSplit:
 
     def test_flow_trainer_receives_split_optimizers(self):
         from unittest.mock import MagicMock, patch
+
         from fluxflow_training.training.pipeline_config import (
             OptimizationConfig,
             OptimizerConfig,
@@ -1039,11 +1045,12 @@ class TestCreateStepTrainersTextEncoderSplit:
 
     def test_flow_trainer_receives_split_schedulers(self):
         from unittest.mock import MagicMock, patch
+
         from fluxflow_training.training.pipeline_config import (
             OptimizationConfig,
             OptimizerConfig,
-            SchedulerConfig,
             PipelineStepConfig,
+            SchedulerConfig,
         )
 
         step = PipelineStepConfig(

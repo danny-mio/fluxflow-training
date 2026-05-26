@@ -273,8 +273,8 @@ class TestVAETrainerV010:
 
     def _make_minimal_trainer(self, ctx_input_dim: Optional[int] = None):
         """Build a VAETrainer with mocked models and no GAN/LPIPS."""
-        from fluxflow_training.training.vae_trainer import VAETrainer
         from fluxflow_training.training.utils import EMA
+        from fluxflow_training.training.vae_trainer import VAETrainer
 
         # Minimal real nn.Modules so parameter counts work
         compressor = nn.Sequential(nn.Linear(4, 4))

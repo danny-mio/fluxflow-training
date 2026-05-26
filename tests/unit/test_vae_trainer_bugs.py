@@ -9,11 +9,8 @@ Covers four bugs identified in systematic debugging:
 
 import torch
 
-from fluxflow_training.training.vae_trainer import (
-    VAETrainer,
-    add_instance_noise,
-)
 from fluxflow_training.training.utils import FloatBuffer
+from fluxflow_training.training.vae_trainer import VAETrainer, add_instance_noise
 
 
 class TestAddInstanceNoise:

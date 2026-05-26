@@ -6,8 +6,10 @@ Usage:
 
 Requires Apple Silicon Mac with macOS 12.3+.
 """
-import warnings
+
 import time
+import warnings
+
 import torch
 
 
@@ -17,6 +19,7 @@ def main():
         return
 
     import os
+
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
     os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 

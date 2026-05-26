@@ -1,9 +1,10 @@
 """Unit tests for FlowTrainer."""
 
+from unittest.mock import MagicMock, patch
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from unittest.mock import MagicMock, patch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ConstantLR
 
@@ -386,6 +387,7 @@ class TestFlowTrainerSplitTextEncoderOptimizers:
     def test_ema_with_backbone_frozen_projection_drifts_backbone_stable(self):
         """EMA shadow for projection drifts after training; backbone shadow stays at init."""
         from fluxflow.models.encoders import BertTextEncoder
+
         from fluxflow_training.training.flow_trainer import FlowTrainer
 
         enc = BertTextEncoder(embed_dim=64, pretrain_model=None)
