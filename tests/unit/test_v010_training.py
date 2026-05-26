@@ -17,6 +17,8 @@ import torch
 import torch.nn as nn
 
 from fluxflow_training.training.pipeline_config import (
+    OptimizationConfig,
+    OptimizerConfig,
     PipelineStepConfig,
     parse_pipeline_config,
 )
@@ -482,3 +484,44 @@ class TestConfigureStepModelsV010:
         for attr in ("ctx_encoder_first_step", "ctx_proj"):
             for p in getattr(comp, attr).parameters():
                 assert p.requires_grad, f"{attr} was incorrectly frozen"
+
+
+# ---------------------------------------------------------------------------
+# Task 8: text_encoder split optimizer config (integration smoke tests)
+# ---------------------------------------------------------------------------
+
+
+class TestTextEncoderSplitOptimizerConfig:
+    """YAML-style dicts with text_encoder_backbone/projection keys parse correctly."""
+
+    def _step_with_optimizers(self, opt_keys: list) -> PipelineStepConfig:
+        optimizers = {k: OptimizerConfig(lr=1e-4) for k in opt_keys}
+        opt_config = OptimizationConfig(optimizers=optimizers)
+        return PipelineStepConfig(name="s", n_epochs=1, train_vae=True, optimization=opt_config)
+
+    def test_backbone_key_accepted_in_pipeline_step_config(self):
+        step = self._step_with_optimizers(["flow", "text_encoder_backbone"])
+        assert "text_encoder_backbone" in step.optimization.optimizers
+
+    def test_projection_key_accepted_in_pipeline_step_config(self):
+        step = self._step_with_optimizers(["flow", "text_encoder_projection"])
+        assert "text_encoder_projection" in step.optimization.optimizers
+
+    def test_both_split_keys_accepted_together(self):
+        step = self._step_with_optimizers(
+            ["flow", "text_encoder_backbone", "text_encoder_projection"]
+        )
+        assert "text_encoder_backbone" in step.optimization.optimizers
+        assert "text_encoder_projection" in step.optimization.optimizers
+
+    def test_conflict_guard_rejects_whole_and_split_together(self):
+        from fluxflow_training.training.pipeline_config import (
+            PipelineConfig,
+            PipelineConfigValidator,
+        )
+
+        step = self._step_with_optimizers(["text_encoder", "text_encoder_backbone"])
+        config = PipelineConfig(steps=[step])
+        validator = PipelineConfigValidator(config)
+        with pytest.raises(ValueError, match="text_encoder"):
+            validator.validate()
