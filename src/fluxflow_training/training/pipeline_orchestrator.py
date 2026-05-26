@@ -1124,6 +1124,17 @@ class TrainingPipelineOrchestrator:
                     use_gradient_checkpointing=getattr(args, "use_gradient_checkpointing", False),
                 ).to(self.device)
 
+            # B3: build split TE optimizer/scheduler dicts.
+            # text_encoder_backbone/projection → backbone/projection for FlowTrainer.
+            te_extra_opts: dict = {}
+            te_extra_scheds: dict = {}
+            for _sub in ("backbone", "projection"):
+                _key = f"text_encoder_{_sub}"
+                if _key in optimizers:
+                    te_extra_opts[_sub] = optimizers[_key]
+                if _key in schedulers:
+                    te_extra_scheds[_sub] = schedulers[_key]
+
             trainers["flow"] = FlowTrainer(
                 flow_processor=models["flow_processor"],
                 text_encoder=models["text_encoder"],
@@ -1132,6 +1143,8 @@ class TrainingPipelineOrchestrator:
                 scheduler=schedulers.get("flow"),
                 text_encoder_optimizer=optimizers.get("text_encoder"),
                 text_encoder_scheduler=schedulers.get("text_encoder"),
+                text_encoder_extra_optimizers=te_extra_opts,
+                text_encoder_extra_schedulers=te_extra_scheds,
                 gradient_clip_norm=args.initial_clipping_norm,
                 num_train_timesteps=step.num_train_timesteps,
                 start_step=step.start_step,

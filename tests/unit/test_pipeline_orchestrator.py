@@ -971,3 +971,110 @@ class TestConfigureStepModelsTextEncoderSubComponents:
         orch.configure_step_models(step, models)
         assert all(not p.requires_grad for p in enc.parameter_groups()["backbone"])
         assert all(p.requires_grad for p in enc.parameter_groups()["projection"])
+
+
+class TestCreateStepTrainersTextEncoderSplit:
+    """_create_step_trainers passes split optimizers and schedulers to FlowTrainer."""
+
+    def _make_orch_with_step(self, step):
+        from unittest.mock import MagicMock
+        from fluxflow_training.training.pipeline_config import PipelineConfig
+
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+        return orch
+
+    def _make_flow_models(self):
+        import torch.nn as nn
+        from unittest.mock import MagicMock
+        from fluxflow.models.encoders import BertTextEncoder
+
+        te = BertTextEncoder(embed_dim=64, pretrain_model=None)
+        flow_proc = nn.Linear(4, 4)
+        comp = MagicMock()
+        comp.get_context_dims.return_value = 0
+        comp.use_gradient_checkpointing = False
+        comp.parameters.return_value = iter([])
+        return {"text_encoder": te, "flow_processor": flow_proc, "compressor": comp}
+
+    def test_flow_trainer_receives_split_optimizers(self):
+        from unittest.mock import MagicMock, patch
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="flow",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4),
+                    "text_encoder_backbone": OptimizerConfig(lr=5e-8),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-5),
+                },
+            ),
+        )
+        orch = self._make_orch_with_step(step)
+        models = self._make_flow_models()
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+
+        optimizers = orch._create_step_optimizers(step, models, MagicMock())
+        schedulers = {}
+
+        with patch("fluxflow_training.training.FlowTrainer") as MockFT:
+            MockFT.return_value = MagicMock()
+            orch._create_step_trainers(step, models, optimizers, schedulers, None, args)
+            call_kwargs = MockFT.call_args.kwargs
+            assert "text_encoder_extra_optimizers" in call_kwargs
+            extra = call_kwargs["text_encoder_extra_optimizers"]
+            assert "backbone" in extra
+            assert "projection" in extra
+
+    def test_flow_trainer_receives_split_schedulers(self):
+        from unittest.mock import MagicMock, patch
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            SchedulerConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="flow",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4),
+                    "text_encoder_backbone": OptimizerConfig(lr=5e-8),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-5),
+                },
+                schedulers={
+                    "text_encoder_backbone": SchedulerConfig(type="CosineAnnealingLR"),
+                    "text_encoder_projection": SchedulerConfig(type="CosineAnnealingLR"),
+                },
+            ),
+        )
+        orch = self._make_orch_with_step(step)
+        models = self._make_flow_models()
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+
+        optimizers = orch._create_step_optimizers(step, models, MagicMock())
+        schedulers = orch._create_step_schedulers(step, optimizers, total_steps=100)
+
+        with patch("fluxflow_training.training.FlowTrainer") as MockFT:
+            MockFT.return_value = MagicMock()
+            orch._create_step_trainers(step, models, optimizers, schedulers, None, args)
+            call_kwargs = MockFT.call_args.kwargs
+            assert "text_encoder_extra_schedulers" in call_kwargs
+            extra_scheds = call_kwargs["text_encoder_extra_schedulers"]
+            assert "backbone" in extra_scheds
+            assert "projection" in extra_scheds
