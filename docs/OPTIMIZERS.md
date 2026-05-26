@@ -194,3 +194,53 @@ Root mean square propagation optimizer. Adapts learning rates per parameter.
 **Notes:** Less commonly used for image generation, try Adam/Lion first
 
 ---
+
+## Split Text Encoder Optimizers (v0.10.0+)
+
+`BertTextEncoder` has two trainable sub-components:
+
+| Key | Component | Parameters |
+|-----|-----------|------------|
+| `text_encoder_backbone` | DistilBERT language model | ~66 M (~270 MB float32) |
+| `text_encoder_projection` | Linear projection head | ~2–4 M (embed_dim-dependent) |
+
+Use these keys instead of the whole `text_encoder` key to apply independent learning rates or freeze one sub-component while training the other. The two forms are **mutually exclusive** — combining `text_encoder` with `text_encoder_backbone` or `text_encoder_projection` in the same step raises a `ValueError`.
+
+### Freeze backbone, fine-tune projection only
+
+```yaml
+steps:
+  - name: flow_projection_finetune
+    n_epochs: 10
+    train_diff: true
+    freeze:
+      - text_encoder_backbone
+    optimization:
+      optimizers:
+        flow:
+          type: AdamW
+          lr: 1.0e-5
+        text_encoder_projection:
+          type: AdamW
+          lr: 1.0e-4
+```
+
+### Train both sub-components at different rates
+
+```yaml
+steps:
+  - name: flow_full_te
+    n_epochs: 20
+    train_diff: true
+    optimization:
+      optimizers:
+        flow:
+          type: AdamW
+          lr: 1.0e-5
+        text_encoder_backbone:
+          type: AdamW
+          lr: 1.0e-6   # Very low LR for pretrained DistilBERT
+        text_encoder_projection:
+          type: AdamW
+          lr: 5.0e-5   # Higher LR for projection head
+```

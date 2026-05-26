@@ -92,6 +92,9 @@ class FlowTrainer:
             scheduler: Flow processor learning rate scheduler
             text_encoder_optimizer: Text encoder optimizer (None if frozen)
             text_encoder_scheduler: Text encoder scheduler (None if frozen)
+            text_encoder_extra_optimizers: Sub-component optimizers keyed by "backbone"
+                and/or "projection". Mutually exclusive with text_encoder_optimizer.
+            text_encoder_extra_schedulers: Sub-component schedulers with same keys.
             gradient_clip_norm: Gradient clipping norm
             num_train_timesteps: Number of diffusion timesteps
             start_step: Starting diffusion timestep (default: 0 for noise-to-image)

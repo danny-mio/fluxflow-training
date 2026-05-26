@@ -265,6 +265,34 @@ training:
   #         text_encoder:
   #           scheduler_type: "CosineAnnealingLR"
   #           eta_min_factor: 0.01
+  #
+  #       # --- Split text encoder optimizers (v0.10.0+) ---
+  #       # Use text_encoder_backbone / text_encoder_projection instead of the whole
+  #       # text_encoder key to apply independent LRs to the DistilBERT backbone and
+  #       # the projection head. These keys are mutually exclusive with "text_encoder".
+  #       #
+  #       # Example — freeze backbone, fine-tune projection only:
+  #       #   freeze:
+  #       #     - text_encoder_backbone
+  #       #   optimizers:
+  #       #     flow:
+  #       #       optimizer_type: "AdamW"
+  #       #       lr: 0.00001
+  #       #     text_encoder_projection:
+  #       #       optimizer_type: "AdamW"
+  #       #       lr: 0.0001
+  #       #
+  #       # Example — train both sub-components at different rates:
+  #       #   optimizers:
+  #       #     flow:
+  #       #       optimizer_type: "AdamW"
+  #       #       lr: 0.00001
+  #       #     text_encoder_backbone:
+  #       #       optimizer_type: "AdamW"
+  #       #       lr: 0.000001   # Very low LR for pretrained DistilBERT
+  #       #     text_encoder_projection:
+  #       #       optimizer_type: "AdamW"
+  #       #       lr: 0.00005    # Higher LR for projection head
 
 optimization:
   # Path to JSON file with detailed optimizer/scheduler configs (optional)
