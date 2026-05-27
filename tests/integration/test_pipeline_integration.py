@@ -65,7 +65,6 @@ class TestValidateAndShowPlan:
                             "description": "Train VAE",
                             "n_epochs": 50,
                             "train_vae": True,
-                            "train_spade": False,
                             "freeze": ["flow_processor"],
                             "optimization": {
                                 "optimizers": {
@@ -246,11 +245,10 @@ class TestEndToEndPipelineValidation:
                     "mode": "sequential",
                     "steps": [
                         {
-                            "name": "vae_spade_off",
-                            "description": "Train VAE without SPADE",
+                            "name": "vae_step_one",
+                            "description": "Train VAE",
                             "n_epochs": 50,
                             "train_vae": True,
-                            "train_spade": False,
                             "freeze": ["flow_processor"],
                             "optimization": {
                                 "optimizers": {
@@ -276,11 +274,10 @@ class TestEndToEndPipelineValidation:
                             },
                         },
                         {
-                            "name": "vae_spade_on",
-                            "description": "Train VAE with SPADE",
+                            "name": "vae_step_two",
+                            "description": "Train VAE (step 2)",
                             "n_epochs": 50,
                             "train_vae": True,
-                            "train_spade": True,
                             "freeze": ["flow_processor"],
                             "optimization": {
                                 "optimizers": {

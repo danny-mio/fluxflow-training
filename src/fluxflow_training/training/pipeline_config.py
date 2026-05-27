@@ -5,6 +5,7 @@ multi-step training pipelines with configurable freeze/unfreeze, optimizer confi
 and transition criteria.
 """
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
@@ -114,8 +115,6 @@ class PipelineStepConfig:
     train_vae: bool = False
     gan_training: bool = False
     use_lpips: bool = False
-    train_spade: bool = False
-    spade_training_mode: Literal["full", "alternate"] = "full"
     train_kl: bool = True
     train_colorstats: bool = True
     train_histogram: bool = True
@@ -351,7 +350,6 @@ class PipelineConfigValidator:
         training_modes = {
             "train_vae": step.train_vae,
             "gan_training": step.gan_training,
-            "train_spade": step.train_spade,
             "train_diff": step.train_diff,
             "train_diff_full": step.train_diff_full,
         }
@@ -573,6 +571,13 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
 
 def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
     """Parse a single pipeline step configuration."""
+    # Deprecation warnings for removed SPADE fields
+    if "train_spade" in step_dict or "spade_training_mode" in step_dict:
+        warnings.warn(
+            "train_spade / spade_training_mode are deprecated and ignored; SPADE is always active",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     # Parse transition criteria
     transition_dict = step_dict.get("transition_on", {})
     transition = TransitionCriteria(
@@ -632,8 +637,6 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         train_vae=step_dict.get("train_vae", False),
         gan_training=step_dict.get("gan_training", False),
         use_lpips=step_dict.get("use_lpips", False),
-        train_spade=step_dict.get("train_spade", False),
-        spade_training_mode=step_dict.get("spade_training_mode", "full"),
         train_kl=step_dict.get("train_kl", True),
         train_colorstats=step_dict.get("train_colorstats", True),
         train_histogram=step_dict.get("train_histogram", True),

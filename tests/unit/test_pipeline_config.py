@@ -1,5 +1,8 @@
 """Unit tests for pipeline configuration and validation."""
 
+import dataclasses
+import warnings
+
 import pytest
 
 from fluxflow_training.training.pipeline_config import (
@@ -91,11 +94,9 @@ class TestPipelineStepConfig:
         step = PipelineStepConfig(
             name="vae_training",
             n_epochs=50,
-            description="Train VAE with SPADE",
+            description="Train VAE with GAN",
             train_vae=True,
             gan_training=True,
-            train_spade=True,
-            spade_training_mode="full",
             freeze=["text_encoder"],
             batch_size=4,
             lr=2e-5,
@@ -105,7 +106,6 @@ class TestPipelineStepConfig:
         assert step.n_epochs == 50
         assert step.train_vae is True
         assert step.gan_training is True
-        assert step.train_spade is True
         assert step.freeze == ["text_encoder"]
         assert step.batch_size == 4
         assert step.lr == 2e-5
@@ -558,7 +558,6 @@ class TestEdgeCases:
                     n_epochs=10,
                     train_vae=True,
                     gan_training=True,
-                    train_spade=True,
                     train_diff_full=True,
                     transition_on=TransitionCriteria(mode="epoch", value=10),
                 )
@@ -651,3 +650,55 @@ class TestValidatorNewComponents:
         )
         with pytest.raises(ValueError, match="text_encoder.*text_encoder_projection"):
             PipelineConfigValidator(self._make_config(step)).validate()
+
+
+class TestSpadeFieldsRemoved:
+    """Verify train_spade and spade_training_mode are fully removed."""
+
+    def test_spade_fields_absent_from_dataclass(self):
+        """PipelineStepConfig must not have train_spade or spade_training_mode fields."""
+        field_names = {f.name for f in dataclasses.fields(PipelineStepConfig)}
+        assert "train_spade" not in field_names
+        assert "spade_training_mode" not in field_names
+
+    def test_yaml_with_train_spade_emits_deprecation_warning(self):
+        """Parsing a step with train_spade emits DeprecationWarning."""
+        config_dict = {
+            "steps": [
+                {
+                    "name": "step1",
+                    "n_epochs": 5,
+                    "train_vae": True,
+                    "train_spade": True,  # deprecated
+                }
+            ]
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            parse_pipeline_config(config_dict)
+
+        messages = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert any(
+            "train_spade" in m for m in messages
+        ), f"Expected DeprecationWarning mentioning train_spade; got: {messages}"
+
+    def test_yaml_with_spade_training_mode_emits_deprecation_warning(self):
+        """Parsing a step with spade_training_mode emits DeprecationWarning."""
+        config_dict = {
+            "steps": [
+                {
+                    "name": "step1",
+                    "n_epochs": 5,
+                    "train_vae": True,
+                    "spade_training_mode": "full",  # deprecated
+                }
+            ]
+        }
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            parse_pipeline_config(config_dict)
+
+        messages = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert any(
+            "spade_training_mode" in m for m in messages
+        ), f"Expected DeprecationWarning mentioning spade_training_mode; got: {messages}"

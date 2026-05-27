@@ -25,12 +25,11 @@ training:
   # Pipeline mode
   pipeline:
     steps:
-       # Step 1: VAE training with SPADE OFF (minimal)
+       # Step 1: VAE training (minimal)
        - name: "vae_test"
          n_epochs: 1  # Just 1 epoch
          max_steps: 2  # Only 2 batches for quick testing
          train_vae: true
-         train_spade: false
          train_diff: false
          gan_training: false  # No GAN for simplicity
          use_lpips: false  # No LPIPS for speed
@@ -59,7 +58,6 @@ training:
          n_epochs: 1  # Just 1 epoch
          max_steps: 1  # Only 1 batch for quick testing
          train_vae: false
-         train_spade: false
          train_diff: true
          gan_training: false
 

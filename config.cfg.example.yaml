@@ -41,13 +41,12 @@ training:
       # ====================================================================
       # STAGE 1: VAE Training (No SPADE)
       # ====================================================================
-      - name: "vae_no_spade"
-        description: "Train VAE encoder/decoder without SPADE (pure reconstruction)"
+      - name: "vae_reconstruction"
+        description: "Train VAE encoder/decoder (pure reconstruction)"
         n_epochs: 50
 
         # Training modes
         train_vae: true
-        train_spade: false  # SPADE disabled
         train_diff: false
         gan_training: true
         use_lpips: true
@@ -69,12 +68,11 @@ training:
       # ====================================================================
       # STAGE 2: VAE + SPADE + GAN + LPIPS
       # ====================================================================
-      - name: "vae_spade_lpips"
-        description: "Enable SPADE conditioning + GAN + LPIPS for adversarial refinement"
+      - name: "vae_gan_lpips"
+        description: "Enable GAN + LPIPS for adversarial refinement"
         n_epochs: 50
 
         train_vae: true
-        train_spade: true  # SPADE enabled
         train_diff: false
         gan_training: true
         use_lpips: true
@@ -93,7 +91,6 @@ training:
         n_epochs: 100
 
         train_vae: false  # Freeze VAE
-        train_spade: false
         train_diff: true  # Enable flow training
         gan_training: false
         use_lpips: false
@@ -127,7 +124,6 @@ training:
       #   n_epochs: 20
       #
       #   train_vae: false
-      #   train_spade: false
       #   train_diff: true
       #   gan_training: false
       #   use_lpips: false

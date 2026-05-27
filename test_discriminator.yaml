@@ -28,7 +28,6 @@ training:
         n_epochs: 1  # Just 1 epoch
         max_steps: 3  # Only 3 batches for quick testing
         train_vae: true
-        train_spade: false
         train_diff: false
         gan_training: true  # Enable GAN for discriminator testing
         use_lpips: false  # No LPIPS for speed

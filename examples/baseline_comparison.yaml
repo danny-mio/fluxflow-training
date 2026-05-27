@@ -51,11 +51,10 @@ training:
   initial_clipping_norm: 1.0
   preserve_lr: true
 
-  # Phase 1: VAE training (SPADE off)
+  # Phase 1: VAE training
   train_vae: true
   gan_training: true
   use_lpips: true
-  train_spade: false
   train_diff: false
   train_diff_full: false
 

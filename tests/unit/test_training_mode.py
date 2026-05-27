@@ -9,7 +9,6 @@ def test_training_mode_vae_only():
     class Args:
         train_vae = True
         gan_training = False
-        train_spade = False
         train_diff = False
         train_diff_full = False
 
@@ -28,7 +27,6 @@ def test_training_mode_gan_only():
     class Args:
         train_vae = False
         gan_training = True
-        train_spade = False
         train_diff = False
         train_diff_full = False
 
@@ -41,29 +39,12 @@ def test_training_mode_gan_only():
     assert mode.is_training(TrainingComponent.VAE) is False
 
 
-def test_training_mode_spade_only():
-    """Test SPADE-only training mode configuration."""
-
-    class Args:
-        train_vae = False
-        gan_training = False
-        train_spade = True
-        train_diff = False
-        train_diff_full = False
-
-    mode = TrainingMode.from_args(Args())
-    assert mode.needs_vae_samples() is True
-    assert mode.needs_flow_samples() is False
-    assert mode.is_training(TrainingComponent.SPADE) is True
-
-
 def test_training_mode_flow_only():
     """Test Flow-only training mode configuration."""
 
     class Args:
         train_vae = False
         gan_training = False
-        train_spade = False
         train_diff = True
         train_diff_full = False
 
@@ -81,7 +62,6 @@ def test_training_mode_flow_full_only():
     class Args:
         train_vae = False
         gan_training = False
-        train_spade = False
         train_diff = False
         train_diff_full = True
 
@@ -98,7 +78,6 @@ def test_training_mode_combined():
     class Args:
         train_vae = True
         gan_training = True
-        train_spade = False
         train_diff = True
         train_diff_full = False
 
@@ -118,7 +97,6 @@ def test_training_mode_all_components():
     class Args:
         train_vae = True
         gan_training = True
-        train_spade = True
         train_diff = True
         train_diff_full = True
 
@@ -134,7 +112,6 @@ def test_training_mode_from_config():
     config = {
         "train_vae": True,
         "gan_training": False,
-        "train_spade": False,
         "train_diff": False,
         "train_diff_full": False,
     }
@@ -149,7 +126,6 @@ def test_training_mode_from_config_flow():
     config = {
         "train_vae": False,
         "gan_training": False,
-        "train_spade": False,
         "train_diff": True,
         "train_diff_full": False,
     }
@@ -165,7 +141,6 @@ def test_training_mode_none():
     class Args:
         train_vae = False
         gan_training = False
-        train_spade = False
         train_diff = False
         train_diff_full = False
 
@@ -182,7 +157,6 @@ def test_training_mode_repr():
     class Args:
         train_vae = True
         gan_training = True
-        train_spade = False
         train_diff = False
         train_diff_full = False
 
@@ -199,7 +173,6 @@ def test_training_mode_repr_none():
     class Args:
         train_vae = False
         gan_training = False
-        train_spade = False
         train_diff = False
         train_diff_full = False
 
@@ -214,3 +187,37 @@ def test_training_component_bitwise():
     assert bool(combined & TrainingComponent.VAE)
     assert bool(combined & TrainingComponent.GAN)
     assert not bool(combined & TrainingComponent.FLOW)
+
+
+def test_spade_not_a_component():
+    """SPADE is no longer a TrainingComponent flag."""
+    assert not hasattr(TrainingComponent, "SPADE")
+
+
+def test_needs_vae_samples_requires_vae_or_gan():
+    """needs_vae_samples returns True only with VAE or GAN active."""
+    vae_mode = TrainingMode(TrainingComponent.VAE)
+    gan_mode = TrainingMode(TrainingComponent.GAN)
+    flow_mode = TrainingMode(TrainingComponent.FLOW)
+    none_mode = TrainingMode(TrainingComponent.NONE)
+
+    assert vae_mode.needs_vae_samples() is True
+    assert gan_mode.needs_vae_samples() is True
+    assert flow_mode.needs_vae_samples() is False
+    assert none_mode.needs_vae_samples() is False
+
+
+def test_from_args_ignores_train_spade():
+    """from_args silently ignores train_spade; no SPADE component exists."""
+
+    class Args:
+        train_vae = False
+        gan_training = False
+        train_spade = True  # should be ignored
+        train_diff = False
+        train_diff_full = False
+
+    mode = TrainingMode.from_args(Args())
+    # No SPADE component, and needs_vae_samples is False because neither VAE nor GAN active
+    assert not hasattr(TrainingComponent, "SPADE")
+    assert mode.needs_vae_samples() is False

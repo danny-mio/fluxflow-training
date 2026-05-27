@@ -1085,3 +1085,87 @@ class TestCreateStepTrainersTextEncoderSplit:
             extra_scheds = call_kwargs["text_encoder_extra_schedulers"]
             assert "backbone" in extra_scheds
             assert "projection" in extra_scheds
+
+
+class TestSafeVaeSampleGating:
+    """safe_vae_sample must only be called when step.train_vae=True."""
+
+    def _make_orchestrator(self, train_vae: bool):
+        """Create minimal orchestrator with a single-step config."""
+        from fluxflow_training.training.pipeline_config import parse_pipeline_config
+
+        config_dict = {
+            "steps": [
+                {
+                    "name": "test_step",
+                    "n_epochs": 1,
+                    "train_vae": train_vae,
+                    # Need at least one mode enabled; use gan_training for the false case
+                    "gan_training": not train_vae,
+                }
+            ]
+        }
+        cfg = parse_pipeline_config(config_dict)
+        orch = TrainingPipelineOrchestrator(
+            config=cfg,
+            models={},
+            checkpoint_manager=Mock(),
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+        return orch, cfg.steps[0]
+
+    def test_safe_vae_sample_not_called_when_train_vae_false(self):
+        """When train_vae=False, _generate_samples must not call safe_vae_sample."""
+        from unittest.mock import MagicMock, patch
+
+        orch, step = self._make_orchestrator(train_vae=False)
+
+        diffuser = MagicMock()
+        args = MagicMock()
+        args.no_samples = False
+        args.test_image_address = ["fake/path.jpg"]
+        args.channels = 3
+        args.output_path = "/tmp"
+        args.sample_captions = []
+
+        with patch("fluxflow_training.training.pipeline_orchestrator.safe_vae_sample") as mock_svs:
+            orch._generate_samples(
+                step=step,
+                step_idx=0,
+                epoch=0,
+                batch_idx=0,
+                models={"diffuser": diffuser},
+                tokenizer=MagicMock(),
+                args=args,
+                parsed_sample_sizes=[],
+            )
+            mock_svs.assert_not_called()
+
+    def test_safe_vae_sample_called_when_train_vae_true(self):
+        """When train_vae=True, _generate_samples must call safe_vae_sample."""
+        from unittest.mock import MagicMock, patch
+
+        orch, step = self._make_orchestrator(train_vae=True)
+
+        diffuser = MagicMock()
+        args = MagicMock()
+        args.no_samples = False
+        args.test_image_address = ["fake/path.jpg"]
+        args.channels = 3
+        args.output_path = "/tmp"
+        args.sample_captions = []
+
+        with patch("fluxflow_training.training.pipeline_orchestrator.safe_vae_sample") as mock_svs:
+            orch._generate_samples(
+                step=step,
+                step_idx=0,
+                epoch=0,
+                batch_idx=0,
+                models={"diffuser": diffuser},
+                tokenizer=MagicMock(),
+                args=args,
+                parsed_sample_sizes=[],
+            )
+            mock_svs.assert_called_once()

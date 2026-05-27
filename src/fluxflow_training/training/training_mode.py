@@ -18,9 +18,8 @@ class TrainingComponent(Flag):
     NONE = 0
     VAE = auto()  # 0b00001 - VAE reconstruction training
     GAN = auto()  # 0b00010 - GAN adversarial training
-    SPADE = auto()  # 0b00100 - SPADE conditioning
-    FLOW = auto()  # 0b01000 - Flow model training
-    FLOW_FULL = auto()  # 0b10000 - Full flow training (includes text encoder)
+    FLOW = auto()  # 0b00100 - Flow model training
+    FLOW_FULL = auto()  # 0b01000 - Full flow training (includes text encoder)
 
 
 class TrainingMode:
@@ -56,9 +55,6 @@ class TrainingMode:
         if getattr(args, "gan_training", False):
             components |= TrainingComponent.GAN
 
-        if getattr(args, "train_spade", False):
-            components |= TrainingComponent.SPADE
-
         if getattr(args, "train_diff", False):
             components |= TrainingComponent.FLOW
 
@@ -85,9 +81,6 @@ class TrainingMode:
         if config.get("gan_training", False):
             components |= TrainingComponent.GAN
 
-        if config.get("train_spade", False):
-            components |= TrainingComponent.SPADE
-
         if config.get("train_diff", False):
             components |= TrainingComponent.FLOW
 
@@ -107,7 +100,7 @@ class TrainingMode:
         Returns:
             True if VAE samples should be generated
         """
-        vae_components = TrainingComponent.VAE | TrainingComponent.GAN | TrainingComponent.SPADE
+        vae_components = TrainingComponent.VAE | TrainingComponent.GAN
         return bool(self.components & vae_components)
 
     def needs_flow_samples(self) -> bool:
@@ -153,8 +146,6 @@ class TrainingMode:
             active.append("VAE")
         if self.is_training(TrainingComponent.GAN):
             active.append("GAN")
-        if self.is_training(TrainingComponent.SPADE):
-            active.append("SPADE")
         if self.is_training(TrainingComponent.FLOW):
             active.append("FLOW")
         if self.is_training(TrainingComponent.FLOW_FULL):

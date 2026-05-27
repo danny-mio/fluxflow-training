@@ -198,3 +198,19 @@ class TestNoDeadCodeAfterRaise:
         assert (
             "# LPIPS perceptual loss\n        self.use_lpips = use_lpips" not in source
         ), "The dead '# LPIPS perceptual loss' block is still present after the raise."
+
+
+class TestGetEffectiveSpadeUsageAlwaysTrue:
+    """_get_effective_spade_usage always returns True after SPADE toggle removal."""
+
+    def test_get_effective_spade_usage_always_true(self):
+        """_get_effective_spade_usage must always return True regardless of global_step."""
+        from fluxflow_training.training.vae_trainer import VAETrainer
+
+        # Test via unbound method on a minimal stub — avoids nn.Module construction
+        # and mock contamination. The method reads no instance attributes after
+        # the SPADE toggle removal, so any object works as self.
+        stub = type("_Stub", (), {})()
+        for step in [0, 1, 100, 9999]:
+            result = VAETrainer._get_effective_spade_usage(stub, step)
+            assert result is True, f"Expected True at step {step}, got {result}"

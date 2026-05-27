@@ -571,8 +571,6 @@ class TrainingPipelineOrchestrator:
                 modes.append("VAE")
             if step.gan_training:
                 modes.append("GAN")
-            if step.train_spade:
-                modes.append("SPADE")
             if step.use_lpips:
                 modes.append("LPIPS")
             if step.train_diff or step.train_diff_full:
@@ -745,10 +743,8 @@ class TrainingPipelineOrchestrator:
                 "betas": (0.9, 0.999),
             }
 
-            # Create VAE optimizer if training VAE/GAN/SPADE/LPIPS
-            needs_vae_trainer = (
-                step.train_vae or step.gan_training or step.train_spade or step.use_lpips
-            )
+            # Create VAE optimizer if training VAE/GAN/LPIPS
+            needs_vae_trainer = step.train_vae or step.gan_training or step.use_lpips
             if needs_vae_trainer:
                 vae_params = list(models["compressor"].parameters()) + list(
                     models["expander"].parameters()
@@ -916,11 +912,9 @@ class TrainingPipelineOrchestrator:
 
         trainers = {}
 
-        # Create VAE trainer if training VAE, GAN, SPADE, or LPIPS
+        # Create VAE trainer if training VAE, GAN, or LPIPS
         # (these all require the VAE trainer even if train_vae=false)
-        needs_vae_trainer = (
-            step.train_vae or step.gan_training or step.train_spade or step.use_lpips
-        )
+        needs_vae_trainer = step.train_vae or step.gan_training or step.use_lpips
 
         if needs_vae_trainer and "vae" in optimizers:
             # Auto-add missing VAE models if they don't exist
@@ -1028,8 +1022,6 @@ class TrainingPipelineOrchestrator:
                 ema=ema,
                 reconstruction_loss_fn=nn.L1Loss(),
                 reconstruction_loss_min_fn=nn.MSELoss(),
-                use_spade=step.train_spade,
-                spade_training_mode=step.spade_training_mode,
                 train_reconstruction=step.train_vae,  # Only compute recon loss if train_vae=True
                 train_kl=step.train_kl if hasattr(step, "train_kl") else True,
                 train_colorstats=(
@@ -1073,8 +1065,6 @@ class TrainingPipelineOrchestrator:
             modes = []
             if step.train_vae:
                 modes.append("VAE")
-            if step.train_spade:
-                modes.append("SPADE")
             if step.gan_training:
                 modes.append("GAN")
             if step.use_lpips:
@@ -1245,8 +1235,8 @@ class TrainingPipelineOrchestrator:
         else:  # End-of-epoch or initial
             sample_prefix = f"{step_name_short}_{step_idx+1:03d}_{epoch+1:03d}"
 
-        # VAE reconstruction samples (if test images provided)
-        if args.test_image_address and len(args.test_image_address) > 0:
+        # VAE reconstruction samples (only when training VAE)
+        if step.train_vae and args.test_image_address and len(args.test_image_address) > 0:
             for img_addr in args.test_image_address:
                 try:
                     # Generate samples with custom filename prefix
@@ -1434,9 +1424,8 @@ class TrainingPipelineOrchestrator:
             total_steps = step.n_epochs * batches_per_epoch
             schedulers = self._create_step_schedulers(step, optimizers, total_steps)
 
-            # Create EMA if training VAE
-            # Create EMA if we need VAE trainer (for VAE, GAN, SPADE, or LPIPS)
-            needs_vae_trainer = step.train_vae or step.train_spade or step.use_lpips
+            # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)
+            needs_vae_trainer = step.train_vae or step.use_lpips
             ema = None
             if needs_vae_trainer and step.use_ema:
                 ema = EMA(
@@ -1567,7 +1556,7 @@ class TrainingPipelineOrchestrator:
                     for ri in imgs:
                         real_imgs = ri.to(self.device)
 
-                        # VAE/GAN/SPADE training (runs if trainer exists, even with train_vae=false)
+                        # VAE/GAN training (runs if trainer exists, even with train_vae=false)
                         if trainers.get("vae"):
                             vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
                             vae_errors.add_item(vae_losses["vae"])

@@ -1053,8 +1053,6 @@ def train_legacy(args):
             ema=ema,
             reconstruction_loss_fn=nn.L1Loss(),
             reconstruction_loss_min_fn=nn.MSELoss(),
-            use_spade=args.train_spade,
-            spade_training_mode=args.spade_training_mode,
             train_kl=args.train_kl,
             train_colorstats=args.train_colorstats,
             train_histogram=args.train_histogram,
@@ -1095,8 +1093,9 @@ def train_legacy(args):
 
     # Initial sampling
     if not args.no_samples:
-        for img_addr in args.test_image_address:
-            safe_vae_sample(diffuser, img_addr, channels, args.output_path, 0, device)
+        if args.train_vae:
+            for img_addr in args.test_image_address:
+                safe_vae_sample(diffuser, img_addr, channels, args.output_path, 0, device)
         if args.train_diff or args.train_diff_full:
             save_sample_images(
                 diffuser,
@@ -1359,15 +1358,16 @@ def train_legacy(args):
                         and global_step > 0
                         and (global_step - last_sample_step) >= sample_interval
                     ):
-                        for img_addr in args.test_image_address:
-                            safe_vae_sample(
-                                diffuser,
-                                img_addr,
-                                channels,
-                                args.output_path,
-                                epoch,
-                                device,
-                            )
+                        if args.train_vae:
+                            for img_addr in args.test_image_address:
+                                safe_vae_sample(
+                                    diffuser,
+                                    img_addr,
+                                    channels,
+                                    args.output_path,
+                                    epoch,
+                                    device,
+                                )
                         if args.train_diff or args.train_diff_full:
                             save_sample_images(
                                 diffuser,
@@ -1495,7 +1495,7 @@ def validate_and_show_plan(config, args):
         # Training modes
         modes = []
         if step.train_vae:
-            modes.append(f"VAE (SPADE={'ON' if step.train_spade else 'OFF'})")
+            modes.append("VAE")
         if step.train_diff or step.train_diff_full:
             modes.append("Flow")
         print(f"  Training: {', '.join(modes) if modes else 'None'}")
@@ -1646,13 +1646,6 @@ def parse_args():
     parser.add_argument("--gan_training", action="store_true", help="Enable GAN training for VAE")
     parser.add_argument(
         "--use_lpips", action="store_true", help="Enable LPIPS perceptual loss for VAE"
-    )
-    parser.add_argument("--train_spade", action="store_true", help="Use SPADE conditioning")
-    parser.add_argument(
-        "--spade_training_mode",
-        choices=["full", "alternate"],
-        default="full",
-        help="SPADE training mode: 'full' (always on) or 'alternate' (alternate on/off)",
     )
     parser.add_argument("--train_diff", action="store_true", help="Train flow model")
     parser.add_argument(
@@ -1919,13 +1912,15 @@ def parse_args():
                 args.gan_training = config["training"]["gan_training"]
             if "use_lpips" in config["training"] and "use_lpips" not in cli_provided:
                 args.use_lpips = config["training"]["use_lpips"]
-            if "train_spade" in config["training"] and "train_spade" not in cli_provided:
-                args.train_spade = config["training"]["train_spade"]
-            if (
-                "spade_training_mode" in config["training"]
-                and "spade_training_mode" not in cli_provided
-            ):
-                args.spade_training_mode = config["training"]["spade_training_mode"]
+            if "train_spade" in config["training"] or "spade_training_mode" in config["training"]:
+                import warnings
+
+                warnings.warn(
+                    "train_spade / spade_training_mode are deprecated and ignored; "
+                    "SPADE is always active",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             if "train_diff" in config["training"] and "train_diff" not in cli_provided:
                 args.train_diff = config["training"]["train_diff"]
             if "train_diff_full" in config["training"] and "train_diff_full" not in cli_provided:

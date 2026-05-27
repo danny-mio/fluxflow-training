@@ -53,8 +53,6 @@ class TestTrainScriptSetup:
         args.initial_clipping_norm = 1.0
         args.train_vae = True
         args.gan_training = True
-        args.train_spade = False
-        args.spade_training_mode = "full"
         args.train_diff = False
         args.train_diff_full = False
         args.kl_beta = 0.0001
@@ -134,7 +132,6 @@ class TestTrainScriptSetup:
             kl_free_bits=0.0,
             lambda_adv=0.5,
             gradient_clip_norm=1.0,
-            use_spade=False,
             r1_gamma=5.0,
             r1_interval=16,
             use_lpips=False,
@@ -307,7 +304,6 @@ class TestTrainScriptTrainerIntegration:
             kl_free_bits=0.0,
             lambda_adv=0.5,
             gradient_clip_norm=1.0,
-            use_spade=False,
             r1_gamma=5.0,
             r1_interval=16,
             use_lpips=False,

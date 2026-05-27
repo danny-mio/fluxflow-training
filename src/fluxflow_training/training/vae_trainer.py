@@ -4,7 +4,7 @@ Handles VAE (compressor + expander) training with optional GAN discriminator.
 """
 
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -120,8 +120,6 @@ class VAETrainer:
         ema: EMA,
         reconstruction_loss_fn: nn.Module,
         reconstruction_loss_min_fn: nn.Module,
-        use_spade: bool = True,
-        spade_training_mode: Literal["full", "alternate"] = "full",
         train_reconstruction: bool = True,  # NEW: Control reconstruction loss
         train_kl: bool = True,
         train_colorstats: bool = True,
@@ -172,10 +170,8 @@ class VAETrainer:
             ema: EMA for VAE parameters
             reconstruction_loss_fn: L1 loss
             reconstruction_loss_min_fn: MSE loss
-            use_spade: Use SPADE conditioning in decoder
-            spade_training_mode: SPADE training mode ("full" or "alternate")
             train_reconstruction: Compute reconstruction loss (L1+MSE+LPIPS). Set to False for
-                GAN-only or SPADE-only training without VAE reconstruction (default: True)
+                GAN-only training without VAE reconstruction (default: True)
             train_kl: Compute KL divergence loss (default: True)
             train_colorstats: Compute color statistics loss (default: True)
             train_histogram: Compute histogram matching loss (default: True)
@@ -211,8 +207,6 @@ class VAETrainer:
 
         self.reconstruction_loss_fn = reconstruction_loss_fn
         self.reconstruction_loss_min_fn = reconstruction_loss_min_fn
-        self.use_spade = use_spade
-        self.spade_training_mode = spade_training_mode
 
         self.train_reconstruction = train_reconstruction
         self.train_kl = train_kl
@@ -417,24 +411,15 @@ class VAETrainer:
         raise RuntimeError("Context predictor has no Linear layer")
 
     def _get_effective_spade_usage(self, global_step: int) -> bool:
-        """
-        Determine whether to use SPADE conditioning for the current training step.
+        """SPADE is always active; retained for compatibility.
 
         Args:
-            global_step: Current training step number
+            global_step: Current training step number (unused)
 
         Returns:
-            True if SPADE should be used, False otherwise
+            Always True
         """
-        if not self.use_spade:
-            return False
-
-        if self.spade_training_mode == "full":
-            return True
-        elif self.spade_training_mode == "alternate":
-            return global_step % 2 == 0  # Alternate every step (even steps use SPADE)
-        else:
-            raise ValueError(f"Unknown SPADE training mode: {self.spade_training_mode}")
+        return True
 
     def _frequency_weighted_loss(self, pred, target, alpha=1.0):
         """
