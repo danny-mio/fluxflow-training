@@ -11,7 +11,6 @@ sys.path.insert(0, str(project_root))
 
 import safetensors.torch
 import torch
-from diffusers import DPMSolverMultistepScheduler
 from fluxflow.models import (
     BertTextEncoder,
     FluxCompressor,
@@ -99,22 +98,19 @@ def generate(args):
             B = text_embeddings.size(0)
             size = args.img_size
 
-            # Create random latent
-            z_img = (torch.rand((B, 3, size, size), device=device) * 2) - 1
-            latent_z = diffuser.compressor(z_img)
+            # Start from N(0,1) directly in latent space (matches training distribution at t=999)
+            downscale = 2 ** getattr(diffuser.compressor, "downscales", 4)
+            H_lat = max(size // downscale, 1)
+            W_lat = max(size // downscale, 1)
+            T = H_lat * W_lat
+            latent_dim = args.vae_dim
+            max_hw = getattr(diffuser.compressor, "max_hw", 1024)
 
-            img_seq = latent_z[:, :-1, :].contiguous()
-            hw_vec = latent_z[:, -1:, :].contiguous()
-
-            noise_img = torch.randn_like(img_seq)
-
-            # Noise schedule
-            scheduler = DPMSolverMultistepScheduler(num_train_timesteps=1000)
-            scheduler.set_timesteps(args.ddim_steps, device=device)  # type: ignore[arg-type]
-
-            t = torch.randint(0, 1000, (B,), device=device)
-            noised_img = scheduler.add_noise(img_seq, noise_img, t)  # type: ignore
-            noised_latent = torch.cat([noised_img, hw_vec], dim=1)
+            img_seq = torch.randn((B, T, latent_dim), device=device)
+            hw_vec = torch.zeros((B, 1, latent_dim), device=device)
+            hw_vec[:, 0, 0] = H_lat / float(max_hw)
+            hw_vec[:, 0, 1] = W_lat / float(max_hw)
+            noised_latent = torch.cat([img_seq, hw_vec], dim=1)
 
             # Denoise (with optional CFG)
             if args.use_cfg and args.guidance_scale != 1.0:
