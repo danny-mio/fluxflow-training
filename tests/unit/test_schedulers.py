@@ -110,7 +110,7 @@ class TestSampleT:
             pytest.skip("CUDA not available")
 
     def test_sampling_distribution(self):
-        """Verify cosine-weighted distribution properties."""
+        """Verify logit-normal distribution is symmetric around the middle."""
         # Sample many timesteps - use larger sample for more stable statistics
         n_samples = 50000
         timesteps = sample_t(n_samples, device=torch.device("cpu"))
@@ -118,15 +118,23 @@ class TestSampleT:
         # Convert to histogram
         hist = torch.histc(timesteps.float(), bins=10, min=0, max=999)
 
-        # The cosine weighting: cos((s + 0.008) / 1.008 * pi/2)^2
-        # This is a decreasing function from s=0 to s=1, so it favors EARLY timesteps
-        # Check that early bins have significantly more samples than late bins
-        early_bins = hist[:3].sum()  # bins 0-2 (timesteps 0-299)
-        late_bins = hist[7:].sum()  # bins 7-9 (timesteps 700-999)
+        # Logit-normal (sigmoid of N(0,1)) has mode at 0.5 — middle bins should
+        # outnumber extreme bins, and early/late bins should be roughly balanced.
+        middle_bins = hist[3:7].sum()  # bins 3-6 (timesteps 300-699)
+        extreme_bins = hist[:2].sum() + hist[8:].sum()  # bins 0-1 and 8-9
 
-        assert early_bins > late_bins * 2.0, (
-            f"Cosine weighting should favor early timesteps: "
-            f"early={early_bins}, late={late_bins}"
+        assert middle_bins > extreme_bins, (
+            f"Logit-normal should favor middle timesteps: "
+            f"middle={middle_bins}, extreme={extreme_bins}"
+        )
+
+        # Early and late should be within 50% of each other (symmetric tails)
+        early_bins = hist[:3].sum()
+        late_bins = hist[7:].sum()
+        ratio = early_bins / (late_bins + 1e-6)
+        assert 0.5 < ratio < 2.0, (
+            f"Early/late bins should be balanced for logit-normal: "
+            f"early={early_bins}, late={late_bins}, ratio={ratio:.2f}"
         )
 
     def test_determinism_not_guaranteed(self):

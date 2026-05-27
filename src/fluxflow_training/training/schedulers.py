@@ -29,9 +29,10 @@ def sample_t(
     batch_size: int, device: torch.device, start_step: int = 0, num_train_timesteps: int = 1000
 ) -> torch.Tensor:
     """
-    Sample diffusion timesteps with cosine-weighted distribution.
+    Sample diffusion timesteps with logit-normal distribution (mode at t=500).
 
-    Uses cosine schedule to bias sampling toward middle timesteps.
+    Uses sigmoid(N(0,1)) to bias sampling toward the middle of the timestep range
+    while still covering both high-noise and low-noise regimes uniformly.
 
     Args:
         batch_size: Number of timesteps to sample
@@ -42,12 +43,10 @@ def sample_t(
     Returns:
         Timestep indices [batch_size] in range [start_step, num_train_timesteps-1]
     """
-    # Sample from start_step to num_train_timesteps-1
+    # Logit-normal distribution: sigmoid(N(0,1)) has mode at 0.5, matching SD3/FLUX practice.
+    # Ensures ~uniform coverage of high-noise (t≈999) and low-noise (t≈0) regimes.
     num_steps = num_train_timesteps - start_step
-    s = torch.linspace(0, 1, num_steps, device=device)
-    weights = torch.cos((s + 0.008) / 1.008 * math.pi / 2) ** 2
-    weights /= weights.sum()
-
-    indices = torch.multinomial(weights, batch_size, replacement=True)
-    # Shift by start_step to get timesteps in the desired range
+    u = torch.randn(batch_size, device=device)
+    t_cont = torch.sigmoid(u)  # [0, 1], mode at 0.5
+    indices = (t_cont * num_steps).long().clamp(0, num_steps - 1)
     return indices + start_step

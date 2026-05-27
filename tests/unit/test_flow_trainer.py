@@ -138,7 +138,7 @@ class TestFlowTrainerVPredLoss:
         )
 
         captured = {}
-        orig = nn.functional.smooth_l1_loss
+        orig = nn.functional.mse_loss
 
         def capture(pred, target, **kw):
             if "target" not in captured:
@@ -146,7 +146,7 @@ class TestFlowTrainerVPredLoss:
             return orig(pred, target, **kw)
 
         with patch(
-            "fluxflow_training.training.flow_trainer.nn.functional.smooth_l1_loss",
+            "fluxflow_training.training.flow_trainer.nn.functional.mse_loss",
             side_effect=capture,
         ):
             trainer.train_step(
@@ -156,7 +156,7 @@ class TestFlowTrainerVPredLoss:
                 global_step=0,
             )
 
-        assert "target" in captured, "smooth_l1_loss was never called"
+        assert "target" in captured, "mse_loss was never called"
 
         # Build what the BUGGY code would have used as target: normalized x0
         x0 = fixed_packet[:, :-1, :].float()  # [B, T, vae_dim] — all ones
@@ -185,7 +185,9 @@ class TestFlowTrainerVPredLoss:
         noise = torch.randn(1, 4, 32)
         v = alpha_t * noise - sigma_t * x0
 
-        assert torch.allclose(v, noise, atol=0.05)
+        # scaled_linear schedule has beta_start=0.00085 → sigma_0≈0.029, so
+        # |v - noise| can be up to ~sigma_0 * max(|x0|) ≈ 0.029 * 3 ≈ 0.09
+        assert torch.allclose(v, noise, atol=0.15)
 
     def test_v_target_differs_from_x0_and_noise_at_mid_t(self):
         """At mid-timestep v_target is a blend — must differ from both noise and x0."""
@@ -258,11 +260,9 @@ class TestFlowTrainerContextDimsLoss:
         ctx_std = ctx_target.detach().std() + 1e-8
 
         # Perfect prediction → zero loss
-        loss_perfect = F.smooth_l1_loss(ctx_target / ctx_std, ctx_target / ctx_std, beta=0.01)
+        loss_perfect = F.mse_loss(ctx_target / ctx_std, ctx_target / ctx_std)
         # Zero prediction → non-zero loss
-        loss_zero_pred = F.smooth_l1_loss(
-            torch.zeros_like(ctx_target) / ctx_std, ctx_target / ctx_std, beta=0.01
-        )
+        loss_zero_pred = F.mse_loss(torch.zeros_like(ctx_target) / ctx_std, ctx_target / ctx_std)
 
         assert loss_perfect.item() < 1e-6, "Perfect prediction should give ~0 loss"
         assert loss_zero_pred.item() > 0.1, "Zero prediction should give significant loss"

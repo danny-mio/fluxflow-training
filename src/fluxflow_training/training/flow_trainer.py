@@ -144,7 +144,11 @@ class FlowTrainer:
         self.start_step = start_step
         self.noise_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=num_train_timesteps,
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule="scaled_linear",
             prediction_type="v_prediction",
+            use_karras_sigmas=False,
         )
         self.noise_scheduler.set_timesteps(num_train_timesteps)  # type: ignore[arg-type]
         self.alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(  # type: ignore[attr-defined]
@@ -318,21 +322,15 @@ class FlowTrainer:
             vae_std = vae_v_target.std() + 1e-8
             ctx_std = ctx_v_target.std() + 1e-8
 
-            vae_loss = nn.functional.smooth_l1_loss(
-                pred_vae / vae_std, vae_v_target / vae_std, beta=0.01
-            )
-            ctx_loss = nn.functional.smooth_l1_loss(
-                pred_ctx / ctx_std, ctx_v_target / ctx_std, beta=0.01
-            )
+            vae_loss = nn.functional.mse_loss(pred_vae / vae_std, vae_v_target / vae_std)
+            ctx_loss = nn.functional.mse_loss(pred_ctx / ctx_std, ctx_v_target / ctx_std)
             diff_loss = vae_loss + self.ctx_loss_weight * ctx_loss
         else:
             # v0.6 and earlier: no context dims, single normalised loss.
             latent_std = img_seq_fp32.detach().std() + 1e-8
             normalized_v_target = v_target.detach() / latent_std
             normalized_pred = pred_seq.float() / latent_std
-            diff_loss = nn.functional.smooth_l1_loss(
-                normalized_pred, normalized_v_target, beta=0.01
-            )
+            diff_loss = nn.functional.mse_loss(normalized_pred, normalized_v_target)
             ctx_loss = torch.tensor(0.0, device=img_seq.device)
 
         # Text-image alignment loss (optional, disabled by default due to dimension mismatch issues)
