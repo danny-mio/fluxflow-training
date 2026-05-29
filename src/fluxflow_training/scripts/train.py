@@ -626,7 +626,16 @@ def train_pipeline(args, config):
 
 
 def train_legacy(args):
-    """Legacy single-mode training loop for FluxFlow (backward compatibility)."""
+    """Legacy single-mode training loop for FluxFlow (backward compatibility).
+
+    Deprecated: scheduled for removal in 1.0.0. Use pipeline training instead.
+    """
+    warnings.warn(
+        "train_legacy is deprecated and will be removed in fluxflow-training 1.0.0. "
+        "Use the pipeline-based training entry point instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     print("\n" + "=" * 80)
     print("LEGACY MODE - Single-step training (consider migrating to pipeline mode)")
     print("=" * 80 + "\n")
