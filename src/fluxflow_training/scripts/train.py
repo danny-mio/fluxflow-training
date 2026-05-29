@@ -850,7 +850,7 @@ def train_legacy(args):
             sampler_state_path = os.path.join(args.output_path, "sampler_state.pt")
             if os.path.exists(sampler_state_path):
                 try:
-                    sampler_state = torch.load(sampler_state_path, weights_only=False)
+                    sampler_state = torch.load(sampler_state_path, weights_only=True)
                     print(
                         f"Loaded sampler state: epoch {sampler_state.get('current_epoch', 0)}, position {sampler_state.get('position', 0)}"
                     )
@@ -1345,7 +1345,6 @@ def train_legacy(args):
                         ),
                         kl_warmup_steps=args.kl_warmup_steps,
                         kl_max_beta=args.kl_beta,
-                        last_sample_step=last_sample_step,
                     )
 
                     # Clear CUDA cache to prevent memory fragmentation

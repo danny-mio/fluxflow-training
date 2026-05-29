@@ -328,7 +328,9 @@ class VAETrainer:
         # Load existing context predictor if available
         if context_predictor_path and Path(context_predictor_path).exists():
             try:
-                checkpoint = torch.load(context_predictor_path, map_location="cpu")
+                checkpoint = torch.load(
+                    context_predictor_path, map_location="cpu", weights_only=True
+                )
                 self.context_predictor.load_state_dict(checkpoint["context_predictor"])
                 logger.info(f"Loaded context predictor from {context_predictor_path}")
             except Exception as e:
@@ -370,7 +372,7 @@ class VAETrainer:
         """Load context predictor state."""
         if Path(checkpoint_path).exists():
             try:
-                checkpoint = torch.load(checkpoint_path, map_location="cpu")
+                checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
                 self.context_predictor.load_state_dict(checkpoint["context_predictor"])
                 self.context_encoder.load_state_dict(checkpoint["context_encoder"])
                 self.context_predictor_optimizer.load_state_dict(

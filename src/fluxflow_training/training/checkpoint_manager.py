@@ -375,7 +375,7 @@ class CheckpointManager:
             try:
                 training_states = torch.load(
                     self.training_states_path,
-                    weights_only=False,
+                    weights_only=True,
                     map_location="cpu",
                     mmap=True,
                 )
@@ -416,7 +416,7 @@ class CheckpointManager:
             return None
 
         try:
-            state = torch.load(self.sampler_state_path, weights_only=False, mmap=True)
+            state = torch.load(self.sampler_state_path, weights_only=True, mmap=True)
             logger.info(
                 f"Loaded sampler state: epoch {state.get('current_epoch', 0)}, "
                 f"position {state.get('position', 0)}"
