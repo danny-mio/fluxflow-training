@@ -1065,8 +1065,8 @@ class VAETrainer:
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
         spade_active = self._get_effective_spade_usage(global_step)
         if self.use_gan and self.discriminator is not None:
-            # Reuse already-decoded images; detach so GAN loss only trains the decoder
-            out_imgs_gan = out_imgs_rec.detach()
+            # Reuse already-decoded images for generator loss (gradients flow into encoder/decoder)
+            out_imgs_gan = out_imgs_rec
             ctx_vec_rec = packed_rec[:, :-1, :].contiguous().mean(dim=1).detach()
 
             # Validate context vector dimension against discriminator expectation
