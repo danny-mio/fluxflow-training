@@ -1,5 +1,6 @@
 """Dataset classes for FluxFlow text-to-image training and generation."""
 
+import ast
 import hashlib
 import json
 import os
@@ -679,7 +680,7 @@ class ResumableDimensionSampler(Sampler):
 
         # Extract size groups
         self.size_groups: dict[Any, list[int]] = {
-            eval(size): info[
+            ast.literal_eval(size): info[
                 "indices"
             ]  # Convert string tuple back to tuple  # type: ignore[arg-type]
             for size, info in dimension_cache["size_groups"].items()
