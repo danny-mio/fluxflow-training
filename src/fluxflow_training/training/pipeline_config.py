@@ -206,7 +206,7 @@ class PipelineConfigValidator:
         "flow",
         "text_encoder",
         "text_encoder_backbone",  # DistilBERT language_model sub-component
-        "text_encoder_projection",  # ouput_layer sub-component
+        "text_encoder_projection",  # output_layer sub-component
         "discriminator",
         "D_img",
         # v0.10.0: freeze context branch independently from rest of compressor

@@ -188,13 +188,13 @@ class FlowTrainer:
         elif _has_projection_opt and not _has_backbone_opt:
             if hasattr(self.text_encoder, "language_model"):
                 self.text_encoder.language_model.eval()
-                self.text_encoder.ouput_layer.train()
+                self.text_encoder.output_layer.train()
             else:
                 self.text_encoder.train()
         elif _has_backbone_opt and not _has_projection_opt:
             if hasattr(self.text_encoder, "language_model"):
                 self.text_encoder.language_model.train()
-                self.text_encoder.ouput_layer.eval()
+                self.text_encoder.output_layer.eval()
             else:
                 self.text_encoder.train()
         else:
