@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 import pytest
+import torch
 import torch.nn as nn
 
 from fluxflow_training.training.checkpoint_manager import CheckpointManager
@@ -1088,9 +1089,9 @@ class TestCreateStepTrainersTextEncoderSplit:
 
 
 class TestSafeVaeSampleGating:
-    """safe_vae_sample must only be called when step.train_vae=True."""
+    """safe_vae_sample is called when train_vae=True OR gan_training=True."""
 
-    def _make_orchestrator(self, train_vae: bool):
+    def _make_orchestrator(self, train_vae: bool, gan_training: bool = False):
         """Create minimal orchestrator with a single-step config."""
         from fluxflow_training.training.pipeline_config import parse_pipeline_config
 
@@ -1100,8 +1101,7 @@ class TestSafeVaeSampleGating:
                     "name": "test_step",
                     "n_epochs": 1,
                     "train_vae": train_vae,
-                    # Need at least one mode enabled; use gan_training for the false case
-                    "gan_training": not train_vae,
+                    "gan_training": gan_training,
                 }
             ]
         }
@@ -1116,11 +1116,8 @@ class TestSafeVaeSampleGating:
         )
         return orch, cfg.steps[0]
 
-    def test_safe_vae_sample_not_called_when_train_vae_false(self):
-        """When train_vae=False, _generate_samples must not call safe_vae_sample."""
+    def _call_generate_samples(self, orch, step):
         from unittest.mock import MagicMock, patch
-
-        orch, step = self._make_orchestrator(train_vae=False)
 
         diffuser = MagicMock()
         args = MagicMock()
@@ -1141,31 +1138,189 @@ class TestSafeVaeSampleGating:
                 args=args,
                 parsed_sample_sizes=[],
             )
-            mock_svs.assert_not_called()
+            return mock_svs
+
+    def test_safe_vae_sample_not_called_when_both_false(self):
+        """When train_vae=False and gan_training=False, safe_vae_sample must not be called."""
+        from fluxflow_training.training.pipeline_config import (
+            PipelineConfig,
+            PipelineStepConfig,
+            TransitionCriteria,
+        )
+
+        # Bypass config validator by constructing step directly
+        step = PipelineStepConfig(
+            name="test_step",
+            n_epochs=1,
+            train_vae=False,
+            gan_training=False,
+            transition_on=TransitionCriteria(mode="epoch", value=1),
+        )
+        config = PipelineConfig.__new__(PipelineConfig)
+        config.steps = [step]
+        orch = TrainingPipelineOrchestrator(
+            config=config,
+            models={},
+            checkpoint_manager=Mock(),
+            accelerator=Mock(),
+            dataloader=Mock(),
+            dataset=Mock(),
+        )
+        mock_svs = self._call_generate_samples(orch, step)
+        mock_svs.assert_not_called()
 
     def test_safe_vae_sample_called_when_train_vae_true(self):
         """When train_vae=True, _generate_samples must call safe_vae_sample."""
-        from unittest.mock import MagicMock, patch
+        orch, step = self._make_orchestrator(train_vae=True, gan_training=False)
+        mock_svs = self._call_generate_samples(orch, step)
+        mock_svs.assert_called_once()
 
-        orch, step = self._make_orchestrator(train_vae=True)
+    def test_safe_vae_sample_called_when_gan_training_only(self):
+        """When train_vae=False but gan_training=True, safe_vae_sample must be called.
 
-        diffuser = MagicMock()
+        GAN-only mode trains encoder/decoder via adversarial backprop, so VAE samples
+        are meaningful and should be generated for monitoring training progress.
+        """
+        orch, step = self._make_orchestrator(train_vae=False, gan_training=True)
+        mock_svs = self._call_generate_samples(orch, step)
+        mock_svs.assert_called_once()
+
+    def test_safe_vae_sample_called_when_both_true(self):
+        """When both train_vae=True and gan_training=True, safe_vae_sample must be called."""
+        orch, step = self._make_orchestrator(train_vae=True, gan_training=True)
+        mock_svs = self._call_generate_samples(orch, step)
+        mock_svs.assert_called_once()
+
+
+class TestDiscriminatorArchMismatchRaisesError:
+    """_create_step_trainers must raise RuntimeError on discriminator arch mismatch."""
+
+    def _make_orch_with_gan_step(self):
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="gan",
+            n_epochs=1,
+            train_vae=False,
+            gan_training=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "vae": OptimizerConfig(lr=1e-4),
+                    "discriminator": OptimizerConfig(lr=4e-4),
+                },
+            ),
+        )
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+        return orch, step
+
+    def test_arch_mismatch_raises_runtime_error(self):
+        """Mismatched D_img architecture must raise RuntimeError, not silently rebuild."""
+        from unittest.mock import MagicMock
+
+        from fluxflow.models.discriminators import PatchDiscriminator
+
+        orch, step = self._make_orch_with_gan_step()
+
+        # Compressor returns expected_ctx_dim=64
+        compressor = MagicMock()
+        compressor.d_model = 59
+        compressor.get_context_dims.return_value = 5  # expected_ctx_dim = 59+5 = 64
+        compressor.use_gradient_checkpointing = False
+        compressor.parameters.return_value = iter([])
+
+        expander = MagicMock()
+        expander.parameters.return_value = iter([])
+
+        # D_img loaded with wrong arch: ctx_dim=32, base_ch=16
+        wrong_disc = PatchDiscriminator(in_channels=3, base_ch=16, depth=3, ctx_dim=32)
+
+        models = {
+            "compressor": compressor,
+            "expander": expander,
+            "D_img": wrong_disc,
+        }
+
+        # base_ch=32 expected (feature_maps_dim_disc), but loaded disc has base_ch=16
         args = MagicMock()
-        args.no_samples = False
-        args.test_image_address = ["fake/path.jpg"]
-        args.channels = 3
-        args.output_path = "/tmp"
-        args.sample_captions = []
+        args.initial_clipping_norm = 1.0
+        args.feature_maps_dim_disc = 32  # expected base_ch
 
-        with patch("fluxflow_training.training.pipeline_orchestrator.safe_vae_sample") as mock_svs:
-            orch._generate_samples(
-                step=step,
-                step_idx=0,
-                epoch=0,
-                batch_idx=0,
-                models={"diffuser": diffuser},
-                tokenizer=MagicMock(),
-                args=args,
-                parsed_sample_sizes=[],
-            )
-            mock_svs.assert_called_once()
+        optimizers = {"vae": MagicMock(), "discriminator": MagicMock()}
+
+        with pytest.raises(RuntimeError) as exc_info:
+            orch._create_step_trainers(step, models, optimizers, {}, None, args)
+
+        err = str(exc_info.value)
+        assert "Loaded discriminator" in err
+        assert "does not match" in err
+        assert "D_img.safetensors" in err
+
+
+class TestGANOnlyCheckpointSave:
+    """Checkpoint save in GAN-only mode must persist D_img, not a fresh random init."""
+
+    def test_save_includes_discriminator_in_gan_only_mode(self):
+        """D_img must be passed to save_models with its trained weights, not a fresh init."""
+        from unittest.mock import MagicMock
+
+        from fluxflow.models.discriminators import PatchDiscriminator
+
+        # Build a discriminator with known weights
+        disc = PatchDiscriminator(in_channels=3, base_ch=16, depth=2, ctx_dim=32)
+        # Stamp a known value so we can verify it's not a fresh random init
+        with torch.no_grad():
+            disc.ctx_proj.weight.fill_(0.42)
+
+        mock_cm = MagicMock()
+
+        from fluxflow_training.training.pipeline_config import (
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(name="gan", n_epochs=1, train_vae=False, gan_training=True)
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.checkpoint_manager = mock_cm
+        orch.global_step = 1
+        orch.steps_completed = []
+
+        models = {
+            "diffuser": MagicMock(),
+            "text_encoder": MagicMock(),
+            "D_img": disc,
+        }
+
+        # Call _save_checkpoint with correct signature
+        orch._save_checkpoint(
+            step_idx=0,
+            step_epoch=0,
+            batch_idx=0,
+            models=models,
+            optimizers={},
+            schedulers={},
+            ema=None,
+            args=MagicMock(),
+        )
+
+        assert mock_cm.save_models.called, "save_models must be called"
+        call_kwargs = mock_cm.save_models.call_args[1]
+        discriminators = call_kwargs.get("discriminators")
+        assert discriminators is not None, "discriminators kwarg must be passed"
+        assert "D_img" in discriminators, "D_img must be in discriminators dict"
+        saved_disc = discriminators["D_img"]
+        # Verify it's the trained disc, not a fresh one — ctx_proj.weight should be 0.42
+        assert abs(saved_disc.ctx_proj.weight.mean().item() - 0.42) < 1e-4
