@@ -286,18 +286,27 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Ensure loaded_states is the state dict dict, not the tuple
         assert isinstance(loaded_states, dict), "loaded_states should be a dict"
 
-    # Discriminators - determine correct ctx_dim from saved checkpoint if available
-    ctx_dim = args.vae_dim  # Default
+    # Discriminators - determine correct ctx_dim:
+    # 1. Prefer the saved D_img checkpoint's value (exact match guarantees compatibility).
+    # 2. Fall back to compressor.get_context_dims() — same formula used by the orchestrator.
+    # 3. Last-resort fallback for legacy compressors: vae_dim + 5 (CONTEXT_DIMS from v070/v080).
+    ctx_dim = None
     if loaded_states and loaded_states.get("D_img"):
         try:
-            # Use ctx_dim from saved checkpoint to ensure compatibility
-            saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
-            ctx_dim = saved_ctx_dim
+            ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
             print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
         except (KeyError, AttributeError):
-            print(
-                f"Could not determine ctx_dim from checkpoint, using default vae_dim={args.vae_dim}"
-            )
+            ctx_dim = None
+    if ctx_dim is None:
+        try:
+            context_dims = compressor.get_context_dims()
+            if hasattr(context_dims, "item"):
+                context_dims = int(context_dims.item())
+            ctx_dim = args.vae_dim + int(context_dims)
+            print(f"Using ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})")
+        except (AttributeError, TypeError, ValueError):
+            ctx_dim = args.vae_dim + 5  # legacy v070/v080 fallback
+            print(f"Using ctx_dim={ctx_dim} (legacy fallback: vae_dim + 5)")
 
     D_img = PatchDiscriminator(
         in_channels=args.channels,
@@ -309,27 +318,6 @@ def initialize_models(args, config, device, checkpoint_manager):
 
     # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
-
-    # Discriminators - determine correct ctx_dim from saved checkpoint if available
-    ctx_dim = args.vae_dim  # Default
-    if loaded_states and loaded_states.get("D_img"):
-        try:
-            # Use ctx_dim from saved checkpoint to ensure compatibility
-            saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
-            ctx_dim = saved_ctx_dim
-            print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
-        except (KeyError, AttributeError):
-            print(
-                f"Could not determine ctx_dim from checkpoint, using default vae_dim={args.vae_dim}"
-            )
-
-    D_img = PatchDiscriminator(
-        in_channels=args.channels,
-        base_ch=args.feature_maps_dim_disc,
-        depth=3,
-        ctx_dim=ctx_dim,
-        use_spectral_norm=False,
-    )
 
     # Load model checkpoints
     if loaded_states:
@@ -378,10 +366,12 @@ def initialize_models(args, config, device, checkpoint_manager):
                     nan_found = True
             if nan_found:
                 print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-                # Use context dimension that matches the loaded model
-                ctx_dim = 256
                 D_img = PatchDiscriminator(
-                    in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
+                    in_channels=args.channels,
+                    base_ch=args.feature_maps_dim_disc,
+                    depth=3,
+                    ctx_dim=ctx_dim,  # reuse the same ctx_dim computed above
+                    use_spectral_norm=False,
                 )
 
     # Move to device
@@ -753,9 +743,8 @@ def train_legacy(args):
             f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})"
         )
     except (AttributeError, TypeError, ValueError):
-        # Fallback for models that don't have get_context_dims method or return unexpected type
-        ctx_dim = args.vae_dim
-        print(f"Creating discriminator with ctx_dim={ctx_dim} (fallback: no context dims method)")
+        ctx_dim = args.vae_dim + 5  # legacy v070/v080 fallback (CONTEXT_DIMS = 5)
+        print(f"Creating discriminator with ctx_dim={ctx_dim} (legacy v070/v080 fallback)")
 
     D_img = PatchDiscriminator(
         in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
@@ -804,7 +793,7 @@ def train_legacy(args):
         if nan_found:
             print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
             D_img = PatchDiscriminator(
-                in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=args.vae_dim
+                in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
             )
 
     diffuser.to(device)
