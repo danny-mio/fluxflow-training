@@ -990,14 +990,18 @@ class TrainingPipelineOrchestrator:
                         base_ch,
                     )
                     if actual_ctx_dim != expected_ctx_dim or actual_base_ch != base_ch:
-                        logger.warning(
-                            f"Loaded discriminator (base_ch={actual_base_ch}, ctx_dim={actual_ctx_dim}) "
-                            f"!= expected (base_ch={base_ch}, ctx_dim={expected_ctx_dim}). "
-                            f"Rebuilding discriminator from scratch (GAN warm-up will restart)."
+                        raise RuntimeError(
+                            f"Loaded discriminator architecture (base_ch={actual_base_ch}, ctx_dim={actual_ctx_dim}) "
+                            f"does not match the expected architecture for the loaded compressor "
+                            f"(base_ch={base_ch}, ctx_dim={expected_ctx_dim}).\n"
+                            f"This usually means one of:\n"
+                            f"  1. The training config changed (vae_dim, feature_maps_dim_disc, or compressor version) "
+                            f"between sessions.  Revert to the original config to keep using this discriminator.\n"
+                            f"  2. The discriminator was saved by an older codebase that computed ctx_dim differently.\n"
+                            f"\n"
+                            f"To start fresh (DESTROYS the trained discriminator), delete D_img.safetensors "
+                            f"in the output directory and rerun training."
                         )
-                        models["D_img"] = PatchDiscriminator(
-                            in_channels=channels, base_ch=base_ch, ctx_dim=expected_ctx_dim
-                        ).to(self.device)
                     else:
                         logger.info(
                             f"Using loaded discriminator (base_ch={actual_base_ch}, ctx_dim={actual_ctx_dim})"
@@ -1235,8 +1239,13 @@ class TrainingPipelineOrchestrator:
         else:  # End-of-epoch or initial
             sample_prefix = f"{step_name_short}_{step_idx+1:03d}_{epoch+1:03d}"
 
-        # VAE reconstruction samples (only when training VAE)
-        if step.train_vae and args.test_image_address and len(args.test_image_address) > 0:
+        # VAE reconstruction samples — train_vae OR gan_training both train the encoder/decoder
+        # (GAN-only mode trains encoder/decoder via adversarial backprop, so samples are useful)
+        if (
+            (step.train_vae or step.gan_training)
+            and args.test_image_address
+            and len(args.test_image_address) > 0
+        ):
             for img_addr in args.test_image_address:
                 try:
                     # Generate samples with custom filename prefix
@@ -1425,7 +1434,7 @@ class TrainingPipelineOrchestrator:
             schedulers = self._create_step_schedulers(step, optimizers, total_steps)
 
             # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)
-            needs_vae_trainer = step.train_vae or step.use_lpips
+            needs_vae_trainer = step.train_vae or step.gan_training or step.use_lpips
             ema = None
             if needs_vae_trainer and step.use_ema:
                 ema = EMA(
