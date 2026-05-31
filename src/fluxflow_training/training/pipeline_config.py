@@ -172,6 +172,12 @@ class PipelineStepConfig:
     # ctx_final_norm are frozen while the z-path parameters remain trainable.
     freeze_context_branch: bool = False
 
+    # Diagnostic: capture discriminator patch-logit spatial maps every N global steps.
+    # 0 = disabled (default). Set e.g. 100 to write a PNG heatmap + JSONL record every
+    # 100 steps to <output_path>/disc_diag/. Useful to check whether the discriminator
+    # is amplifying a 16-pixel grid artefact.
+    disc_logit_diagnostic_interval: int = 0
+
     # GAN settings
     r1_interval: int = 16
     r1_gamma: float = 5.0
@@ -671,6 +677,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),
+        disc_logit_diagnostic_interval=step_dict.get("disc_logit_diagnostic_interval", 0),
         optimization=optimization,
         transition_on=transition,
     )

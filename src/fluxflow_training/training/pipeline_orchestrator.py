@@ -1063,6 +1063,13 @@ class TrainingPipelineOrchestrator:
                 ctx_input_dim=_ctx_input_dim,
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
+                disc_logit_diagnostic_interval=getattr(step, "disc_logit_diagnostic_interval", 0),
+                disc_logit_diagnostic_dir=(
+                    str(args.output_path) + "/disc_diag"
+                    if getattr(step, "disc_logit_diagnostic_interval", 0) > 0
+                    and hasattr(args, "output_path")
+                    else None
+                ),
             )
 
             # Build descriptive message about what's being trained

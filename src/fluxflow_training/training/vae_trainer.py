@@ -3,9 +3,11 @@
 Handles VAE (compressor + expander) training with optional GAN discriminator.
 """
 
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -158,6 +160,10 @@ class VAETrainer:
         adaptive_weights: bool = True,
         mse_weight: float = 0.1,
         accelerator=None,
+        # Diagnostic: save discriminator spatial logit heatmaps every N global steps.
+        # 0 = disabled (default). Writes PNG + JSONL to disc_logit_diagnostic_dir.
+        disc_logit_diagnostic_interval: int = 0,
+        disc_logit_diagnostic_dir: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize VAE trainer.
@@ -246,6 +252,10 @@ class VAETrainer:
         self.adaptive_weights = adaptive_weights
         self.mse_weight = mse_weight
         self.accelerator = accelerator
+        self.disc_logit_diagnostic_interval = disc_logit_diagnostic_interval
+        self.disc_logit_diagnostic_dir = (
+            Path(disc_logit_diagnostic_dir) if disc_logit_diagnostic_dir is not None else None
+        )
 
         # Initialize LPIPS if needed
         if self.use_lpips:
@@ -635,6 +645,69 @@ class VAETrainer:
             return min(target / (avg + 1e-8), max_weight)
         return 1.0
 
+    def _maybe_save_disc_logit_snapshot(self, real_logits: torch.Tensor, global_step: int) -> None:
+        """Save discriminator spatial logit heatmap + JSONL record if diagnostic is enabled.
+
+        Args:
+            real_logits: Discriminator output [B, 1, H_out, W_out] from real images.
+            global_step: Current global training step.
+        """
+        if self.disc_logit_diagnostic_interval <= 0:
+            return
+        if global_step % self.disc_logit_diagnostic_interval != 0:
+            return
+
+        try:
+            diag_dir = self.disc_logit_diagnostic_dir
+            if diag_dir is None:
+                return
+            diag_dir.mkdir(parents=True, exist_ok=True)
+
+            logits_np = real_logits.detach().cpu().float().numpy()  # [B, 1, H, W]
+            spatial = logits_np[:, 0, :, :].mean(axis=0)  # [H, W] — mean over batch
+
+            h, w = spatial.shape
+            row_mean = spatial.mean(axis=1).tolist()  # length H
+            col_mean = spatial.mean(axis=0).tolist()  # length W
+
+            record = {
+                "step": global_step,
+                "shape": [h, w],
+                "mean": float(spatial.mean()),
+                "std": float(spatial.std()),
+                "min": float(spatial.min()),
+                "max": float(spatial.max()),
+                "row_mean": row_mean,
+                "col_mean": col_mean,
+            }
+            jsonl_path = diag_dir / "disc_logits.jsonl"
+            with open(jsonl_path, "a") as fh:
+                fh.write(json.dumps(record) + "\n")
+
+            # PNG heatmap
+            try:
+                import matplotlib.pyplot as plt
+
+                fig, ax = plt.subplots(figsize=(5, 5))
+                vmin, vmax = record["min"], record["max"]
+                im = ax.imshow(spatial, cmap="viridis", vmin=vmin, vmax=vmax, aspect="auto")
+                fig.colorbar(im, ax=ax)
+                ax.set_title(f"D logits — step {global_step}")
+                png_path = diag_dir / f"disc_logits_step{global_step:08d}.png"
+                fig.savefig(str(png_path), bbox_inches="tight", dpi=80)
+                plt.close(fig)
+            except Exception:
+                # Fallback: PIL grayscale when matplotlib unavailable
+                from PIL import Image
+
+                norm = (spatial - spatial.min()) / (spatial.max() - spatial.min() + 1e-8)
+                arr = (norm * 255).astype(np.uint8)
+                png_path = diag_dir / f"disc_logits_step{global_step:08d}.png"
+                Image.fromarray(arr).save(str(png_path))
+
+        except Exception as exc:
+            logger.warning("disc_logit_diagnostic failed at step %d: %s", global_step, exc)
+
     def train_step(
         self,
         real_imgs: torch.Tensor,
@@ -855,6 +928,7 @@ class VAETrainer:
 
         # Real images
         real_logits = self.discriminator(real_noisy_base, disc_ctx)
+        self._maybe_save_disc_logit_snapshot(real_logits, global_step)
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
 
