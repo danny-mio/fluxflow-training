@@ -95,10 +95,21 @@ class VAETrainer:
     Handles VAE (Variational Autoencoder) training.
 
     Manages:
-    - VAE reconstruction loss (L1 + MSE)
+    - VAE reconstruction loss (L1 + frequency-weighted L1)
     - KL divergence with beta annealing
     - Optional GAN training with discriminator
     - EMA (Exponential Moving Average) updates
+
+    Loss flag semantics (each flag is the SOLE gate for its loss):
+    - ``train_vae`` / ``train_reconstruction``: L1 reconstruction loss + adaptive weight
+    - ``use_lpips``: LPIPS perceptual anchor — independent of train_reconstruction
+    - ``train_colorstats``: color statistics regularization — independent
+    - ``train_histogram``: histogram matching regularization — independent
+    - ``train_contrast``: contrast regularization — independent
+    - ``train_coarseness``: coarseness distribution regularization — independent
+    - ``train_kl``: KL divergence term — independent
+    - ``train_ctx_aux``: auxiliary context reconstruction loss (v0.10.0) — independent
+    - ``use_gan`` / ``gan_training``: adversarial loss via PatchDiscriminator
 
     Example:
         >>> trainer = VAETrainer(
@@ -176,8 +187,9 @@ class VAETrainer:
             ema: EMA for VAE parameters
             reconstruction_loss_fn: L1 loss
             reconstruction_loss_min_fn: MSE loss
-            train_reconstruction: Compute reconstruction loss (L1+MSE+LPIPS). Set to False for
-                GAN-only training without VAE reconstruction (default: True)
+            train_reconstruction: Compute L1 reconstruction loss and its adaptive weight.
+                Set to False for GAN-only training. Does NOT suppress LPIPS, colorstats,
+                histogram, contrast, or coarseness — those are controlled by their own flags.
             train_kl: Compute KL divergence loss (default: True)
             train_colorstats: Compute color statistics loss (default: True)
             train_histogram: Compute histogram matching loss (default: True)
@@ -960,13 +972,21 @@ class VAETrainer:
     ) -> dict[str, float]:
         """Train VAE generator (compressor + expander).
 
+        Each loss component is gated solely by its own flag:
+        - recon_loss: gated on ``train_reconstruction``
+        - perceptual_loss (LPIPS): gated on ``use_lpips`` — independent of train_reconstruction
+        - kl: gated on ``train_kl``
+        - G_img_loss: gated on ``use_gan``
+        - ctx_aux_loss: gated on ``train_ctx_aux``
+        - color_stats_loss: gated on ``train_colorstats``
+        - hist_loss: gated on ``train_histogram``
+        - contrast_loss: gated on ``train_contrast``
+        - coarseness_loss: gated on ``train_coarseness``
+
         Returns:
-            Dictionary with loss values:
-            - vae_loss: Total VAE loss
-            - recon_loss: Reconstruction loss
-            - kl_loss: KL divergence loss
-            - g_loss: GAN generator loss (if enabled)
-            - lpips_loss: LPIPS perceptual loss (if enabled)
+            Dictionary with loss values keyed by ``vae``, ``kl``, ``generator``,
+            ``lpips``, ``recon``, ``ctx_aux_loss``, ``context_alignment``,
+            ``color_stats``, ``hist_loss``, ``contrast_loss``, ``coarseness_loss``.
         """
         self.optimizer.zero_grad(set_to_none=True)
         self.context_predictor_optimizer.zero_grad(set_to_none=True)
@@ -1048,15 +1068,18 @@ class VAETrainer:
             # Remove MSE loss as it can contribute to blur - rely on L1 + LPIPS for reconstruction
             recon_loss = recon_l1
 
-            # LPIPS perceptual loss
-            if self.use_lpips and self.lpips_fn is not None:
-                # Compute LPIPS WITH gradients so it actually trains the VAE
-                # NOTE: Gradient checkpointing removed - causes recursive checkpointing
-                # with VAE decoder, leading to OOM instead of saving memory
-                # Ensure LPIPS is on the same device as input tensors
-                device = out_imgs_rec.device
-                lpips_fn = self.lpips_fn.to(device)
-                perceptual_loss = lpips_fn(out_imgs_rec, real_imgs).mean()
+        # LPIPS perceptual anchor — independent of train_reconstruction, has its own use_lpips flag.
+        # When train_reconstruction is also active, fold into recon_loss (single backward pass).
+        # When GAN-only (train_reconstruction=False), add directly to total_loss below.
+        if self.use_lpips and self.lpips_fn is not None:
+            # Compute LPIPS WITH gradients so it actually trains the VAE
+            # NOTE: Gradient checkpointing removed - causes recursive checkpointing
+            # with VAE decoder, leading to OOM instead of saving memory
+            device = out_imgs_rec.device
+            lpips_fn = self.lpips_fn.to(device)
+            perceptual_loss = lpips_fn(out_imgs_rec, real_imgs).mean()
+            if self.train_reconstruction:
+                # Fold into recon_loss so the adaptive weight already covers it
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
         # KL divergence with beta annealing (z branch only; context branch is deterministic).
@@ -1192,6 +1215,8 @@ class VAETrainer:
         # Update loss history for adaptive weighting (record unscaled G_img_loss)
         if self.train_reconstruction:
             self.loss_history["recon"].add_item(float(recon_loss.item()))
+        if self.use_lpips:
+            self.loss_history["lpips"].add_item(float(perceptual_loss.item()))
         self.loss_history["kl"].add_item(float(kl.item()))
         if self.use_gan:
             self.loss_history["gan"].add_item(float(G_img_loss.item()))
@@ -1201,32 +1226,38 @@ class VAETrainer:
         w_kl = self._compute_adaptive_weight("kl") if self.train_kl else 0.0
         w_gan = self._compute_adaptive_weight("gan") if self.use_gan else 0.0
 
-        # Color/contrast regularization losses
+        # Color/contrast regularization losses — each gated on its own flag only.
+        # out_imgs_rec and real_imgs are always available (computed above), so these
+        # are meaningful in any mode that runs the generator (VAE-only, GAN-only, joint).
         color_stats_loss = (
             self._color_statistics_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction and self.train_colorstats
+            if self.train_colorstats
             else torch.tensor(0.0, device=real_imgs.device)
         )
         hist_loss = (
             self._histogram_matching_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction and self.train_histogram
+            if self.train_histogram
             else torch.tensor(0.0, device=real_imgs.device)
         )
         contrast_loss = (
             self._contrast_regularization_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction and self.train_contrast
+            if self.train_contrast
             else torch.tensor(0.0, device=real_imgs.device)
         )
         coarseness_loss = (
             self._coarseness_loss(out_imgs_rec, real_imgs)
-            if self.train_reconstruction and self.train_coarseness
+            if self.train_coarseness
             else torch.tensor(0.0, device=real_imgs.device)
         )
 
         # Total loss with adaptive weighting
         total_loss = w_kl * beta * kl
         if self.train_reconstruction:
+            # recon_loss already includes lambda_lpips * perceptual_loss when use_lpips=True
             total_loss = total_loss + w_recon * recon_loss
+        elif self.use_lpips:
+            # GAN-only mode: LPIPS not folded into recon_loss, add it standalone here
+            total_loss = total_loss + self.lambda_lpips * perceptual_loss
         if self.use_gan:
             total_loss = total_loss + self.lambda_adv * w_gan * G_img_loss
 
