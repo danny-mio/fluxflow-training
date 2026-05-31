@@ -8,7 +8,7 @@ causing LPIPS: 0.0000 in GAN-only mode even when use_lpips=True.
 """
 
 from typing import Optional
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -16,7 +16,6 @@ import torch.nn as nn
 
 from fluxflow_training.training.utils import EMA
 from fluxflow_training.training.vae_trainer import VAETrainer
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -184,9 +183,7 @@ class TestLPIPSGate:
         """use_lpips=False → lpips key is 0.0 in returned dict."""
         trainer = _build_trainer(train_reconstruction=True, use_lpips=False)
         result = _run_generator_step(trainer)
-        assert result["lpips"] == pytest.approx(0.0), (
-            "lpips should be 0.0 when use_lpips=False"
-        )
+        assert result["lpips"] == pytest.approx(0.0), "lpips should be 0.0 when use_lpips=False"
 
     def test_lpips_present_when_use_lpips_true_and_train_reconstruction_true(self):
         """Both flags true → LPIPS computed and returned non-zero."""
@@ -196,9 +193,9 @@ class TestLPIPSGate:
         trainer.lpips_fn = lpips_fn
 
         result = _run_generator_step(trainer)
-        assert result["lpips"] > 0.0, (
-            "LPIPS should be non-zero when use_lpips=True and train_reconstruction=True"
-        )
+        assert (
+            result["lpips"] > 0.0
+        ), "LPIPS should be non-zero when use_lpips=True and train_reconstruction=True"
 
     def test_lpips_present_when_use_lpips_true_and_train_reconstruction_false(self):
         """GAN-only mode: use_lpips=True, train_vae=False → LPIPS still fires.
@@ -243,9 +240,9 @@ class TestLPIPSGate:
         # With only LPIPS active (train_kl=False, train_reconstruction=False, use_gan=False)
         # and fake LPIPS returning 0.4 * lambda_lpips=0.5 → LPIPS contributes 0.2
         # Plus context_alignment_loss. Total must be positive (not zero).
-        assert captured[0].item() > 0.0, (
-            f"total_loss={captured[0].item():.4f} expected > 0 but LPIPS contribution is missing"
-        )
+        assert (
+            captured[0].item() > 0.0
+        ), f"total_loss={captured[0].item():.4f} expected > 0 but LPIPS contribution is missing"
 
     def test_lpips_not_double_counted_joint_mode(self):
         """When train_vae=True and use_lpips=True, LPIPS must appear exactly once.
@@ -286,9 +283,7 @@ class TestLPIPSGate:
 class TestAnchorLossGates:
     """Colorstats/histogram/contrast/coarseness fire based on their own flag only."""
 
-    def _check_anchor_fires_without_reconstruction(
-        self, flag_name: str, result_key: str
-    ):
+    def _check_anchor_fires_without_reconstruction(self, flag_name: str, result_key: str):
         """Generic check: flag=True, train_reconstruction=False → result_key > 0."""
         kwargs = {
             "train_reconstruction": False,
@@ -378,6 +373,6 @@ class TestCtxAuxIndependentGate:
     def test_ctx_aux_gated_on_train_ctx_aux(self):
         """Source must contain 'if self.train_ctx_aux:' as sole gate."""
         source = self._source()
-        assert "if self.train_ctx_aux:" in source, (
-            "train_ctx_aux flag must be the sole gate for ctx_aux_loss computation."
-        )
+        assert (
+            "if self.train_ctx_aux:" in source
+        ), "train_ctx_aux flag must be the sole gate for ctx_aux_loss computation."
