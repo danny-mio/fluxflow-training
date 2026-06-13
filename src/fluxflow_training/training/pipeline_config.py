@@ -154,12 +154,34 @@ class PipelineStepConfig:
     max_steps: Optional[int] = None  # Limit batches per epoch (for testing)
 
     # Loss weights
+    #
+    # v0.10.0 names (preferred):
+    # - ``kl_z_weight``  (was ``kl_beta``)
+    # - ``kl_z_warmup_steps`` (was ``kl_warmup_steps``)
+    # The legacy names continue to load with a DeprecationWarning emitted
+    # by the YAML parser. When both forms appear, the v0.10.0 form wins.
+    kl_z_weight: float = 0.5
+    kl_z_warmup_steps: int = 10000
+    # Kept as a backward-compat shadow so direct PipelineStepConfig instantiation
+    # (e.g. via tests) still accepts the old keyword names. The parser keeps
+    # these in sync with the new fields whenever possible.
     kl_beta: float = 0.0001
     kl_warmup_steps: int = 5000
     kl_free_bits: float = 0.0
+    # v0.10.0: deterministic ctx-features shrinkage (β-VAE-style L2). Per design §5.5
+    # the schedule is delayed until ``ctx_shrinkage_warmup_start_step`` then cosine
+    # warms up to ``ctx_shrinkage_weight`` over ``ctx_shrinkage_warmup_steps``.
+    ctx_shrinkage_weight: float = 0.001
+    ctx_shrinkage_warmup_start_step: int = 5000
+    ctx_shrinkage_warmup_steps: int = 5000
     lambda_adv: float = 0.5
     lambda_lpips: float = 0.1
     mse_weight: float = 0.1
+    # v0.10.0 flow text-conditioning shape.
+    # ``t_txt`` is the per-sample text token length (matches design §5.7).
+    # ``null_prompt`` is the string encoded into the cached CFG null context.
+    t_txt: int = 32
+    null_prompt: str = ""
     # v0.10.0: auxiliary context reconstruction loss weight (stop-grad MSE vs z_tokens).
     # Applied only during VAE training. Default 0.01 per plan §4.1 / DP-1 decision.
     lambda_ctx_aux: float = 0.01
@@ -584,6 +606,25 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
             DeprecationWarning,
             stacklevel=2,
         )
+
+    # v0.10.0: rename ``kl_beta`` -> ``kl_z_weight`` and
+    # ``kl_warmup_steps`` -> ``kl_z_warmup_steps``. The legacy keys still
+    # load but emit a DeprecationWarning. When both are present, the new
+    # form wins (loud warning) so YAML migrations are forgiving.
+    _legacy_to_new = {
+        "kl_beta": "kl_z_weight",
+        "kl_warmup_steps": "kl_z_warmup_steps",
+    }
+    for legacy_key, new_key in _legacy_to_new.items():
+        if legacy_key in step_dict:
+            warnings.warn(
+                f"'{legacy_key}' is deprecated; use '{new_key}' instead "
+                "(v0.10.0 config schema). The legacy key still loads.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if new_key not in step_dict:
+                step_dict = {**step_dict, new_key: step_dict[legacy_key]}
     # Parse transition criteria
     transition_dict = step_dict.get("transition_on", {})
     transition = TransitionCriteria(
@@ -665,6 +706,13 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         initial_clipping_norm=step_dict.get("initial_clipping_norm", 1.0),
         kl_beta=step_dict.get("kl_beta", 0.0001),
         kl_warmup_steps=step_dict.get("kl_warmup_steps", 5000),
+        kl_z_weight=step_dict.get("kl_z_weight", 0.5),
+        kl_z_warmup_steps=step_dict.get("kl_z_warmup_steps", 10000),
+        ctx_shrinkage_weight=step_dict.get("ctx_shrinkage_weight", 0.001),
+        ctx_shrinkage_warmup_start_step=step_dict.get("ctx_shrinkage_warmup_start_step", 5000),
+        ctx_shrinkage_warmup_steps=step_dict.get("ctx_shrinkage_warmup_steps", 5000),
+        t_txt=step_dict.get("t_txt", 32),
+        null_prompt=step_dict.get("null_prompt", ""),
         kl_free_bits=step_dict.get("kl_free_bits", 0.0),
         lambda_adv=step_dict.get("lambda_adv", 0.5),
         lambda_lpips=step_dict.get("lambda_lpips", 0.1),
