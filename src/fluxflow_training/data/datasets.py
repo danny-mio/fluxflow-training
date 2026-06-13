@@ -43,6 +43,7 @@ class TextImageDataset(Dataset):
         transform: Optional[Callable] = None,
         generate_mode: bool = False,
         fixed_prompt_prefix: Optional[str] = None,
+        max_text_length: int = 32,
     ):
         """
         Args:
@@ -52,11 +53,15 @@ class TextImageDataset(Dataset):
             transform: Optional image transform (applied during loading)
             generate_mode: If True, load .txt files from data_path instead
             fixed_prompt_prefix: Optional text to prepend to all prompts (e.g. "style anime")
+            max_text_length: Token sequence length used for padding/truncation.
+                v0.10.0 default is 32 (matches the flow processor's T_txt).
+                Earlier code hardcoded 128.
         """
         self.data_path = data_path
         self.transform = transform
         self.generate_mode = generate_mode
         self.fixed_prompt_prefix = fixed_prompt_prefix
+        self.max_text_length = max_text_length
 
         # Initialize tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -125,7 +130,7 @@ class TextImageDataset(Dataset):
         caption = self.captions[idx]
         encoding = self.tokenizer(
             caption,
-            max_length=128,
+            max_length=self.max_text_length,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
@@ -160,6 +165,7 @@ class StreamingWebDataset(IterableDataset):
         dataset_size: Optional[int] = None,
         samples_per_shard: int = 10000,
         fixed_prompt_prefix: Optional[str] = None,
+        max_text_length: int = 32,
     ):
         """
         Args:
@@ -176,8 +182,11 @@ class StreamingWebDataset(IterableDataset):
             dataset_size: Total number of samples (if known). If None, estimates from shard count.
             samples_per_shard: Estimated samples per shard for size estimation (default 10000)
             fixed_prompt_prefix: Optional text to prepend to all prompts (e.g. "style anime")
+            max_text_length: Token sequence length used for padding/truncation. v0.10.0
+                default is 32 (matches the flow processor's T_txt).
         """
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.max_text_length = max_text_length
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
@@ -291,7 +300,7 @@ class StreamingWebDataset(IterableDataset):
 
                         encoding = self.tokenizer(
                             prompt,
-                            max_length=128,
+                            max_length=self.max_text_length,
                             padding="max_length",
                             truncation=True,
                             return_tensors="pt",
@@ -360,6 +369,7 @@ class NoiseDataset(Dataset):
         noise_std: float = 1.0,
         tokenizer_name: str = "distilbert-base-uncased",
         transform: Optional[Callable] = None,
+        max_text_length: int = 32,
     ):
         """
         Args:
@@ -368,6 +378,8 @@ class NoiseDataset(Dataset):
             noise_std: Standard deviation for Gaussian noise
             tokenizer_name: HuggingFace tokenizer for empty captions
             transform: Optional image transform (applied to PIL image)
+            max_text_length: Token sequence length used for padding the empty
+                caption. v0.10.0 default is 32.
         """
         self.dimensions = dimensions or [512, 512]
         self.height, self.width = self.dimensions
@@ -375,6 +387,7 @@ class NoiseDataset(Dataset):
         self.num_samples = num_samples
         self.noise_std = noise_std
         self.transform = transform
+        self.max_text_length = max_text_length
 
         # Initialize tokenizer for empty captions
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -383,7 +396,11 @@ class NoiseDataset(Dataset):
 
         # Pre-tokenize empty caption
         encoding = self.tokenizer(
-            "", max_length=128, padding="max_length", truncation=True, return_tensors="pt"
+            "",
+            max_length=self.max_text_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
         )
         self.empty_caption_tokens = encoding["input_ids"].squeeze(0)
 
