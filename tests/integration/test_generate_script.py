@@ -151,14 +151,17 @@ class TestGenerateScriptGeneration:
         input_ids = tokens["input_ids"].to(device)
         attention_mask = tokens["attention_mask"].to(device)
 
-        # Encode text
+        # Encode text. v0.10.0 BertTextEncoder returns (text_seq, text_mask).
         with torch.no_grad():
-            text_embeddings = small_text_encoder(input_ids, attention_mask=attention_mask)
+            text_seq, text_mask = small_text_encoder(input_ids, attention_mask=attention_mask)
 
-        # Check output shape - BertTextEncoder returns pooled embeddings
-        assert text_embeddings.ndim == 2  # [batch, embed_dim]
-        assert text_embeddings.shape[0] == 1  # batch size
-        assert text_embeddings.shape[1] == 64  # embed_dim
+        # Check per-token shape: [batch, seq_len, embed_dim].
+        assert text_seq.ndim == 3
+        assert text_seq.shape[0] == 1  # batch size
+        assert text_seq.shape[2] == 64  # embed_dim
+        # Mask is [batch, seq_len] bool.
+        assert text_mask.ndim == 2
+        assert text_mask.dtype == torch.bool
 
     def test_vae_encode_decode(self, small_pipeline):
         """Test VAE can encode and decode images."""

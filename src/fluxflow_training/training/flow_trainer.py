@@ -14,7 +14,42 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
 from .schedulers import sample_t
 
+# v0.10.0: dispatcher to detect per-token-text flow processors. Lets the
+# trainer feed (text_seq, text_mask) to the new flow signature while staying
+# backward-compatible with legacy v060/v070 processors that take pooled text.
+try:
+    from fluxflow.models.pipeline import (  # type: ignore[attr-defined]
+        _flow_processor_takes_pertoken_text,
+        _masked_mean_pool,
+    )
+except ImportError:  # pragma: no cover - fluxflow-core too old
+    _flow_processor_takes_pertoken_text = None  # type: ignore[assignment]
+    _masked_mean_pool = None  # type: ignore[assignment]
+
 logger = get_logger(__name__)
+
+
+def _encode_text_to_seq_mask(text_encoder, input_ids, attention_mask):
+    """Call the text encoder and normalize its return to ``(text_seq, text_mask)``.
+
+    v0.10.0+ ``BertTextEncoder.forward`` returns a tuple. Older test doubles
+    may still return a single tensor (pooled embedding) — in that case we
+    fabricate an all-True mask so downstream code can stay uniform.
+    """
+    out = text_encoder(input_ids, attention_mask=attention_mask)
+    if isinstance(out, tuple):
+        text_seq, text_mask = out
+    else:
+        text_seq = out
+        if attention_mask is not None:
+            text_mask = attention_mask.bool()
+        else:
+            text_mask = torch.ones(
+                text_seq.shape[:2] if text_seq.dim() >= 2 else (text_seq.size(0), 1),
+                dtype=torch.bool,
+                device=text_seq.device,
+            )
+    return text_seq, text_mask
 
 
 def check_for_nan(tensor, name, logger_inst):
@@ -79,6 +114,7 @@ class FlowTrainer:
         lambda_align: float = 0.0,
         cfg_dropout_prob: float = 0.0,
         ctx_loss_weight: float = 1.0,
+        null_prompt: str = "",
         accelerator=None,
     ):
         """
@@ -124,6 +160,8 @@ class FlowTrainer:
         self.lambda_align = lambda_align
         self.cfg_dropout_prob = cfg_dropout_prob
         self.ctx_loss_weight = ctx_loss_weight
+        # v0.10.0: text used to build the cached CFG null pair (empty by default).
+        self.null_prompt = null_prompt
         self.accelerator = accelerator
 
         # Setup EMA for flow processor and text encoder
@@ -208,9 +246,11 @@ class FlowTrainer:
             for opt in self.text_encoder_extra_optimizers.values():
                 opt.zero_grad(set_to_none=True)
 
-        # Encode text
-        text_embeddings = self.text_encoder(input_ids, attention_mask=attention_mask)
-        if check_for_nan(text_embeddings, "text_embeddings", logger):
+        # Encode text. v0.10.0 BertTextEncoder returns (text_seq, text_mask);
+        # older mock encoders may return a single tensor — _encode_text_to_seq_mask
+        # normalizes both cases.
+        text_seq, text_mask = _encode_text_to_seq_mask(self.text_encoder, input_ids, attention_mask)
+        if check_for_nan(text_seq, "text_seq", logger):
             logger.error("NaN detected in text embeddings - skipping batch")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}
 
@@ -236,23 +276,22 @@ class FlowTrainer:
         device = img_seq.device
         t = sample_t(img_seq.size(0), device, self.start_step, self.num_train_timesteps)
 
-        # Apply progressive classifier-free guidance dropout
-        # Higher CFG dropout at high timesteps (more noisy images need more guidance)
+        # Apply classifier-free guidance dropout via empty-prompt substitution
+        # (v0.10.0 redesign §5). The cached (null_seq, null_mask) is built on
+        # first use from the empty prompt — see build_cfg_null_pair. Per-sample
+        # substitution preserves the encoded empty prompt as a real, finite null
+        # context (rather than zeros, which would NaN-out softmax under per-token
+        # attention masks).
         if self.cfg_dropout_prob > 0.0:
-            from .cfg_utils import apply_cfg_dropout
+            from .cfg_utils import apply_cfg_null_substitution
 
-            # Progressive CFG: scale dropout probability based on timestep
-            # Higher timesteps (more noise) benefit from more guidance
-            t_normalized = t.float() / self.num_train_timesteps  # [0, 1]
-            progressive_p_uncond = self.cfg_dropout_prob * (
-                0.5 + 0.5 * t_normalized
-            )  # Scale from 0.5x to 1.5x
-            progressive_p_uncond = torch.clamp(
-                progressive_p_uncond, 0.0, min(0.5, self.cfg_dropout_prob * 2.0)
-            )
-
-            text_embeddings = apply_cfg_dropout(
-                text_embeddings, p_uncond=progressive_p_uncond.mean().item()
+            text_seq, text_mask = apply_cfg_null_substitution(
+                text_seq,
+                text_mask,
+                text_encoder=self.text_encoder,
+                p_uncond=self.cfg_dropout_prob,
+                null_prompt=getattr(self, "null_prompt", ""),
+                cache_attr_name="_cfg_null_pair",
             )
 
         # Monitor timestep distribution for training progress (log every 500 steps)
@@ -284,7 +323,25 @@ class FlowTrainer:
         # Predict (flow processor expects normalized timesteps in [0, 1]).
         denom = float(max(1, (self.num_train_timesteps - 1) - self.start_step))
         t_model = ((t.float() - float(self.start_step)) / denom).clamp(0.0, 1.0)
-        pred = self.flow_processor(full_input, text_embeddings, t_model)
+        # v0.10.0 flow processors accept (text_seq, text_mask); legacy v060/v070
+        # processors take pooled text_embeddings. Detect via forward signature.
+        per_token_dispatch = (
+            _flow_processor_takes_pertoken_text is not None
+            and _flow_processor_takes_pertoken_text(self.flow_processor)
+        )
+        if per_token_dispatch and text_seq.dim() == 3:
+            pred = self.flow_processor(full_input, text_seq, text_mask, t_model)
+        else:
+            # Legacy path or already-pooled encoder output (2D). Pool only when
+            # the encoder gave us per-token text.
+            if text_seq.dim() == 3:
+                if _masked_mean_pool is not None:
+                    text_embeddings = _masked_mean_pool(text_seq, text_mask)
+                else:
+                    text_embeddings = text_seq.mean(dim=1)
+            else:
+                text_embeddings = text_seq
+            pred = self.flow_processor(full_input, text_embeddings, t_model)
 
         # Extract predicted sequence (exclude HW vector)
         pred_seq = pred[:, : img_seq.size(1), :]
@@ -338,14 +395,18 @@ class FlowTrainer:
         if self.lambda_align > 0.0:
             img_features = pred_seq.mean(dim=1)  # [B, T, D] -> [B, D]
 
-            # Pool text embeddings to match image features shape
-            if text_embeddings.dim() == 3:
-                text_features_pooled = text_embeddings.mean(dim=1)  # [B, seq_len, D] -> [B, D]
-            elif text_embeddings.dim() == 2:
-                text_features_pooled = text_embeddings  # Already [B, D]
+            # Pool text_seq to match image features shape. Prefer masked-mean
+            # pooling so padding tokens don't dilute the alignment signal.
+            if text_seq.dim() == 3:
+                if _masked_mean_pool is not None and text_mask.dim() == 2:
+                    text_features_pooled = _masked_mean_pool(text_seq, text_mask)
+                else:
+                    text_features_pooled = text_seq.mean(dim=1)
+            elif text_seq.dim() == 2:
+                text_features_pooled = text_seq  # Already [B, D]
             else:
                 logger.warning(
-                    f"Unexpected text_embeddings shape: {text_embeddings.shape}, skipping alignment loss"
+                    f"Unexpected text_seq shape: {text_seq.shape}, skipping alignment loss"
                 )
                 align_loss = torch.tensor(0.0, device=pred_seq.device)
                 text_features_pooled = None

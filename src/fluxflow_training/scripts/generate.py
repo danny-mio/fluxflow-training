@@ -93,9 +93,16 @@ def generate(args):
         for i, (file_names, input_ids) in enumerate(dataloader):
             input_ids = input_ids.to(device)
             attention_mask = (input_ids != tokenizer.pad_token_id).long().to(device)
-            text_embeddings = text_encoder(input_ids, attention_mask=attention_mask)
+            # v0.10.0 BertTextEncoder returns (text_seq, text_mask); older
+            # encoders may still return a single pooled tensor.
+            te_out = text_encoder(input_ids, attention_mask=attention_mask)
+            if isinstance(te_out, tuple):
+                text_seq, text_mask = te_out
+            else:
+                text_seq = te_out
+                text_mask = attention_mask.bool()
 
-            B = text_embeddings.size(0)
+            B = text_seq.size(0)
             size = args.img_size
 
             # Start from N(0,1) directly in latent space (matches training distribution at t=999)
@@ -119,7 +126,8 @@ def generate(args):
 
                 decoded_images = generate_with_cfg(
                     diffuser=diffuser,
-                    text_embeddings=text_embeddings,
+                    text_seq=text_seq,
+                    text_mask=text_mask,
                     guidance_scale=args.guidance_scale,
                     img_size=size,
                     num_steps=args.ddim_steps,
@@ -127,10 +135,12 @@ def generate(args):
                     device=device,
                 )
             else:
-                # Standard generation (no CFG)
+                # Standard generation (no CFG). generate_latent_images takes
+                # per-token text (it dispatches to pooled internally for legacy).
                 denoised_latent = generate_latent_images(
                     batch_z=noised_latent,
-                    text_embeddings=text_embeddings,
+                    text_seq=text_seq,
+                    text_mask=text_mask,
                     diffuser=diffuser,
                     steps=args.ddim_steps,
                     prediction_type="v_prediction",

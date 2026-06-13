@@ -81,7 +81,10 @@ class TestGenerationPipelineIntegration:
         input_ids = torch.randint(0, 30522, (1, 16))
 
         with torch.no_grad():
-            text_embeddings = text_encoder(input_ids)
+            # v0.10.0 BertTextEncoder returns (text_seq, text_mask). Pool to
+            # the [B, E] shape this legacy FluxFlowProcessor expects.
+            text_seq, text_mask = text_encoder(input_ids)
+            text_embeddings = text_seq.mean(dim=1)
 
         assert text_embeddings.shape == (1, 256)
 
@@ -123,7 +126,8 @@ class TestGenerationPipelineIntegration:
         input_ids = torch.randint(0, 30522, (batch_size, 16))
 
         with torch.no_grad():
-            text_embeddings = text_encoder(input_ids)
+            text_seq, _ = text_encoder(input_ids)
+            text_embeddings = text_seq.mean(dim=1)  # pool to [B, E] for legacy flow
 
         # Create latent batch
         h_lat, w_lat = 8, 8
@@ -155,8 +159,10 @@ class TestGenerationPipelineIntegration:
         input_ids_2 = torch.randint(100, 30522, (1, 16))
 
         with torch.no_grad():
-            text_emb_1 = text_encoder(input_ids_1)
-            text_emb_2 = text_encoder(input_ids_2)
+            text_seq_1, _ = text_encoder(input_ids_1)
+            text_seq_2, _ = text_encoder(input_ids_2)
+            text_emb_1 = text_seq_1.mean(dim=1)  # pool to [B, E] for legacy flow
+            text_emb_2 = text_seq_2.mean(dim=1)
 
         # Same initial latent
         torch.manual_seed(42)
