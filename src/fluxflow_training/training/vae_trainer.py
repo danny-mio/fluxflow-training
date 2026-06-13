@@ -18,7 +18,15 @@ from fluxflow.utils.mps import mps_safe_pool2d
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
-from .losses import d_hinge_loss, g_hinge_loss, kl_standard_normal, r1_penalty
+from .losses import (
+    compute_ctx_shrinkage,
+    cosine_warmup_weight,
+    d_hinge_loss,
+    delayed_cosine_warmup_weight,
+    g_hinge_loss,
+    kl_standard_normal,
+    r1_penalty,
+)
 from .schedulers import cosine_anneal_beta
 from .utils import EMA, FloatBuffer
 
@@ -165,6 +173,18 @@ class VAETrainer:
         # v0.10.0: auxiliary context reconstruction loss weight (plan §4.1 / DP-1).
         lambda_ctx_aux: float = 0.01,
         train_ctx_aux: bool = True,
+        # v0.10.0: ctx-features L2 shrinkage (design §5.5). Active only when
+        # ``ctx_shrinkage_weight > 0`` AND the underlying compressor exposes the
+        # ``ctx_zinject_norm`` submodule (FluxCompressor_v100). The hook captures
+        # the normalized pre-attention ctx tensor and feeds it to compute_ctx_shrinkage.
+        ctx_shrinkage_weight: float = 0.0,
+        ctx_shrinkage_warmup_start_step: int = 5000,
+        ctx_shrinkage_warmup_steps: int = 5000,
+        # v0.10.0: KL_z asymptotic weight and cosine warmup length. Default 0.0
+        # so legacy callers using kl_beta / kl_warmup_steps stay on the old path.
+        # When > 0 the trainer uses the wide-range schedule per design §5.5.
+        kl_z_weight: float = 0.0,
+        kl_z_warmup_steps: int = 10000,
         lambda_lpips: float = 0.1,
         instance_noise_std: float = 0.01,
         instance_noise_decay: float = 0.9999,
@@ -237,6 +257,16 @@ class VAETrainer:
         self.kl_beta = kl_beta
         self.kl_warmup_steps = kl_warmup_steps
         self.kl_free_bits = kl_free_bits
+        # v0.10.0 KL_z schedule (used when kl_z_weight > 0; else legacy kl_beta path)
+        self.kl_z_weight = kl_z_weight
+        self.kl_z_warmup_steps = kl_z_warmup_steps
+        # v0.10.0 ctx shrinkage schedule
+        self.ctx_shrinkage_weight = ctx_shrinkage_weight
+        self.ctx_shrinkage_warmup_start_step = ctx_shrinkage_warmup_start_step
+        self.ctx_shrinkage_warmup_steps = ctx_shrinkage_warmup_steps
+        # Hook state: last captured ctx_features (post-norm, pre-attention).
+        self._ctx_features_cache: Optional[torch.Tensor] = None
+        self._ctx_hook_handle = None
 
         # GAN settings
         self.use_gan = use_gan
@@ -378,6 +408,42 @@ class VAETrainer:
         )
 
         self._prepare_context_components()
+
+        # Install forward hook on ctx_zinject_norm to capture the normalized
+        # ctx features (the input to compute_ctx_shrinkage) without forcing a
+        # signature change on the compressor. Only the v0.10.0 compressor has
+        # this submodule, so the hook is installed conditionally.
+        self._install_ctx_shrinkage_hook()
+
+    def _install_ctx_shrinkage_hook(self) -> None:
+        """Install a forward hook capturing the ctx_zinject_norm output.
+
+        The hook stores the tensor on ``self._ctx_features_cache`` each forward
+        pass. Subsequent ``_train_generator`` reads and clears the cache so the
+        shrinkage term operates on the most recent ctx features. No-op when the
+        compressor doesn't expose ``ctx_zinject_norm``.
+        """
+        if self.ctx_shrinkage_weight <= 0:
+            return
+        unwrapped = self._get_unwrapped_model(self.compressor)
+        ctx_norm = getattr(unwrapped, "ctx_zinject_norm", None)
+        if ctx_norm is None:
+            logger.warning(
+                "compressor has no 'ctx_zinject_norm' submodule; ctx_shrinkage "
+                "loss will be inactive even though ctx_shrinkage_weight > 0."
+            )
+            return
+
+        def _hook(_module, _inputs, output):
+            self._ctx_features_cache = output
+
+        self._ctx_hook_handle = ctx_norm.register_forward_hook(_hook)
+
+    def remove_ctx_shrinkage_hook(self) -> None:
+        """Detach the ctx shrinkage forward hook if installed."""
+        if self._ctx_hook_handle is not None:
+            self._ctx_hook_handle.remove()
+            self._ctx_hook_handle = None
 
     def save_context_predictor(self, checkpoint_path: str):
         """Save context predictor state for persistence."""
@@ -760,7 +826,13 @@ class VAETrainer:
         losses["vae"] = gen_losses["vae"]  # recon_loss
         losses["recon"] = gen_losses["recon"]  # same as vae
         losses["kl"] = gen_losses["kl"]
-        losses["kl_beta"] = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
+        # Report whichever schedule is active so dashboards see the live coefficient.
+        if self.kl_z_weight > 0:
+            losses["kl_beta"] = cosine_warmup_weight(
+                global_step, self.kl_z_warmup_steps, self.kl_z_weight
+            )
+        else:
+            losses["kl_beta"] = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
 
         if self.use_gan:
             losses["generator"] = gen_losses["generator"]
@@ -1083,9 +1155,15 @@ class VAETrainer:
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
 
         # KL divergence with beta annealing (z branch only; context branch is deterministic).
+        # v0.10.0 (design §5.5): when kl_z_weight > 0 use the wide-logvar cosine
+        # warmup over kl_z_warmup_steps (default 10000 -> 0.5). Otherwise stay on
+        # the legacy kl_beta / kl_warmup_steps path for v060 / v070 callers.
         beta = 0.0
         if self.train_kl:
-            beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
+            if self.kl_z_weight > 0:
+                beta = cosine_warmup_weight(global_step, self.kl_z_warmup_steps, self.kl_z_weight)
+            else:
+                beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
             kl = kl_standard_normal(
                 mu,
                 logvar,
@@ -1265,6 +1343,27 @@ class VAETrainer:
         if self.train_ctx_aux:
             total_loss = total_loss + self.lambda_ctx_aux * ctx_aux_loss
 
+        # v0.10.0: ctx-features L2 shrinkage (design §5.5). The forward hook on
+        # ctx_zinject_norm populates _ctx_features_cache; if no v0.10.0 compressor
+        # is in play or the weight is 0 we just contribute zero.
+        ctx_shrinkage_alpha = delayed_cosine_warmup_weight(
+            global_step,
+            self.ctx_shrinkage_warmup_start_step,
+            self.ctx_shrinkage_warmup_steps,
+            self.ctx_shrinkage_weight,
+        )
+        if self._ctx_features_cache is not None and ctx_shrinkage_alpha > 0:
+            ctx_shrinkage_loss = compute_ctx_shrinkage(
+                self._ctx_features_cache, ctx_shrinkage_alpha
+            )
+            total_loss = total_loss + ctx_shrinkage_loss
+        else:
+            ctx_shrinkage_loss = torch.tensor(0.0, device=real_imgs.device)
+        # Clear cache so a stale tensor can't be reused in a subsequent step
+        # that skips the compressor forward (defensive — train_step always
+        # runs the compressor, but the cache lifecycle stays explicit).
+        self._ctx_features_cache = None
+
         # Add context alignment loss (Step 2)
         total_loss = total_loss + 0.1 * context_alignment_loss
 
@@ -1350,6 +1449,9 @@ class VAETrainer:
             "recon": float(recon_loss.detach().item()),
             # v0.10.0: auxiliary context reconstruction loss (plan §4.1)
             "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
+            # v0.10.0: ctx-features L2 shrinkage (design §5.5)
+            "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
+            "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
             "context_alignment": float(context_alignment_loss.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
