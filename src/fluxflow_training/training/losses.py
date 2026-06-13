@@ -127,6 +127,74 @@ def kl_standard_normal(
     return kl
 
 
+def compute_ctx_shrinkage(ctx_features: torch.Tensor, alpha: float) -> torch.Tensor:
+    """β-VAE-style shrinkage on deterministic ctx features.
+
+    Computes ``L = alpha * mean(||ctx_features||^2)``. When ``alpha <= 0``
+    the term vanishes and returns a zero scalar on the same device/dtype.
+
+    Used as a regularizer on the pre-attention context features at the
+    bottleneck (v0.10.0 redesign §5). Discourages the deterministic ctx
+    branch from carrying information that is already representable by z,
+    so SPADE residual coupling stays clean.
+
+    Args:
+        ctx_features: Deterministic context features tensor of any shape.
+        alpha: Shrinkage weight. Non-positive values disable the term.
+
+    Returns:
+        Scalar shrinkage loss on the same device/dtype as ``ctx_features``.
+    """
+    if alpha <= 0:
+        return torch.zeros((), device=ctx_features.device, dtype=ctx_features.dtype)
+    return alpha * (ctx_features**2).mean()
+
+
+def cosine_warmup_weight(step: int, warmup_steps: int, max_weight: float) -> float:
+    """Cosine warmup from 0 to ``max_weight`` over ``warmup_steps`` steps.
+
+    Identical math to :func:`schedulers.cosine_anneal_beta` but exposed in
+    ``losses`` for the v0.10.0 KL / ctx shrinkage schedules so callers can
+    import everything loss-related from one module.
+
+    Args:
+        step: Current global training step.
+        warmup_steps: Number of warmup steps. ``<= 0`` returns ``max_weight``.
+        max_weight: Asymptotic weight.
+
+    Returns:
+        Current weight in ``[0, max_weight]``.
+    """
+    import math
+
+    if warmup_steps <= 0:
+        return float(max_weight)
+    frac = min(max(step / warmup_steps, 0.0), 1.0)
+    return float(max_weight * (1 - math.cos(math.pi * frac)) / 2.0)
+
+
+def delayed_cosine_warmup_weight(
+    step: int, start_step: int, warmup_steps: int, max_weight: float
+) -> float:
+    """Cosine warmup that holds at 0 until ``start_step`` then ramps to ``max_weight``.
+
+    Used by the v0.10.0 ctx shrinkage schedule (§5.5 of the design doc): the
+    term is delayed until step 5000 then warms up over the next 5000 steps.
+
+    Args:
+        step: Current global training step.
+        start_step: Step at which warmup begins. Returns 0 for ``step < start_step``.
+        warmup_steps: Warmup length once ``start_step`` is reached.
+        max_weight: Asymptotic weight.
+
+    Returns:
+        Current weight in ``[0, max_weight]``.
+    """
+    if step < start_step:
+        return 0.0
+    return cosine_warmup_weight(step - start_step, warmup_steps, max_weight)
+
+
 def compute_mmd(
     z: torch.Tensor, z_prior: torch.Tensor, kernel: str = "rbf", sigma: float = 1.0
 ) -> torch.Tensor:
