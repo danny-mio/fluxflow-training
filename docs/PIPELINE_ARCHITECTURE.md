@@ -195,8 +195,8 @@ optimization:
       gamma: 0.5
 ```
 
-**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`
-**Supported Schedulers**: `CosineAnnealingLR`, `StepLR`, `ExponentialLR`, `ReduceLROnPlateau`
+**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`, `Adagrad`, `Adadelta`, `Lion`
+**Supported Schedulers**: `CosineAnnealingLR`, `LinearLR`, `StepLR`, `MultiStepLR`, `ExponentialLR`, `ConstantLR`, `ReduceLROnPlateau`
 
 #### Transition Criteria
 
@@ -218,7 +218,7 @@ transition_on:
   max_epochs: 50           # Safety limit (prevent infinite training)
 ```
 
-**Supported metrics**: `vae_loss`, `kl_loss`, `flow_loss`, `g_loss`, `d_loss`
+**Supported metrics**: `vae`, `vae_loss`, `recon`, `recon_loss`, `kl`, `kl_loss`, `discriminator`, `generator`, `lpips`, `flow`, `flow_loss`
 
 #### Testing/Debugging
 

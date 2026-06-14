@@ -121,25 +121,21 @@ img_size: 512  # instead of 1024
 ```yaml
 train_vae: false
 gan_training: true
-train_spade: true
 ```
 
-**5. Disable SPADE** (saves ~3-5GB):
-```yaml
-train_spade: false
-```
-
-**6. Reduce Dimensions** (saves ~5-10GB):
+**5. Reduce Dimensions** (saves ~5-10GB):
 ```yaml
 vae_dim: 64              # instead of 128
 feature_maps_dim: 64
 feature_maps_dim_disc: 8
 ```
 
-**7. Use FP16** (saves ~20-30% if GPU supports Tensor Cores):
+**6. Use FP16** (saves ~20-30% if GPU supports Tensor Cores):
 ```yaml
 use_fp16: true  # RTX 3090/4090 recommended
 ```
+
+> SPADE is always-on in v0.10.0; the `train_spade` field is deprecated and ignored by the parser, so disabling it is no longer a memory lever.
 
 ### Recent Optimizations (v0.2.1)
 
@@ -149,7 +145,7 @@ FluxFlow v0.2.1 includes critical memory optimizations:
 - CUDA cache clearing between batches
 - R1 gradient penalty fix (prevented memory leaks)
 
-**If still hitting OOM after v0.2.1**, apply strategies 1-7 above.
+**If still hitting OOM after v0.2.1**, apply strategies 1-6 above.
 
 ### Hardware Recommendations
 
@@ -204,20 +200,22 @@ training:
       - name: "vae_training"
         n_epochs: 50
         train_vae: true
-        train_spade: true
-        optimizers:
-          vae:
-            optimizer_type: "AdamW"
-            lr: 0.0001
-            weight_decay: 0.01
-        schedulers:
-          vae:
-            scheduler_type: "CosineAnnealingLR"
-            eta_min_factor: 0.1
+        optimization:
+          optimizers:
+            vae:
+              type: "AdamW"
+              lr: 0.0001
+              weight_decay: 0.01
+          schedulers:
+            vae:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 
 output:
   output_path: "outputs/vae"
 ```
+
+> SPADE is always-on in v0.10.0; the `train_spade` field is deprecated and ignored by the parser.
 
 **Run:** `fluxflow-train --config config.yaml`
 
@@ -332,28 +330,28 @@ training:
       - name: "vae_training"
         n_epochs: 50
         train_vae: true
-        train_spade: true
         gan_training: true
 
-        optimizers:
-          vae:
-            optimizer_type: "AdamW"
-            lr: 0.00001  # Same as 1e-5
-            betas: [0.9, 0.999]
-            weight_decay: 0.01
-          discriminator:
-            optimizer_type: "AdamW"
-            lr: 0.00001
-            betas: [0.0, 0.9]
-            amsgrad: true
+        optimization:
+          optimizers:
+            vae:
+              type: "AdamW"
+              lr: 0.00001  # Same as 1e-5
+              betas: [0.9, 0.999]
+              weight_decay: 0.01
+            discriminator:
+              type: "AdamW"
+              lr: 0.00001
+              betas: [0.0, 0.9]
+              amsgrad: true
 
-        schedulers:
-          vae:
-            scheduler_type: "CosineAnnealingLR"
-            eta_min_factor: 0.1
-          discriminator:
-            scheduler_type: "CosineAnnealingLR"
-            eta_min_factor: 0.1
+          schedulers:
+            vae:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
+            discriminator:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 
 output:
   output_path: "outputs/production"
@@ -810,9 +808,11 @@ training:
         train_vae: true
         gan_training: true
         lr: 1e-5
-        stop_condition:
-          loss_name: "loss_recon"
+        transition_on:
+          mode: "loss_threshold"
+          metric: "recon_loss"
           threshold: 0.01
+          max_epochs: 60         # safety upper bound
 ```
 
 **Run:**
@@ -828,50 +828,63 @@ training:
 
   pipeline:
     steps:
-      # Step 1: VAE warmup with Adam
+      # Step 1: VAE warmup with AdamW
       - name: "vae_warmup"
         n_epochs: 10
         train_vae: true
         gan_training: false
-        optim_sched_config: "configs/adam_warmup.json"
+        optimization:
+          optimizers:
+            vae:
+              type: "AdamW"
+              lr: 1e-5
+              weight_decay: 0.01
+          schedulers:
+            vae:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 
       # Step 2: GAN training with Lion
       - name: "gan_training"
         n_epochs: 30
         train_vae: true
         gan_training: true
-        train_spade: true
-        optim_sched_config: "configs/lion_gan.json"
+        optimization:
+          optimizers:
+            vae:
+              type: "Lion"
+              lr: 5e-6
+              weight_decay: 0.01
+            discriminator:
+              type: "AdamW"
+              lr: 5e-6
+              betas: [0.0, 0.9]
+              amsgrad: true
+          schedulers:
+            vae:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
+            discriminator:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 
-      # Step 3: Flow training
+      # Step 3: Flow training (freeze the VAE)
       - name: "flow_training"
         n_epochs: 100
         train_diff_full: true
-        freeze_vae: true  # Freeze VAE, train flow only
-        optim_sched_config: "configs/lion_flow.json"
-```
-
-**Optimizer config example (lion_gan.json):**
-```json
-{
-  "optimizers": {
-    "vae": {
-      "type": "Lion",
-      "lr": 5e-6,
-      "weight_decay": 0.01
-    },
-    "discriminator": {
-      "type": "AdamW",
-      "lr": 5e-6,
-      "betas": [0.0, 0.9],
-      "amsgrad": true
-    }
-  },
-  "schedulers": {
-    "vae": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1},
-    "discriminator": {"type": "CosineAnnealingLR", "eta_min_factor": 0.1}
-  }
-}
+        freeze:
+          - compressor
+          - expander
+        optimization:
+          optimizers:
+            flow:
+              type: "Lion"
+              lr: 5e-7
+              weight_decay: 0.01
+          schedulers:
+            flow:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 ```
 
 ### Pipeline-Specific Parameters
@@ -880,13 +893,17 @@ training:
 |-----------|------|-------------|
 | `steps[].name` | str | Unique step identifier (used in logs, checkpoints) |
 | `steps[].n_epochs` | int | Epochs for this step only |
-| `steps[].max_steps` | int | Optional: max batches (for testing) |
-| `steps[].freeze_vae` | bool | Freeze VAE encoder/decoder |
-| `steps[].freeze_flow` | bool | Freeze flow model |
-| `steps[].freeze_text_encoder` | bool | Freeze text encoder |
-| `steps[].optim_sched_config` | str | Path to optimizer/scheduler config JSON |
-| `steps[].stop_condition.loss_name` | str | Loss to monitor (e.g., "loss_recon", "loss_flow") |
-| `steps[].stop_condition.threshold` | float | Exit step when loss < threshold |
+| `steps[].max_steps` | int | Optional: max batches per epoch (for testing) |
+| `steps[].freeze` | list[str] | Components to freeze (e.g., `[compressor, expander]` to freeze VAE, `[flow_processor]` to freeze flow, `[text_encoder_backbone, text_encoder_projection]` to freeze text encoder) |
+| `steps[].unfreeze` | list[str] | Components to explicitly unfreeze (overrides `freeze`) |
+| `steps[].transition_on.mode` | str | `epoch` (default) or `loss_threshold` |
+| `steps[].transition_on.metric` | str | Metric to monitor when `mode: loss_threshold` (e.g., `recon_loss`, `vae_loss`, `flow_loss`) |
+| `steps[].transition_on.threshold` | float | Exit step when metric < threshold |
+| `steps[].transition_on.max_epochs` | int | Safety upper bound for `loss_threshold` mode |
+
+Per-step optimizers are configured via the inline `optimization:` block (see Example 2 above); external JSON optimizer configs are not part of the v0.10.0 schema.
+
+Valid `freeze` / `unfreeze` components: `compressor`, `expander`, `flow_processor`, `flow`, `text_encoder`, `text_encoder_backbone`, `text_encoder_projection`, `discriminator`, `D_img`, `context_branch`.
 
 ### Pipeline Features
 
@@ -900,27 +917,25 @@ training:
 - Example: Train VAE in step 1, freeze it in step 2 for flow training
 - Gradients automatically disabled for frozen models
 
-#### ✅ Loss-Threshold Transitions
-- Automatically exit step when loss reaches target
+#### Loss-Threshold Transitions
+- Automatically exit step when monitored metric drops below `threshold`
 - Useful for adaptive training (exit VAE warmup when reconstruction is good enough)
-- Example: `stop_condition: {loss_name: "loss_recon", threshold: 0.01}`
+- Example: `transition_on: {mode: "loss_threshold", metric: "recon_loss", threshold: 0.01, max_epochs: 50}`
 
 #### ✅ Inline Optimizer/Scheduler Configs
 - Different optimizers per step (e.g., Adam warmup → Lion training)
 - Different schedulers per step
 - Full control over per-model hyperparameters
 
-#### ✅ GAN-Only Training Mode
-- `train_reconstruction: false` - Train encoder/decoder with adversarial loss only
+#### GAN-Only Training Mode
+- Set `train_vae: false` together with `gan_training: true` so the encoder/decoder learns from adversarial loss only
 - No pixel-level reconstruction loss computed
-- Use case: SPADE conditioning without reconstruction overhead
+- Use case: spatial conditioning without reconstruction overhead (saves ~8-12GB VRAM)
 - Example:
   ```yaml
   - name: "gan_only"
-    train_vae: true
+    train_vae: false
     gan_training: true
-    train_spade: true
-    train_reconstruction: false  # GAN-only mode
   ```
 
 #### ✅ Full Resume Support
@@ -954,35 +969,64 @@ training:
         n_epochs: 10
         train_vae: true
         gan_training: false
-        train_spade: false
         lr: 2e-5
-        kl_beta: 0.0001
-        stop_condition:
-          loss_name: "loss_recon"
-          threshold: 0.02  # Exit when reconstruction is good
+        kl_z_weight: 0.5
+        kl_z_warmup_steps: 10000
+        transition_on:
+          mode: "loss_threshold"
+          metric: "recon_loss"
+          threshold: 0.02       # Exit when reconstruction is good
+          max_epochs: 20        # safety upper bound
 
-      # Step 2: Add SPADE and GAN
-      - name: "vae_spade_gan"
+      # Step 2: Add GAN (SPADE is always-on in v0.10.0)
+      - name: "vae_gan"
         n_epochs: 40
         train_vae: true
         gan_training: true
-        train_spade: true
         lr: 1e-5
         lambda_adv: 0.9
-        kl_beta: 0.001
-        optim_sched_config: "configs/lion_gan.json"
+        kl_z_weight: 0.5
+        optimization:
+          optimizers:
+            vae:
+              type: "Lion"
+              lr: 5e-6
+              weight_decay: 0.01
+            discriminator:
+              type: "AdamW"
+              lr: 5e-6
+              betas: [0.0, 0.9]
+              amsgrad: true
+          schedulers:
+            vae:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
+            discriminator:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 
       # Step 3: Flow training (freeze VAE)
       - name: "flow_training"
         n_epochs: 100
         train_diff_full: true
         train_vae: false
-        freeze_vae: true
+        freeze:
+          - compressor
+          - expander
         lr: 5e-7
         sample_captions:
           - "a photo of a cat sitting on a couch"
           - "an illustration of mountains at sunset"
-        optim_sched_config: "configs/lion_flow.json"
+        optimization:
+          optimizers:
+            flow:
+              type: "Lion"
+              lr: 5e-7
+              weight_decay: 0.01
+          schedulers:
+            flow:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 ```
 
 **Run:**
@@ -994,18 +1038,18 @@ fluxflow-train --config config.yaml
 ```
 outputs/full_pipeline/
 ├── flxflow_step_vae_warmup_final.safetensors
-├── flxflow_step_vae_spade_gan_final.safetensors
+├── flxflow_step_vae_gan_final.safetensors
 ├── flxflow_step_flow_training_final.safetensors
 ├── graph/
 │   ├── training_metrics_vae_warmup.jsonl
-│   ├── training_metrics_vae_spade_gan.jsonl
+│   ├── training_metrics_vae_gan.jsonl
 │   ├── training_metrics_flow_training.jsonl
 │   ├── training_losses_vae_warmup.png
-│   ├── training_losses_vae_spade_gan.png
+│   ├── training_losses_vae_gan.png
 │   └── training_losses_flow_training.png
 └── samples/
     ├── sample_vae_warmup_epoch_5_batch_100.png
-    ├── sample_vae_spade_gan_epoch_20_batch_500.png
+    ├── sample_vae_gan_epoch_20_batch_500.png
     └── sample_flow_training_epoch_50_batch_1000.png
 ```
 
@@ -1044,8 +1088,8 @@ outputs/full_pipeline/
 - **Check**: Run `python -m json.tool <config.json>` to validate JSON
 
 **Issue**: Models not freezing
-- **Solution**: Ensure `freeze_vae`, `freeze_flow`, or `freeze_text_encoder` is set to `true` (not `True`)
-- **Check logs**: Should see "Freezing <model_name>" in output
+- **Solution**: Use the `freeze:` list with valid component names (e.g., `freeze: [compressor, expander]` to freeze the VAE, `freeze: [flow_processor]` to freeze the flow, `freeze: [text_encoder_backbone, text_encoder_projection]` for the text encoder)
+- **Check logs**: Should see "Freezing <component>" in output
 
 ---
 
