@@ -2,7 +2,7 @@
 
 **Status**: ✅ **FULLY IMPLEMENTED** (v0.2.0+)
 
-**Implementation**: 1035 lines in `src/fluxflow_training/training/pipeline_orchestrator.py`
+**Implementation**: 1843 lines in `src/fluxflow_training/training/pipeline_orchestrator.py`
 
 ## Overview
 
@@ -234,7 +234,7 @@ max_steps: 30             # Limit batches per epoch (for quick testing)
 
 Main class coordinating multi-step training.
 
-**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py` (1035 lines)
+**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py` (1843 lines)
 
 **Key Methods**:
 - `run()` - Execute complete pipeline
@@ -661,6 +661,6 @@ See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) "Limited VRAM Strategy" for more.
 
 ---
 
-**Last Updated**: 2025-12-11
-**Version**: 0.2.1
-**Implementation**: ✅ Fully operational (1035 lines in pipeline_orchestrator.py)
+**Last Updated**: 2026-06-14
+**Version**: 0.10.0
+**Implementation**: Fully operational (1843 lines in pipeline_orchestrator.py)

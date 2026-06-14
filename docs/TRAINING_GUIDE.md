@@ -163,7 +163,7 @@ FluxFlow v0.2.1 includes critical memory optimizations:
 
 ## Overview
 
-FluxFlow uses a unified training script (`packages/training/src/fluxflow_training/scripts/train.py`) that supports:
+FluxFlow uses a unified training script (`src/fluxflow_training/scripts/train.py`) that supports:
 - **VAE Training**: Train the autoencoder (compressor + expander)
 - **Flow Model Training**: Train the diffusion model for text-to-image generation
 - **Joint Training**: Train both VAE and flow simultaneously (advanced)
@@ -1467,7 +1467,7 @@ Generated diagrams in `outputs/graph/`:
 
 **Solutions:**
 1. Check captions file format (tab-separated)
-2. Verify tokenizer: `--tokenizer_name "distilbert-base-uncased"`
+2. Keep the dataset tokenizer in sync with the text encoder. `BertTextEncoder` uses `distilbert-base-uncased`, but `TextImageDataset` defaults to `gpt2` (`src/fluxflow_training/data/datasets.py`); pass `--tokenizer_name distilbert-base-uncased` (or set it in the dataset constructor) so the token IDs match what the encoder expects.
 3. If using newer Transformers, ensure tokenizers support `__call__` (batch fallback)
 4. Train flow model longer: `--n_epochs 200`
 5. Increase text embedding: `--text_embedding_dim 1024`

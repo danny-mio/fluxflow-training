@@ -54,8 +54,11 @@ for the full cross-package walkthrough):
 2. **Conditional ctx coupling** — the VAE trainer adds a delayed cosine
    warmup of `compute_ctx_shrinkage` so the deterministic ctx branch stays
    informative without collapsing into z.
-3. **Full flow modernization** — 2D RoPE + dual FiLM downstream of
-   `FluxFlowProcessor_v100`; no extra config beyond the new keys below.
+3. **Full flow modernization** — 2D RoPE + dual FiLM downstream of the
+   v0.10.0 flow processor; no extra config beyond the new keys below.
+   See the
+   [v0.10.0 flow processor source in fluxflow-core](https://github.com/danny-mio/fluxflow-core/blob/develop/src/fluxflow/models/v100/flow.py)
+   for the model-side wiring.
 4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
    with no config change beyond the latent-dim drop.
 5. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
@@ -162,7 +165,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Full checkpoint resume from any step/epoch/batch
   - **Multi-dataset support**: Train different steps on different datasets (local/webdataset)
   - **Auto-create missing models**: Automatic model initialization when transitioning between steps
-  - 1609 lines in `pipeline_orchestrator.py`
+  - 1843 lines in `pipeline_orchestrator.py`
   - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) and [MULTI_DATASET_TRAINING.md](docs/MULTI_DATASET_TRAINING.md)
 
 - **GAN-Only Training Mode** (v0.2.0+)
@@ -423,7 +426,7 @@ vae_warmup_001_005_abc123-original.webp
 ## Package Contents
 
 - `fluxflow_training.training` - Training logic and trainers
-  - `pipeline_orchestrator.py` - Multi-step pipeline execution (1609 lines)
+  - `pipeline_orchestrator.py` - Multi-step pipeline execution (1843 lines)
   - `pipeline_config.py` - Pipeline configuration and validation
   - `vae_trainer.py` - VAE/GAN training logic
   - `flow_trainer.py` - Flow model training
@@ -504,7 +507,7 @@ training:
   - Checkpoint format
   - Sample naming conventions
   - Troubleshooting
-  - **Implementation**: `pipeline_orchestrator.py` (1609 lines)
+  - **Implementation**: `pipeline_orchestrator.py` (1843 lines)
 
 - **[TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md)** - Complete training guide
   - Detailed configuration options

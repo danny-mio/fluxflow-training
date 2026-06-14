@@ -166,7 +166,7 @@ datasets:
 
   remote_large:
     type: webdataset
-    webdataset_url: "https://huggingface.co/datasets/my-dataset/data-{000..999}.tar"
+    webdataset_url: "hf://datasets/my-org/my-dataset/data-{000..999}.tar"
     webdataset_token: ${HF_TOKEN}
     webdataset_size: 1000000
     batch_size: 8
