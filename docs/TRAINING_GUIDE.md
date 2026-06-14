@@ -539,7 +539,7 @@ FluxFlow supports advanced per-model optimizer and scheduler configuration via J
 
 FluxFlow supports per-model optimizer and scheduler configuration via the inline `optimization:` block on each pipeline step.
 
-**Supported Optimizers:** AdamW, Adam, SGD, RMSprop, Adagrad, Adadelta, Lion
+**Supported Optimizers:** AdamW, Adam, SGD, RMSprop, Lion
 
 **Supported Schedulers:** CosineAnnealingLR, LinearLR, StepLR, MultiStepLR, ExponentialLR, ConstantLR, ReduceLROnPlateau
 

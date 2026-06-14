@@ -496,11 +496,13 @@ fluxflow-train \
 
 #### Training Modes
 
+> **Deprecation note (v0.10.0):** `--train_spade` is deprecated and ignored. SPADE conditioning is always-on in v0.10.0 — the flag stays parseable for backward compatibility but has no effect.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--train_vae` | flag | False | Train VAE (compressor + expander) |
 | `--gan_training` | flag | False | Enable GAN/discriminator training for VAE |
-| `--train_spade` | flag | False | Use SPADE spatial conditioning (better quality) |
+| `--train_spade` | flag | False | (deprecated, ignored — SPADE is always-on in v0.10.0) |
 | `--train_diff` | flag | False | Train flow model with partial schedule |
 | `--train_diff_full` | flag | False | Train flow model with full schedule (recommended) |
 
@@ -508,21 +510,21 @@ fluxflow-train \
 
 | Mode | Command | Use Case |
 |------|---------|----------|
-| VAE Only (with GAN) | `--train_vae --gan_training --train_spade` | Stage 1: Train autoencoder |
+| VAE Only (with GAN) | `--train_vae --gan_training` | Stage 1: Train autoencoder (SPADE always-on in v0.10.0; `--train_spade` deprecated) |
 | VAE Only (no GAN) | `--train_vae` | Fast VAE training, lower quality |
 | Flow Only | `--train_diff_full` | Stage 2: Train diffusion model |
-| Joint Training | `--train_vae --gan_training --train_diff_full --train_spade` | Advanced: Train both simultaneously |
+| Joint Training | `--train_vae --gan_training --train_diff_full` | Advanced: Train both simultaneously (SPADE always-on in v0.10.0; `--train_spade` deprecated) |
 
 **Example:**
 ```bash
-# Stage 1: Train VAE with SPADE and GAN
---train_vae --train_spade
+# Stage 1: Train VAE (SPADE always-on in v0.10.0; --train_spade is deprecated and ignored)
+--train_vae
 
 # Stage 2: Train flow model only
 --train_diff_full
 
 # Advanced: Joint training
---train_vae --train_diff_full --train_spade
+--train_vae --train_diff_full
 ```
 
 #### KL Divergence
@@ -584,7 +586,6 @@ fluxflow-train \
 - **VAE reconstruction samples** (`safe_vae_sample`): Generated when encoder/decoder is being trained
   - `train_vae=True`: VAE mode (reconstruction loss)
   - `gan_training=True`: GAN-only mode (adversarial loss without reconstruction)
-  - `train_spade=True`: SPADE conditioning mode
 - **Flow generation samples** (`save_sample_images`): Generated when flow model is being trained
   - `train_diff=True` or `train_diff_full=True`
 

@@ -246,8 +246,6 @@ class PipelineConfigValidator:
         "AdamW",
         "SGD",
         "RMSprop",
-        "Adagrad",
-        "Adadelta",
         "Lion",
     }
 

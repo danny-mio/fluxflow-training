@@ -2,7 +2,7 @@
 
 **Status**: ✅ **FULLY IMPLEMENTED** (v0.2.0+)
 
-**Implementation**: 1843 lines in `src/fluxflow_training/training/pipeline_orchestrator.py`
+**Implementation**: `src/fluxflow_training/training/pipeline_orchestrator.py`
 
 ## Overview
 
@@ -195,7 +195,7 @@ optimization:
       gamma: 0.5
 ```
 
-**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`, `Adagrad`, `Adadelta`, `Lion`
+**Supported Optimizers**: `AdamW`, `Adam`, `SGD`, `RMSprop`, `Lion`
 **Supported Schedulers**: `CosineAnnealingLR`, `LinearLR`, `StepLR`, `MultiStepLR`, `ExponentialLR`, `ConstantLR`, `ReduceLROnPlateau`
 
 #### Transition Criteria
@@ -234,7 +234,7 @@ max_steps: 30             # Limit batches per epoch (for quick testing)
 
 Main class coordinating multi-step training.
 
-**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py` (1843 lines)
+**Location**: `src/fluxflow_training/training/pipeline_orchestrator.py`
 
 **Key Methods**:
 - `run()` - Execute complete pipeline
@@ -661,4 +661,4 @@ See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) "Limited VRAM Strategy" for more.
 
 **Last Updated**: 2026-06-14
 **Version**: 0.10.0
-**Implementation**: Fully operational (1843 lines in pipeline_orchestrator.py)
+**Implementation**: Fully operational in `pipeline_orchestrator.py`

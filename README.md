@@ -29,7 +29,7 @@ pip install -e ".[dev]"
 
 **Models Currently In Training**: FluxFlow is actively training models following a systematic validation plan.
 
-**Progress** (as of February 2026):
+**Progress**:
 - Bezier VAE: training in progress
 - ReLU baseline VAE: pending
 - Flow models: pending VAE completion
@@ -165,7 +165,6 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Full checkpoint resume from any step/epoch/batch
   - **Multi-dataset support**: Train different steps on different datasets (local/webdataset)
   - **Auto-create missing models**: Automatic model initialization when transitioning between steps
-  - 1843 lines in `pipeline_orchestrator.py`
   - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) and [MULTI_DATASET_TRAINING.md](docs/MULTI_DATASET_TRAINING.md)
 
 - **GAN-Only Training Mode** (v0.2.0+)
@@ -426,7 +425,7 @@ vae_warmup_001_005_abc123-original.webp
 ## Package Contents
 
 - `fluxflow_training.training` - Training logic and trainers
-  - `pipeline_orchestrator.py` - Multi-step pipeline execution (1843 lines)
+  - `pipeline_orchestrator.py` - Multi-step pipeline execution
   - `pipeline_config.py` - Pipeline configuration and validation
   - `vae_trainer.py` - VAE/GAN training logic
   - `flow_trainer.py` - Flow model training
@@ -507,7 +506,7 @@ training:
   - Checkpoint format
   - Sample naming conventions
   - Troubleshooting
-  - **Implementation**: `pipeline_orchestrator.py` (1843 lines)
+  - **Implementation**: `pipeline_orchestrator.py`
 
 - **[TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md)** - Complete training guide
   - Detailed configuration options
