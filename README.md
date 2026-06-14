@@ -285,7 +285,7 @@ training:
         n_epochs: 20
         train_vae: false          # Skip reconstruction loss
         gan_training: true        # Train GAN discriminator
-        train_spade: true         # With spatial conditioning
+        # SPADE is always-on in v0.10.0 — no flag required
         use_lpips: false
 ```
 
