@@ -8,6 +8,82 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 _No unreleased changes._
 
+## [0.10.0] - 2026-06-14
+
+### Added
+- **Per-token text conditioning helpers**: `apply_cfg_null_substitution` in
+  `training/cfg_utils.py` replaces zero-vector dropout with an encoded
+  empty-prompt pair `(null_seq, null_mask)`. The pair is built once via
+  `fluxflow.utils.visualization.build_cfg_null_pair` and cached on the text
+  encoder, keeping train- and inference-time CFG distributions aligned.
+- **Loss helpers** in `training/losses.py`:
+  - `compute_ctx_shrinkage(ctx_features, alpha)` — β-VAE-style L2 pressure on
+    deterministic ctx features at the bottleneck (v0.10.0 redesign §5.5).
+  - `cosine_warmup_weight(step, warmup_steps, max_weight)` — KL_z warmup.
+  - `delayed_cosine_warmup_weight(step, start_step, warmup_steps, max_weight)`
+    — ctx-shrinkage delayed cosine warmup.
+- **VAE trainer wiring**: a forward hook on `ctx_zinject_norm` captures the
+  pre-attention ctx tensor each step; the trainer applies a delayed cosine
+  warmup of `ctx_shrinkage_weight` and adds the term to the total VAE loss.
+  KL_z uses `cosine_warmup_weight` over `kl_z_warmup_steps` toward
+  `kl_z_weight`.
+- **Flow trainer wiring**: consumes `(text_seq, text_mask)` per-token from
+  `BertTextEncoder`. CFG dropout now routes through
+  `apply_cfg_null_substitution` instead of zero-out. Polymorphic dispatch
+  keeps v060/v070 legacy pooled-vector flows working.
+- **New `PipelineStepConfig` keys** (see `config.example.yaml`):
+  - `kl_z_weight` / `kl_z_warmup_steps` (clean Gaussian latent KL).
+  - `ctx_shrinkage_weight` / `ctx_shrinkage_warmup_start_step` /
+    `ctx_shrinkage_warmup_steps`.
+  - `t_txt` (default `32` — DistilBERT max length per design §5.7).
+  - `null_prompt` (empty-prompt string cached as the CFG null context).
+  - `lambda_ctx_aux` — auxiliary stop-grad MSE on ctx vs `z_tokens` during
+    VAE training (DP-1 default `0.01`).
+  - `ctx_loss_weight` — relative weight of context-dim v-prediction loss vs
+    VAE-dim loss in FlowTrainer (DP-1 default `0.5`).
+  - `freeze_context_branch` — freeze `ctx_encoder_first_step`, `ctx_encoder_z`,
+    `ctx_proj`, `ctx_token_attn`, `ctx_final_norm` while leaving the z-path
+    trainable.
+- **Freeze-list components**: `text_encoder_projection` and
+  `text_encoder_backbone` allow targeting the DistilBERT `output_layer` and
+  `language_model` sub-components independently. `context_branch` is also a
+  valid freeze key for the new ctx encoder. The optimization validator
+  rejects co-existence of the whole `text_encoder` optimizer key with the
+  split sub-component keys.
+- **Configurable dataset `max_text_length`**: dataset-level setting (default
+  `32`) plumbed through `data/datasets.py` so tokenization matches the
+  v0.10.0 `t_txt` budget. Older configs continue to load and emit a
+  deprecation warning when they still pass `kl_beta` / `kl_warmup_steps`.
+- **Acceptance test stubs** in `tests/acceptance/test_redesign_done_criteria.py`
+  for the M8 retraining run. Marked `acceptance, gpu, slow`; skipped until a
+  trained checkpoint and held-out prompts are wired in.
+
+### Changed
+- **Flow trainer text contract**: pooled `[B, D]` text vectors are replaced
+  by `(text_seq [B, T_txt, D], text_mask [B, T_txt])`. The trainer detects
+  the active model version and dispatches to the legacy code path for v060
+  / v070 checkpoints.
+- **KL_z schedule**: KL warmup is now a cosine ramp over `kl_z_warmup_steps`
+  toward `kl_z_weight` (legacy `kl_beta` / `kl_warmup_steps` still load with
+  a deprecation warning; v0.10.0 keys win when both are present).
+- **`fluxflow` dependency bumped to `>=0.10.0`**: required for
+  `fluxflow.utils.visualization.build_cfg_null_pair` and the v0.10.0 model
+  architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).
+
+### Deprecated
+- `kl_beta` — use `kl_z_weight`.
+- `kl_warmup_steps` — use `kl_z_warmup_steps`.
+
+Both legacy keys still load via `_parse_step_config` and emit a
+`DeprecationWarning`. The new key wins when both are present.
+
+### Migration
+- Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,
+  `kl_warmup_steps` → `kl_z_warmup_steps`, and set `t_txt: 32` on flow
+  steps. See the v0.10.0 redesign migration notes in fluxflow-core
+  (`fluxflow-core/docs/MIGRATION-v0.10.0-redesign.md`) for the full
+  cross-package walkthrough.
+
 ## [0.8.1] - 2026-04-03
 
 ### Added
