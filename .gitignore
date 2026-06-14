@@ -77,3 +77,12 @@ _cache/
 .mypy_cache/
 AUDIT_RESPONSE.md
 CRITICAL_FIX.md
+
+# AI-agent scratch and intermediate planning docs
+docs/plans/
+*_SUMMARY.md
+*_FIX.md
+*_FIXES.md
+*_PROPOSAL.md
+*_VERIFICATION.md
+*_VALIDATION.md
