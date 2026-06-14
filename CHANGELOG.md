@@ -82,8 +82,8 @@ Both legacy keys still load via `_parse_step_config` and emit a
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,
   `kl_warmup_steps` → `kl_z_warmup_steps`, and set `t_txt: 32` on flow
   steps. See the v0.10.0 redesign migration notes in fluxflow-core
-  (`fluxflow-core/docs/MIGRATION-v0.10.0-redesign.md`) for the full
-  cross-package walkthrough.
+  (<https://github.com/danny-mio/fluxflow-core/blob/develop/docs/MIGRATION-v0.10.0-redesign.md>)
+  for the full cross-package walkthrough.
 
 ## [0.8.1] - 2026-04-03
 

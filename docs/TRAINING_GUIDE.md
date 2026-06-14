@@ -5,6 +5,7 @@ A comprehensive guide to configuring and running training for FluxFlow text-to-i
 ## Table of Contents
 
 - [v0.10.0 Loss Schedule](#v0100-loss-schedule)
+- [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Training Command Reference](#training-command-reference)
@@ -392,7 +393,7 @@ fluxflow-train --config config.yaml
 --data_path /data/anime --captions_file /data/captions.txt --fixed_prompt_prefix "style anime"
 
 # WebDataset streaming (default: TTI-2M)
---use_webdataset --webdataset_token hf_your_actual_token
+--use_webdataset --webdataset_token YOUR_HF_TOKEN
 
 # Custom WebDataset with specific field mappings
 --use_webdataset --webdataset_token hf_token \
@@ -401,7 +402,7 @@ fluxflow-train --config config.yaml
   --webdataset_caption_key "caption"
 
 # Legacy (still works but deprecated):
-# --use_tt2m --tt2m_token hf_your_actual_token
+# --use_tt2m --tt2m_token YOUR_HF_TOKEN
 ```
 
 **Fixed Prompt Prefix** (added to captions at training time):
@@ -1222,7 +1223,7 @@ For training on streaming datasets from HuggingFace:
 # Example 1: TTI-2M (default dataset with jpg images and "prompt" field)
 fluxflow-train \
   --use_webdataset \
-  --webdataset_token hf_your_actual_token_here \
+  --webdataset_token YOUR_HF_TOKEN \
   --webdataset_image_key jpg \
   --webdataset_caption_key prompt \
   --output_path outputs/webdataset_training \

@@ -225,12 +225,13 @@ steps:
 ## Validation
 
 The pipeline validator checks:
-- ✅ Dataset types are valid ('local' or 'webdataset')
-- ✅ Required fields are present for each type
-- ✅ `default_dataset` exists in `datasets` dict
-- ✅ Step `dataset` references exist in `datasets` dict
-- ✅ WebDataset has token and URL
-- ✅ Local dataset has image_folder and captions_file
+- Dataset types are valid (`local`, `webdataset`, or `noise`)
+- Required fields are present for each type
+- `default_dataset` exists in `datasets` dict
+- Step `dataset` references exist in `datasets` dict
+- WebDataset has token and URL
+- Local dataset has `image_folder` and `captions_file`
+- Noise dataset has positive `dimensions: [height, width]`, `num_samples`, and `noise_std`
 
 ## Example: Complete Multi-Dataset Pipeline
 
