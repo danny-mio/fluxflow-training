@@ -95,7 +95,7 @@ default null.
 
 ### Legacy alias warnings
 
-The v0.9.x keys still load and emit `DeprecationWarning`:
+The pre-v0.10.0 keys still load and emit `DeprecationWarning`:
 
 - `kl_beta` → `kl_z_weight`
 - `kl_warmup_steps` → `kl_z_warmup_steps`
