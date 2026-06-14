@@ -146,12 +146,23 @@ either the whole-encoder key or the split keys, not both.
 #### Loss Weights
 
 ```yaml
-kl_beta: 0.0001           # KL divergence weight
-kl_warmup_steps: 5000     # Steps to reach full kl_beta
+# v0.10.0 (preferred):
+kl_z_weight: 0.5          # Final KL weight on the clean Gaussian latent
+kl_z_warmup_steps: 10000  # Cosine warmup steps to reach kl_z_weight
 kl_free_bits: 0.0         # Free bits threshold (nats)
+ctx_shrinkage_weight: 0.001              # β-VAE-style L2 on ctx features
+ctx_shrinkage_warmup_start_step: 5000    # Delay before ctx shrinkage warmup
+ctx_shrinkage_warmup_steps: 5000         # Warmup length once start reached
 lambda_adv: 0.5           # GAN adversarial loss weight
 lambda_lpips: 0.1         # LPIPS perceptual loss weight
+lambda_ctx_aux: 0.01      # Aux stop-grad MSE on ctx vs z_tokens (VAE only)
+ctx_loss_weight: 0.5      # ctx-dim vs VAE-dim v-pred loss weight (FlowTrainer)
 ```
+
+The pre-v0.10.0 `kl_beta` / `kl_warmup_steps` keys still load and emit a
+`DeprecationWarning`. When both forms appear in the same step, the
+v0.10.0 form wins. See [TRAINING_GUIDE.md](TRAINING_GUIDE.md#v0100-loss-schedule)
+for the full loss schedule.
 
 #### Optimization (Per-Step)
 
