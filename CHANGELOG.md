@@ -37,10 +37,6 @@ _No unreleased changes._
     `ctx_shrinkage_warmup_steps`.
   - `t_txt` (default `32` — DistilBERT max length per design §5.7).
   - `null_prompt` (empty-prompt string cached as the CFG null context).
-  - `lambda_ctx_aux` — auxiliary stop-grad MSE on ctx vs `z_tokens` during
-    VAE training (DP-1 default `0.01`).
-  - `ctx_loss_weight` — relative weight of context-dim v-prediction loss vs
-    VAE-dim loss in FlowTrainer (DP-1 default `0.5`).
   - `freeze_context_branch` — freeze `ctx_encoder_first_step`, `ctx_encoder_z`,
     `ctx_proj`, `ctx_token_attn`, `ctx_final_norm` while leaving the z-path
     trainable.
@@ -66,6 +62,11 @@ _No unreleased changes._
 - **KL_z schedule**: KL warmup is now a cosine ramp over `kl_z_warmup_steps`
   toward `kl_z_weight` (legacy `kl_beta` / `kl_warmup_steps` still load with
   a deprecation warning; v0.10.0 keys win when both are present).
+- **`ctx_loss_weight` default**: changed from `1.0` (v0.8.1) to `0.5` per
+  the v0.10.0 DP-1 decision balancing ctx-dim and VAE-dim v-prediction
+  losses in `FlowTrainer`.
+- **`lambda_ctx_aux` default**: `0.01` (auxiliary stop-grad MSE on ctx vs
+  `z_tokens` during VAE training, per plan §4.1 DP-1).
 - **`fluxflow` dependency bumped to `>=0.10.0`**: required for
   `fluxflow.utils.visualization.build_cfg_null_pair` and the v0.10.0 model
   architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).

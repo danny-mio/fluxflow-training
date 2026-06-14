@@ -73,9 +73,12 @@ for the full cross-package walkthrough):
 | `ctx_shrinkage_warmup_steps` | `5000` | Warmup length once `start_step` is reached. |
 | `t_txt` | `32` | Per-sample text token length (matches design §5.7). |
 | `null_prompt` | `""` | String encoded into the cached CFG null context. |
-| `lambda_ctx_aux` | `0.01` | Auxiliary stop-grad MSE on ctx vs `z_tokens` (VAE only). |
-| `ctx_loss_weight` | `0.5` | Relative weight of ctx-dim v-prediction loss in FlowTrainer. |
 | `freeze_context_branch` | `false` | Freeze the ctx encoder branch while leaving z-path trainable. |
+
+The v0.8.1 keys `lambda_ctx_aux` (aux ctx vs `z_tokens` MSE during VAE
+training) and `ctx_loss_weight` (relative weight of ctx-dim vs VAE-dim
+v-prediction loss in `FlowTrainer`) get new v0.10.0 defaults: `0.01` and
+`0.5` respectively, per the DP-1 decision.
 
 Datasets accept a configurable `max_text_length` (default `32`) so
 tokenization stays aligned with `t_txt`.
