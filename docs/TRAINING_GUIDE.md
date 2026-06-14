@@ -174,7 +174,7 @@ The training process is highly configurable with parameters for data, model arch
 
 FluxFlow supports two configuration approaches:
 
-### 🎯 YAML Config Files (Recommended for Production)
+### YAML Config Files (Recommended for Production)
 
 **Use when:**
 - Running multi-step training pipelines
@@ -221,7 +221,7 @@ output:
 
 ---
 
-### 🔧 CLI Arguments (For Quick Tests Only)
+### CLI Arguments (For Quick Tests Only)
 
 **Use when:**
 - Running quick experiments
@@ -240,28 +240,21 @@ fluxflow-train \
 ```
 
 **Limitations:**
-- ❌ No multi-step pipelines
-- ❌ No per-step optimizer customization
-- ❌ No inline YAML optimizer config
-- ❌ Hard to version control
-- ❌ Complex commands become unwieldy
+- No multi-step pipelines
+- No per-step optimizer customization
+- No inline YAML optimizer config
+- Hard to version-control
+- Complex commands become unwieldy
 
 ---
 
-### 📊 Feature Comparison
+### Feature Comparison
 
-| Feature | YAML Config | CLI Args |
-|---------|-------------|----------|
-| Multi-step pipelines | ✅ | ❌ |
-| Inline optimizer config | ✅ | ❌ (requires external JSON) |
-| Per-step freezing | ✅ | ❌ |
-| Loss-based transitions | ✅ | ❌ |
-| Version control friendly | ✅ | ⚠️ (must maintain scripts) |
-| Quick experiments | ⚠️ (requires YAML file) | ✅ |
+YAML configs are the only supported path for multi-step pipelines, inline per-step optimizer/scheduler configuration, per-step freezing, and loss-based transitions. CLI args remain useful for one-off experiments but cannot express any of those, and version-controlling a long shell command is awkward in practice.
 
 **Recommendation:**
-- **Beginners / Quick Tests:** Start with CLI args (see Quick Start below)
-- **Production / Serious Training:** Use YAML config + pipeline mode (see "Pipeline Training Mode" section)
+- **Beginners / quick tests:** start with CLI args (see Quick Start below).
+- **Production / serious training:** use a YAML config in pipeline mode (see "Pipeline Training Mode" below).
 
 ---
 
@@ -269,7 +262,7 @@ fluxflow-train \
 
 Choose your path based on your needs:
 
-### Path A: CLI Quick Test (5 Minutes) ⚡
+### Path A: CLI Quick Test (5 Minutes)
 
 For quick experiments and learning, use CLI arguments:
 
@@ -300,11 +293,11 @@ fluxflow-train \
   --vae_dim 64  # Reduced for speed
 ```
 
-**⚠️ When you're ready for serious training, switch to Path B (YAML Config).**
+When you're ready for serious training, switch to Path B (YAML Config).
 
 ---
 
-### Path B: YAML Config (Production-Ready) 🚀
+### Path B: YAML Config (Production-Ready)
 
 For reproducible, production-quality training with multi-step pipelines:
 
@@ -362,7 +355,7 @@ output:
 fluxflow-train --config config.yaml
 ```
 
-**✅ Benefits:**
+**Benefits:**
 - Reproducible configs (version control friendly)
 - Multi-step pipeline support
 - Per-step optimizer customization
@@ -543,31 +536,36 @@ FluxFlow supports advanced per-model optimizer and scheduler configuration via J
 
 ### Optimizer & Scheduler Configuration
 
-FluxFlow supports per-model optimizer and scheduler configuration for fine-grained control.
+FluxFlow supports per-model optimizer and scheduler configuration via the inline `optimization:` block on each pipeline step.
 
-**Supported Optimizers:** Lion (recommended for flow), AdamW, Adam, SGD, RMSprop
+**Supported Optimizers:** AdamW, Adam, SGD, RMSprop, Adagrad, Adadelta, Lion
 
-**Supported Schedulers:** CosineAnnealingLR, LinearLR, ExponentialLR, ConstantLR, StepLR, ReduceLROnPlateau
+**Supported Schedulers:** CosineAnnealingLR, LinearLR, StepLR, MultiStepLR, ExponentialLR, ConstantLR, ReduceLROnPlateau
 
-**📚 Detailed References:**
+**Detailed References:**
 - **[OPTIMIZERS.md](OPTIMIZERS.md)** - Complete optimizer parameter reference with examples
 - **[SCHEDULERS.md](SCHEDULERS.md)** - Complete scheduler parameter reference with examples
 
 **Quick Example:**
 
 ```yaml
-optimizer_config:
-  flow_processor:
-    type: "Lion"
-    lr: 5e-7
-    betas: [0.9, 0.95]
-    weight_decay: 0.01
-
-scheduler_config:
-  flow_processor:
-    type: "CosineAnnealingLR"
-    T_max: 100
-    eta_min_factor: 0.1
+training:
+  pipeline:
+    steps:
+      - name: "flow"
+        n_epochs: 100
+        train_diff: true
+        optimization:
+          optimizers:
+            flow:
+              type: "Lion"
+              lr: 5e-7
+              betas: [0.9, 0.95]
+              weight_decay: 0.01
+          schedulers:
+            flow:
+              type: "CosineAnnealingLR"
+              eta_min_factor: 0.1
 ```
 
 ---
@@ -708,19 +706,7 @@ With normalized KL:
 
 #### Backward Compatibility
 
-If you need legacy behavior (e.g., comparing with old experiments):
-
-```python
-# In src/fluxflow_training/training/vae_trainer.py, line ~615
-kl = kl_standard_normal(
-    mu, logvar,
-    free_bits_nats=self.kl_free_bits,
-    reduce="mean",
-    normalize_by_dims=False  # Set to False for legacy behavior
-)
-```
-
-**Note**: Legacy behavior will be removed in v0.4.0.
+Legacy (unnormalized) KL behavior is no longer exposed via configuration. If you need to reproduce a pre-v0.3.0 experiment, pin the corresponding training package version; the v0.3.0+ normalized KL is the only supported path in current releases.
 
 ## Pipeline Training Mode
 
@@ -750,7 +736,7 @@ Pipeline training breaks your training workflow into multiple sequential steps, 
 
 ### Pipeline Resilience Features
 
-**Auto-Create Missing Models** (New in Unreleased):
+**Auto-Create Missing Models** (v0.2.0+):
 
 When transitioning between pipeline steps (e.g., VAE → Flow), required models are automatically created:
 
@@ -762,8 +748,8 @@ steps:
 
   - name: flow_training
     train_diff: true
-    # Auto-creates: flow_processor, text_encoder ✨
-    # No manual initialization needed!
+    # Auto-creates: flow_processor, text_encoder
+    # No manual initialization needed.
 ```
 
 **Auto-created models:**
@@ -775,8 +761,8 @@ steps:
 
 **What you see:**
 ```
-⚠️  Auto-created flow_processor with feature_maps_dim=128
-⚠️  Auto-created text_encoder with text_embedding_dim=512
+Auto-created flow_processor with feature_maps_dim=128
+Auto-created text_encoder with text_embedding_dim=512
 ```
 
 This prevents crashes and makes pipeline mode more robust. See `docs/PIPELINE_ARCHITECTURE.md` for details.
@@ -907,12 +893,12 @@ Valid `freeze` / `unfreeze` components: `compressor`, `expander`, `flow_processo
 
 ### Pipeline Features
 
-#### ✅ Per-Step Checkpoints
+#### Per-Step Checkpoints
 - Each step saves its own checkpoints: `flxflow_step_vae_warmup_final.safetensors`
 - Resume from any step: automatically loads the last completed step
 - Step-specific metrics files: `outputs/graph/training_metrics_vae_warmup.jsonl`
 
-#### ✅ Selective Freezing
+#### Selective Freezing
 - Freeze any combination of models between steps
 - Example: Train VAE in step 1, freeze it in step 2 for flow training
 - Gradients automatically disabled for frozen models
@@ -922,7 +908,7 @@ Valid `freeze` / `unfreeze` components: `compressor`, `expander`, `flow_processo
 - Useful for adaptive training (exit VAE warmup when reconstruction is good enough)
 - Example: `transition_on: {mode: "loss_threshold", metric: "recon_loss", threshold: 0.01, max_epochs: 50}`
 
-#### ✅ Inline Optimizer/Scheduler Configs
+#### Inline Optimizer/Scheduler Configs
 - Different optimizers per step (e.g., Adam warmup → Lion training)
 - Different schedulers per step
 - Full control over per-model hyperparameters
@@ -938,7 +924,7 @@ Valid `freeze` / `unfreeze` components: `compressor`, `expander`, `flow_processo
     gan_training: true
   ```
 
-#### ✅ Full Resume Support
+#### Full Resume Support
 - Resumes from last completed step
 - Preserves optimizer/scheduler/EMA states
 - Mid-step resume: continues from exact batch within step
@@ -1059,12 +1045,12 @@ outputs/full_pipeline/
 |---------|------------------|------------------|
 | Configuration | CLI args | YAML config |
 | Stages | Single mode | Multiple sequential steps |
-| Per-step checkpoints | ❌ | ✅ |
-| Per-step optimizers | ❌ | ✅ |
+| Per-step checkpoints | No | Yes |
+| Per-step optimizers | No | Yes |
 | Selective freezing | Manual | Per-step config |
 | Loss-based transitions | Manual | Automatic |
 | Hypothesis testing | Requires multiple runs | Single run |
-| Resume mid-pipeline | ❌ | ✅ |
+| Resume mid-pipeline | No | Yes |
 
 **Recommendation**: Use pipeline mode for production training, standard mode for quick tests.
 
@@ -1078,14 +1064,13 @@ outputs/full_pipeline/
 - **Solution**: Pipeline automatically loads last completed step
 - **Check**: Look for `flxflow_step_<name>_final.safetensors` in output directory
 
-**Issue**: Loss-based stop condition never triggers
-- **Solution**: Check `loss_name` matches actual logged loss key
-- **Valid keys**: `loss_recon`, `loss_kl`, `loss_flow`, `loss_gen`, `loss_disc`
+**Issue**: Loss-based transition never triggers
+- **Solution**: Check that `transition_on.metric` matches a valid metric name
+- **Valid metrics**: `vae`, `vae_loss`, `recon`, `recon_loss`, `kl`, `kl_loss`, `discriminator`, `generator`, `lpips`, `flow`, `flow_loss`
 - **Check logs**: See current loss values in console output
 
 **Issue**: Optimizer config not loading
-- **Solution**: Verify JSON file path is correct and valid
-- **Check**: Run `python -m json.tool <config.json>` to validate JSON
+- **Solution**: Per-step optimizers must be configured via the inline `optimization:` block on the step itself (not an external JSON path). Check that `optimization.optimizers.<name>.type` is one of the supported optimizer types and that `<name>` matches the model component you intend to train.
 
 **Issue**: Models not freezing
 - **Solution**: Use the `freeze:` list with valid component names (e.g., `freeze: [compressor, expander]` to freeze the VAE, `freeze: [flow_processor]` to freeze the flow, `freeze: [text_encoder_backbone, text_encoder_projection]` for the text encoder)
@@ -1096,6 +1081,8 @@ outputs/full_pipeline/
 ## Training Strategies
 
 ### Recommended 3-Stage Training
+
+> The CLI examples in this section target pre-v0.10.0 flags (`--kl_beta`, `--kl_warmup_steps`, `--train_spade`). For v0.10.0+, use the YAML-based pipeline approach above; the legacy KL CLI flags are accepted with a deprecation warning and `--train_spade` is ignored.
 
 #### Stage 1: VAE Pretraining (50-100 epochs)
 
@@ -1415,13 +1402,7 @@ Generated diagrams in `outputs/graph/`:
 
 ### Out of Memory (OOM) Errors
 
-**Solutions:**
-1. Reduce batch size: `--batch_size 1`
-2. Reduce dimensions: `--vae_dim 32 --feature_maps_dim 32`
-3. Reduce image size: `--img_size 512`
-4. Enable FP16: `--use_fp16`
-5. Reduce workers: `--workers 1`
-6. Use gradient accumulation: `--batch_size 1 --training_steps 4`
+See [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention) above for the authoritative list of mitigations (reduce batch size, disable LPIPS, reduce image size, reduce dimensions, enable FP16) and the per-GPU recommended configurations.
 
 ### NaN Losses
 
@@ -1515,15 +1496,3 @@ Generation: ~2-5 seconds per image (512x512, 50 steps)
 - **UI Guide**: Use the web UI at `http://localhost:7860` for visual training configuration
 - **Issues**: Report bugs at https://github.com/danny-mio/fluxflow-training/issues
 
-## Summary
-
-This guide covers all aspects of training FluxFlow models. Key takeaways:
-
-1. **Start with VAE training** (Stage 1) for 50-100 epochs
-2. **Then train the flow model** (Stage 2) for 100-200 epochs
-3. **Optionally fine-tune jointly** (Stage 3) for 20-50 epochs
-4. **Monitor losses and sample images** throughout training
-5. **Adjust hyperparameters** based on your GPU and dataset
-6. **Use the UI** for easier configuration and live monitoring
-
-For questions, refer to the troubleshooting section or check the existing documentation.

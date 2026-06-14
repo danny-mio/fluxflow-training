@@ -87,7 +87,7 @@ training:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `train_vae` | `bool` | `false` | Train VAE encoder/decoder with reconstruction loss |
-| `train_spade` | `bool` | `false` | Use SPADE conditioning in decoder |
+| `train_spade` | `bool` | `false` | Deprecated and ignored — SPADE is always-on in v0.10.0 |
 | `gan_training` | `bool` | `false` | Train GAN discriminator |
 | `use_lpips` | `bool` | `false` | Add LPIPS perceptual loss (adds ~6-8GB VRAM) |
 | `train_diff` | `bool` | `false` | Train flow processor (partial) |
@@ -99,8 +99,8 @@ training:
 ```yaml
 train_vae: false          # Don't compute reconstruction loss
 gan_training: true        # Train GAN discriminator
-train_spade: true         # Optional: SPADE conditioning
 ```
+SPADE conditioning is always-on in v0.10.0.
 
 **Memory savings**: Skipping reconstruction loss saves ~8-12GB VRAM.
 
@@ -523,14 +523,13 @@ The latent is **NOT detached** when `train_reconstruction=false`, allowing encod
 EMA (Exponential Moving Average) is created when any of these are true:
 - `train_vae: true`
 - `gan_training: true`
-- `train_spade: true`
 - `use_lpips: true`
 
-This ensures EMA exists even in GAN-only mode.
+This ensures EMA exists even in GAN-only mode. SPADE is always-on in v0.10.0 and no longer contributes to the EMA trigger.
 
 ### Auto-Create Missing Models
 
-**New in Unreleased** (PR #13): Pipeline orchestrator automatically creates missing models when transitioning between steps.
+Added in v0.2.0+: the pipeline orchestrator automatically creates missing models when transitioning between steps.
 
 #### How It Works
 
@@ -563,7 +562,7 @@ steps:
 #### User Impact
 
 - **Before (v0.3.0 and earlier)**: Crash with `AttributeError: 'NoneType' object has no attribute 'forward'`
-- **After (Unreleased)**: Models created automatically with default parameters, training continues
+- **After (v0.2.0+)**: Models created automatically with default parameters, training continues
 
 #### When Auto-Creation Happens
 
@@ -646,7 +645,6 @@ pipeline:
 - Reduce batch size: `batch_size: 2` or `1`
 - Disable LPIPS: `use_lpips: false` (saves ~6-8GB)
 - Reduce image size: `img_size: 512` (saves ~10-15GB)
-- Disable SPADE: `train_spade: false` (saves ~3-5GB)
 - Use GAN-only mode: `train_vae: false, gan_training: true` (saves ~8-12GB)
 
 See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) "Limited VRAM Strategy" for more.
