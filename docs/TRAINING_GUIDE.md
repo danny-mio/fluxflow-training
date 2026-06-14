@@ -4,6 +4,7 @@ A comprehensive guide to configuring and running training for FluxFlow text-to-i
 
 ## Table of Contents
 
+- [v0.10.0 Loss Schedule](#v0100-loss-schedule)
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Training Command Reference](#training-command-reference)
@@ -11,6 +12,71 @@ A comprehensive guide to configuring and running training for FluxFlow text-to-i
 - [Training Strategies](#training-strategies)
 - [Configuration Examples](#configuration-examples)
 - [Troubleshooting](#troubleshooting)
+
+## v0.10.0 Loss Schedule
+
+The v0.10.0 redesign restructures the VAE and flow losses around the
+bezier-coupled architecture. The relevant schedules live in
+`training/losses.py` and are wired into `VAETrainer` and `FlowTrainer`.
+
+### KL warmup on the clean Gaussian latent
+
+KL is annealed from `0` to `kl_z_weight` with a cosine ramp over
+`kl_z_warmup_steps` global steps (`losses.cosine_warmup_weight`). Legacy
+`kl_beta` / `kl_warmup_steps` keys still load and emit a
+`DeprecationWarning`; when both forms appear, the v0.10.0 form wins.
+
+### Delayed ctx shrinkage
+
+A β-VAE-style L2 on the deterministic ctx features
+(`losses.compute_ctx_shrinkage`) is held at `0` until
+`ctx_shrinkage_warmup_start_step` then cosine-ramps to
+`ctx_shrinkage_weight` over `ctx_shrinkage_warmup_steps`
+(`losses.delayed_cosine_warmup_weight`). The VAE trainer registers a forward
+hook on `ctx_zinject_norm` so the pre-attention ctx tensor reaches the
+loss without forcing an extra forward pass.
+
+### CFG empty-prompt substitution
+
+`FlowTrainer` routes CFG dropout through
+`cfg_utils.apply_cfg_null_substitution`. The function caches the
+`(null_seq, null_mask)` returned by
+`fluxflow.utils.visualization.build_cfg_null_pair` on the text encoder, so
+training and sampling see the *same* unconditional distribution. Set
+`null_prompt` if you need a non-empty default.
+
+### Minimal v0.10.0 YAML snippet
+
+```yaml
+training:
+  pipeline:
+    steps:
+      - name: vae_warmup
+        train_vae: true
+        kl_z_weight: 0.5
+        kl_z_warmup_steps: 10000
+        ctx_shrinkage_weight: 0.001
+        ctx_shrinkage_warmup_start_step: 5000
+        ctx_shrinkage_warmup_steps: 5000
+        lambda_ctx_aux: 0.01           # aux ctx vs z_tokens (VAE only)
+
+      - name: flow_cfg
+        train_diff: true
+        t_txt: 32                      # DistilBERT max length (design §5.7)
+        null_prompt: ""                # cached empty CFG null context
+        cfg_dropout_prob: 0.10
+        ctx_loss_weight: 0.5           # ctx-dim vs VAE-dim v-prediction loss
+        freeze:
+          - compressor
+          - expander
+          - text_encoder_backbone      # keep DistilBERT frozen
+        # text_encoder_projection stays trainable so the projection head can adapt
+```
+
+Datasets accept a matching `max_text_length` (default `32`); see
+`data/datasets.py`.
+
+---
 
 ## Memory Requirements & OOM Prevention
 
