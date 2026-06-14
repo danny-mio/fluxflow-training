@@ -40,6 +40,75 @@ pip install -e ".[dev]"
 
 ---
 
+## v0.10.0 Bezier-Coupled Redesign
+
+The v0.10.0 release coordinates with `fluxflow-core` v0.10.0 and rewires the
+training-side glue around five locked decisions (see the migration notes in
+[fluxflow-core](https://github.com/danny-mio/fluxflow-core/blob/main/docs/MIGRATION-v0.10.0-redesign.md)
+for the full cross-package walkthrough):
+
+1. **Per-token text** — the flow trainer now consumes
+   `(text_seq [B, T_txt, D], text_mask [B, T_txt])` from `BertTextEncoder`
+   instead of the pooled vector. Legacy v060/v070 checkpoints still load via
+   polymorphic dispatch.
+2. **Conditional ctx coupling** — the VAE trainer adds a delayed cosine
+   warmup of `compute_ctx_shrinkage` so the deterministic ctx branch stays
+   informative without collapsing into z.
+3. **Full flow modernization** — 2D RoPE + dual FiLM downstream of
+   `FluxFlowProcessor_v100`; no extra config beyond the new keys below.
+4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
+   with no config change beyond the latent-dim drop.
+5. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
+   `kl_z_warmup_steps`, and `t_txt` (default `32`) caps the DistilBERT max
+   text length per design §5.7.
+
+### New config keys (`PipelineStepConfig`)
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `kl_z_weight` | `0.5` | Final KL weight on the clean Gaussian latent. |
+| `kl_z_warmup_steps` | `10000` | Cosine warmup length for `kl_z_weight`. |
+| `ctx_shrinkage_weight` | `0.001` | β-VAE-style L2 on deterministic ctx features. |
+| `ctx_shrinkage_warmup_start_step` | `5000` | Step at which ctx-shrinkage warmup begins. |
+| `ctx_shrinkage_warmup_steps` | `5000` | Warmup length once `start_step` is reached. |
+| `t_txt` | `32` | Per-sample text token length (matches design §5.7). |
+| `null_prompt` | `""` | String encoded into the cached CFG null context. |
+| `lambda_ctx_aux` | `0.01` | Auxiliary stop-grad MSE on ctx vs `z_tokens` (VAE only). |
+| `ctx_loss_weight` | `0.5` | Relative weight of ctx-dim v-prediction loss in FlowTrainer. |
+| `freeze_context_branch` | `false` | Freeze the ctx encoder branch while leaving z-path trainable. |
+
+Datasets accept a configurable `max_text_length` (default `32`) so
+tokenization stays aligned with `t_txt`.
+
+### CFG empty-prompt substitution
+
+CFG dropout at flow-train time goes through
+`fluxflow_training.training.cfg_utils.apply_cfg_null_substitution`, which
+swaps a random `cfg_dropout_prob` fraction of samples for the encoded null
+pair returned by `fluxflow.utils.visualization.build_cfg_null_pair`. The
+pair is cached on the text encoder so train and sample see the *same*
+unconditional distribution. Tune `null_prompt` if you need a non-empty
+default null.
+
+### Legacy alias warnings
+
+The v0.9.x keys still load and emit `DeprecationWarning`:
+
+- `kl_beta` → `kl_z_weight`
+- `kl_warmup_steps` → `kl_z_warmup_steps`
+
+When both forms appear in the same step, the v0.10.0 form wins.
+
+### Freeze-list components
+
+`freeze` now accepts the split sub-component keys
+`text_encoder_projection` (the `output_layer`) and `text_encoder_backbone`
+(the DistilBERT `language_model`), plus `context_branch` for the new ctx
+encoder. The optimization validator rejects mixing the whole `text_encoder`
+optimizer key with the split sub-component keys.
+
+---
+
 ## Hardware Requirements for Training
 
 Tested on NVIDIA A6000 (48GB VRAM); A100 (40GB/80GB) also supported.
