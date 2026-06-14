@@ -64,7 +64,7 @@ datasets:
 - `captions_file`: Path to text file with captions
 
 **Text tokenization (v0.10.0+)**: the dataset classes
-(`BasicImageDataset`, `TTI2MDataset`, `NoiseDataset`) accept a
+(`TextImageDataset`, `StreamingWebDataset`, `NoiseDataset`) accept a
 `max_text_length` constructor argument (default `32`) that controls
 DistilBERT padding/truncation length. Keep this in sync with the flow
 step's `t_txt` so the text branch sees the same token budget at train
