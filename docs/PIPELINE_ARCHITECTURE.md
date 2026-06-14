@@ -119,11 +119,29 @@ freeze:
   - expander
   - flow_processor
   - text_encoder
+  - text_encoder_backbone   # v0.10.0: DistilBERT language_model only
+  - text_encoder_projection # v0.10.0: output_layer (projection head) only
+  - context_branch          # v0.10.0: ctx encoder sub-modules
   - discriminator
 
 unfreeze:  # Explicit unfreeze (overrides freeze)
   - compressor
 ```
+
+**v0.10.0 split keys**:
+
+- `text_encoder_backbone` — freezes only the DistilBERT `language_model` so
+  the projection head can adapt without retraining the backbone.
+- `text_encoder_projection` — freezes only the `output_layer`. Useful when
+  the projection has been pre-trained and the backbone needs adaptation.
+- `context_branch` — freezes `ctx_encoder_first_step`, `ctx_encoder_z`,
+  `ctx_proj`, `ctx_token_attn`, and `ctx_final_norm` while leaving the
+  z-path of the compressor trainable. Pairs with the
+  `freeze_context_branch: true` step flag.
+
+The optimization validator rejects a step that mixes the whole
+`text_encoder` optimizer key with either split sub-component key — use
+either the whole-encoder key or the split keys, not both.
 
 #### Loss Weights
 
