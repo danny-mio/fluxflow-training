@@ -77,7 +77,7 @@ datasets:
   my_webdataset:
     type: webdataset
     webdataset_url: "pipe:aws s3 cp s3://bucket/data/{00000..00099}.tar -"
-    webdataset_token: hf_your_token_here
+    webdataset_token: YOUR_HF_TOKEN_HERE
     webdataset_image_key: png           # Optional, default: "png"
     webdataset_label_key: json          # Optional, default: "json"
     webdataset_caption_key: prompt      # Optional, default: "prompt"

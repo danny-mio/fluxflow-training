@@ -25,7 +25,7 @@ pip install -e ".[dev]"
 
 ---
 
-## 🚧 Training Status
+## Training Status (In Progress)
 
 **Models Currently In Training**: FluxFlow is actively training models following a systematic validation plan.
 

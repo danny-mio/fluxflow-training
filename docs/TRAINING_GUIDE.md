@@ -356,13 +356,7 @@ output:
 fluxflow-train --config config.yaml
 ```
 
-**Benefits:**
-- Reproducible configs (version control friendly)
-- Multi-step pipeline support
-- Per-step optimizer customization
-- No complex CLI commands
-
-**See "Pipeline Training Mode" section below for multi-stage training (VAE → Flow → Fine-tune).**
+YAML configs are version-controllable, support multi-step pipelines with per-step optimizer customization, and avoid long CLI commands. See "Pipeline Training Mode" below for multi-stage training (VAE → Flow → Fine-tune).
 
 ## Training Command Reference
 

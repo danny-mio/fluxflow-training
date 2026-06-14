@@ -1,7 +1,5 @@
 # Pipeline Training Architecture
 
-**Status**: ✅ **FULLY IMPLEMENTED** (v0.2.0+)
-
 **Implementation**: `src/fluxflow_training/training/pipeline_orchestrator.py`
 
 ## Overview
