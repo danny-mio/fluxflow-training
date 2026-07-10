@@ -606,3 +606,68 @@ class TestCollateWithReducedVersions:
 
         # No reduced versions (image too small), just upscale
         assert len(images) >= 1
+
+    def test_scale_groups_match_batch_size_with_reduced_min_sizes(self, temp_dir):
+        """Scale groups must contain every batch image, so captions stay aligned.
+
+        Images with different original sizes produce different numbers of
+        multi-scale versions. Index-grouping used to emit trailing groups with
+        fewer images than the batch, which downstream trainers paired with the
+        full batch's captions (batch mismatch -> silent cross-attention
+        broadcast -> conv channel crash in the flow processor).
+        """
+        small_path = temp_dir / "small.jpg"
+        large_path = temp_dir / "large.jpg"
+        Image.new("RGB", (500, 375)).save(small_path)  # 2 versions
+        Image.new("RGB", (1024, 768)).save(large_path)  # 4 versions
+
+        data = [
+            (torch.tensor([1, 2, 3]), str(small_path)),
+            (torch.tensor([4, 5]), str(large_path)),
+        ]
+
+        images, captions = collate_fn_variable(
+            data, channels=3, img_size=128, reduced_min_sizes=[256, 384, 512, 768, 1024]
+        )
+
+        assert captions.shape[0] == 2
+        for scale_idx, batch in enumerate(images):
+            assert batch.shape[0] == 2, (
+                f"scale group {scale_idx} has batch {batch.shape[0]}, "
+                f"expected 2 (must match captions)"
+            )
+
+    def test_mixed_size_scale_group_preserves_aspect_ratio(self, temp_dir):
+        """Conforming a scale group to one size must not stretch images.
+
+        When a scale group mixes sizes, all images are conformed to the most
+        common size. A plain resize distorts aspect ratio (a square marker in
+        a 336x256 image becomes ~61x80 when stretched to 256x256); an
+        aspect-preserving cover-resize + center crop keeps it square.
+        """
+        square_path = temp_dir / "square.jpg"
+        wide_path = temp_dir / "wide.jpg"
+        Image.new("RGB", (256, 256)).save(square_path)
+
+        wide = Image.new("RGB", (336, 256), (0, 0, 0))
+        # centered 80x80 white square marker
+        for x in range(128, 208):
+            for y in range(88, 168):
+                wide.putpixel((x, y), (255, 255, 255))
+        wide.save(wide_path)
+
+        data = [
+            (torch.tensor([1, 2]), str(square_path)),
+            (torch.tensor([3, 4]), str(wide_path)),
+        ]
+        images, _ = collate_fn_variable(data, channels=3, img_size=128)
+
+        # group 0 mixes (256,256) and (336,256) -> conformed to (256,256)
+        batch = images[0]
+        assert batch.shape[-2:] == (256, 256)
+        marker = batch[1].mean(dim=0)  # wide image, averaged channels
+        cols = (marker.max(dim=0).values > 0.5).sum().item()
+        rows = (marker.max(dim=1).values > 0.5).sum().item()
+        assert (
+            abs(cols - rows) <= 3
+        ), f"marker distorted: {cols}x{rows} px — aspect ratio not preserved"

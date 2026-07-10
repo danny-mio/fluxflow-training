@@ -186,6 +186,35 @@ def generate_reduced_versions(
     return reduced_images
 
 
+def conform_image_to_size(image: Image.Image, target: Tuple[int, int]) -> Image.Image:
+    """
+    Resize an image to an exact (width, height) without aspect distortion.
+
+    Scales the image so it covers the target box, then center-crops. Content
+    at the long edges is lost instead of being stretched.
+
+    Args:
+        image: PIL Image to conform
+        target: Target (width, height)
+
+    Returns:
+        PIL Image of exactly the target size
+    """
+    target_w, target_h = target
+    w, h = image.size
+    if (w, h) == (target_w, target_h):
+        return image
+
+    scale = max(target_w / w, target_h / h)
+    resized_w = max(target_w, int(round(w * scale)))
+    resized_h = max(target_h, int(round(h * scale)))
+    image = image.resize((resized_w, resized_h), RESAMPLE_LANCZOS)
+
+    left = (resized_w - target_w) // 2
+    top = (resized_h - target_h) // 2
+    return image.crop((left, top, left + target_w, top + target_h))
+
+
 def collate_fn_variable(
     data: List[Tuple], channels: int, img_size: int, reduced_min_sizes: Optional[List[int]] = None
 ) -> Tuple[List[torch.Tensor], torch.Tensor]:
@@ -237,6 +266,13 @@ def collate_fn_variable(
                 padded_images.append([])
             padded_images[i].append(img)
 
+    # Images with different original sizes produce different numbers of
+    # versions. Keep only scale groups that contain every batch image so the
+    # image batch always matches the caption batch downstream — a smaller
+    # group paired with the full batch's captions makes cross-attention
+    # broadcast over mismatched batch dims and corrupts the flow forward.
+    padded_images = [group for group in padded_images if len(group) == len(all_scale_images)]
+
     transform = transforms.Compose(
         [
             transforms.ToTensor(),
@@ -250,20 +286,15 @@ def collate_fn_variable(
         # Get sizes of all images at this scale
         sizes = [img.size for img in imgs]
 
-        # If sizes differ, resize all to the most common size
+        # If sizes differ, conform all to the most common size. Cover-resize +
+        # center crop preserves aspect ratio (a plain resize would stretch).
         if len(set(sizes)) > 1:
             # Find most common size
             from collections import Counter
 
             most_common_size = Counter(sizes).most_common(1)[0][0]
 
-            # Resize any images that don't match
-            resized_imgs = []
-            for img in imgs:
-                if img.size != most_common_size:
-                    img = img.resize(most_common_size, RESAMPLE_LANCZOS)
-                resized_imgs.append(img)
-            imgs = resized_imgs
+            imgs = [conform_image_to_size(img, most_common_size) for img in imgs]
 
         tensor_images = [transform(img.convert("RGB")).contiguous() for img in imgs]
         images.append(torch.stack(tensor_images, 0))
