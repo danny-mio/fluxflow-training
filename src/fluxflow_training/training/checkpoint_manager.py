@@ -86,7 +86,7 @@ class CheckpointManager:
         text_encoder: nn.Module,
         discriminators: Optional[dict[str, nn.Module]] = None,
         save_pretrained: bool = False,
-        model_config: Optional[dict[str, Any]] = None,
+        model_config: Optional[Union[dict[str, Any], Any]] = None,
     ) -> None:
         """
         Save model checkpoints.
@@ -96,29 +96,42 @@ class CheckpointManager:
             text_encoder: Text encoder model
             discriminators: Optional dict of discriminator models
             save_pretrained: Whether to save in HuggingFace format
-            model_config: Optional model configuration dict with version/type info
+            model_config: Optional model configuration with version/type info. Accepts
+                either a plain dict or a pydantic BaseModel (e.g. fluxflow.config.ModelConfig).
         """
         logger.info(f"Saving model checkpoints to {self.output_dir}")
 
-        # Create metadata for model configuration
+        # Create metadata for model configuration. model_config may be a plain
+        # dict or a pydantic BaseModel -- `"x" in model_config` silently
+        # returns False for a BaseModel (its __iter__ yields (name, value)
+        # tuples, not field names), so normalize to a dict first.
         metadata = {}
         if model_config:
-            if "model_type" in model_config:
-                metadata["model_type"] = model_config["model_type"]
-            if "model_version" in model_config:
-                metadata["model_version"] = model_config["model_version"]
-            if "vae_dim" in model_config:
-                metadata["vae_dim"] = str(model_config["vae_dim"])
+            mc = model_config.model_dump() if hasattr(model_config, "model_dump") else model_config
+            if "model_type" in mc:
+                metadata["model_type"] = mc["model_type"]
+            if "model_version" in mc:
+                metadata["model_version"] = mc["model_version"]
+            if "vae_dim" in mc:
+                metadata["vae_dim"] = str(mc["vae_dim"])
 
-        # Save diffuser (compressor + flow + expander)
-        diffuser_state = {f"diffuser.{k}": v for k, v in diffuser.state_dict().items()}
-        safetensors.torch.save_file(
-            diffuser_state, str(self.model_path), metadata=metadata if metadata else None
-        )
-        logger.debug(f"✓ Saved diffuser to {self.model_path}")
-
-        # Save text encoder
+        # Save text encoder state (used both bundled into the main checkpoint
+        # and as the standalone sibling file below).
         text_encoder_state = {f"text_encoder.{k}": v for k, v in text_encoder.state_dict().items()}
+
+        # Save diffuser (compressor + flow + expander), bundling the text
+        # encoder into the same file so the main checkpoint is self-contained.
+        # The separate text_encoder.safetensors sibling file (below) is kept
+        # too, and takes precedence over the bundled copy at load time --
+        # see BertTextEncoder.load_with_override.
+        diffuser_state = {f"diffuser.{k}": v for k, v in diffuser.state_dict().items()}
+        combined_state = {**diffuser_state, **text_encoder_state}
+        safetensors.torch.save_file(
+            combined_state, str(self.model_path), metadata=metadata if metadata else None
+        )
+        logger.debug(f"✓ Saved diffuser + text encoder to {self.model_path}")
+
+        # Save text encoder as a standalone sibling file (override source).
         safetensors.torch.save_file(text_encoder_state, str(self.text_encoder_path))
         logger.debug(f"✓ Saved text encoder to {self.text_encoder_path}")
 

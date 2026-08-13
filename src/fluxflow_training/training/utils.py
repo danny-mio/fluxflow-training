@@ -175,17 +175,17 @@ def img_to_random_packet(
 
 def get_device() -> torch.device:
     """
-    Auto-detect best available device (CUDA > MPS > CPU).
+    Auto-detect best available device (CUDA/ROCm > MPS > CPU).
+
+    Deprecated: thin wrapper kept for backward compatibility. Prefer
+    importing fluxflow.utils.device.get_device directly in new code.
 
     Returns:
         torch.device instance
     """
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    else:
-        return torch.device("cpu")
+    from fluxflow.utils.device import get_device as _core_get_device
+
+    return _core_get_device()
 
 
 class RobustDataLoaderIterator:

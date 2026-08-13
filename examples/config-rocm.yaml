@@ -1,0 +1,32 @@
+# EXPERIMENTAL / UNVALIDATED: ROCm-oriented training config for AMD gfx1151
+# (Strix Halo APU, unified memory). Not yet empirically validated on real
+# hardware -- see docs/ROCM.md (fluxflow-core). Treat all numeric defaults
+# below as conservative starting points to be tuned, not measured
+# recommendations.
+#
+# Key differences from the CUDA config:
+#   - Smaller batch size (unified-memory APU; VRAM/GTT carve-out is
+#     typically much smaller than a discrete GPU's dedicated VRAM, unless
+#     you've tuned kernel boot params -- see docs/ROCM.md)
+#   - fp16 left enabled by default (ROCm supports fp16 mixed precision via
+#     the same accelerate path as CUDA) but UNVALIDATED on gfx1151 -- flip
+#     to false if you observe instability, mirroring the MPS precedent
+#   - Gradient checkpointing enabled (saves memory at modest compute cost)
+#   - attention_backend left at the default "einsum"; "sdpa" is opt-in and
+#     unvalidated on ROCm -- try it and compare, don't assume it's faster
+
+model:
+  use_gradient_checkpointing: true  # Recommended on unified-memory APUs
+  attention_backend: einsum         # Try "sdpa" experimentally; unvalidated on ROCm
+
+training:
+  batch_size: 2           # Conservative starting point for shared VRAM/GTT carve-out
+  workers: 0               # Start conservative; raise if stable once validated
+  use_fp16: true            # Same accelerate-managed path as CUDA; UNVALIDATED on
+                            # gfx1151 -- disable if unstable
+  train_vae: true
+  use_lpips: true
+  lambda_lpips: 0.1
+  kl_beta: 1.0e-4
+  lr: 1.0e-4
+  lr_min: 1.0e-6

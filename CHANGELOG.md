@@ -6,9 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-_No unreleased changes._
+Not yet released — work in progress toward v0.10.0.
 
-## [0.10.0] - 2026-06-14
+### Added (Experimental)
+- **AMD ROCm/gfx1151 support (experimental, unvalidated)**: `get_device()`
+  now delegates to `fluxflow.utils.device` (distinguishes ROCm from real
+  NVIDIA CUDA). `train.py` prints "Using ROCm backend (experimental)" when
+  applicable, and the high-memory-usage warning is reworded on ROCm to
+  clarify it reflects the VRAM/GTT carve-out, not total system RAM. New
+  `--attention_backend {einsum,sdpa}` CLI flag / `model.attention_backend`
+  config key (opt-in, default `einsum`; only affects v0.7.0/v0.8.0/v0.10.0
+  models built via the factory path). New `examples/config-rocm.yaml`
+  starting-point config for Strix Halo. See `docs/ROCM.md` in fluxflow-core.
+  Not yet empirically validated on real hardware.
 
 ### Added
 - **Per-token text conditioning helpers**: `apply_cfg_null_substitution` in
@@ -53,6 +63,11 @@ _No unreleased changes._
 - **Acceptance test stubs** in `tests/acceptance/test_redesign_done_criteria.py`
   for the M8 retraining run. Marked `acceptance, gpu, slow`; skipped until a
   trained checkpoint and held-out prompts are wired in.
+- **Text encoder is now bundled into the main checkpoint file**
+  (`flxflow_final.safetensors`, `text_encoder.*`-prefixed keys) in addition
+  to the existing standalone `text_encoder.safetensors` sibling file, which
+  is still written unchanged. The sibling file takes precedence at load
+  time — see `BertTextEncoder.load_with_override` in `fluxflow-core`.
 
 ### Changed
 - **Flow trainer text contract**: pooled `[B, D]` text vectors are replaced
@@ -77,6 +92,15 @@ _No unreleased changes._
 
 Both legacy keys still load via `_parse_step_config` and emit a
 `DeprecationWarning`. The new key wins when both are present.
+
+### Fixed
+- `CheckpointManager.save_models`'s embedded safetensors metadata
+  (`model_version`/`model_type`/`vae_dim`) was silently never written when
+  `model_config` was a pydantic `ModelConfig` object (the real-data call
+  site) rather than a plain dict — `"model_version" in model_config` on a
+  `BaseModel` evaluates `False` instead of raising, since `__iter__` yields
+  `(name, value)` tuples, not field names. `model_config` is now normalized
+  via `model_dump()` when available.
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,

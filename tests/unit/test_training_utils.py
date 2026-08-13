@@ -436,6 +436,17 @@ class TestGetDevice:
         else:
             pytest.skip("CUDA not available")
 
+    def test_delegates_to_core_device_util(self):
+        """get_device() is a thin wrapper around fluxflow.utils.device.get_device."""
+        import unittest.mock as mock
+
+        with mock.patch(
+            "fluxflow.utils.device.get_device", return_value=torch.device("cpu")
+        ) as mocked:
+            result = get_device()
+        mocked.assert_called_once()
+        assert result == torch.device("cpu")
+
 
 class TestTrainingUtilsIntegration:
     """Integration tests combining multiple utilities."""

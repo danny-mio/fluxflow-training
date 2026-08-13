@@ -557,7 +557,9 @@ def train_pipeline(args, config):
         print("Using MPS backend.")
         accelerator = Accelerator(cpu=False, device_placement=True)
     elif torch.cuda.is_available():
-        print("Using CUDA backend.")
+        from fluxflow.utils.device import is_rocm
+
+        print("Using ROCm backend (experimental)." if is_rocm() else "Using CUDA backend.")
         accelerator = Accelerator(
             cpu=False,
             device_placement=True,
@@ -681,7 +683,9 @@ def train_legacy(args):
         print("Using MPS backend.")
         accelerator = Accelerator(cpu=False, device_placement=True)
     elif torch.cuda.is_available():
-        print("Using CUDA backend.")
+        from fluxflow.utils.device import is_rocm
+
+        print("Using ROCm backend (experimental)." if is_rocm() else "Using CUDA backend.")
         accelerator = Accelerator(
             cpu=False,
             device_placement=True,
@@ -690,6 +694,10 @@ def train_legacy(args):
     else:
         print("Using CPU")
         accelerator = Accelerator(cpu=True, mixed_precision="fp16" if args.use_fp16 else "no")
+
+    from fluxflow.utils.device import is_rocm
+
+    rocm_active = is_rocm()
 
     # Set random seed
     manualSeed = random.randint(1, sys.maxsize)
@@ -1232,9 +1240,18 @@ def train_legacy(args):
                         if i % (args.log_interval * 10) == 0:
                             max_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
                             if mem_allocated_gb > max_memory_gb * 0.85:
-                                print(
-                                    f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB (85%+ used)"
-                                )
+                                if rocm_active:
+                                    print(
+                                        f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB "
+                                        "(85%+ used). Note: on ROCm unified-memory APUs this reflects the "
+                                        "current VRAM/GTT carve-out, not total system RAM. If this warning "
+                                        "is spurious, see docs/ROCM.md for kernel-parameter guidance "
+                                        "(amdgpu.gttsize / ttm.pages_limit)."
+                                    )
+                                else:
+                                    print(
+                                        f"⚠️  High memory usage: {mem_allocated_gb:.1f}/{max_memory_gb:.1f}GB (85%+ used)"
+                                    )
 
                     log_msg = f"[{elapsed_str}] Epoch {epoch}/{args.n_epochs} | Batch {i}/{dt_items} | {batch_time:.2f}s/batch{mem_str} | ETA: {eta_str}"
 
@@ -1613,6 +1630,14 @@ def parse_args():
         default=True,
         help="Use gradient checkpointing in VAE (saves VRAM during forward, costs VRAM during backward)",
     )
+    parser.add_argument(
+        "--attention_backend",
+        type=str,
+        choices=["einsum", "sdpa"],
+        default="einsum",
+        help="Flow attention compute backend (experimental; 'sdpa' opt-in, e.g. for ROCm). "
+        "Only affects v0.7.0/v0.8.0/v0.10.0 models.",
+    )
 
     # Training
     parser.add_argument("--n_epochs", type=int, default=1, help="Number of epochs")
@@ -1819,6 +1844,8 @@ def parse_args():
                 and "pretrained_bert_model" not in cli_provided
             ):
                 args.pretrained_bert_model = config["model"]["pretrained_bert_model"]
+            if "attention_backend" in config["model"] and "attention_backend" not in cli_provided:
+                args.attention_backend = config["model"]["attention_backend"]
 
         if "data" in config:
             if "data_path" in config["data"] and "data_path" not in cli_provided:

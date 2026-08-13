@@ -142,6 +142,12 @@ Tested on NVIDIA A6000 (48GB VRAM); A100 (40GB/80GB) also supported.
 - Use FP16 (if supported): `use_fp16: true` (saves ~20-30%)
 - See [TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) "Limited VRAM Strategy"
 
+**Experimental: AMD ROCm** — gfx1151 (Strix Halo APU) support is
+experimental and not yet empirically validated. See the installed `fluxflow`
+package's `docs/ROCM.md` and `examples/config-rocm.yaml` for a starting
+config. The VRAM figures above are measured on discrete NVIDIA GPUs and
+don't directly apply to unified-memory APUs.
+
 ---
 
 ### Pre-download LPIPS Weights (Optional)
