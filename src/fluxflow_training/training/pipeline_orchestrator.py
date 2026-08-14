@@ -650,6 +650,7 @@ class TrainingPipelineOrchestrator:
                 dataset_size=dataset_config.webdataset_size or 10000,
                 samples_per_shard=dataset_config.webdataset_samples_per_shard or 1000,
                 fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
+                max_text_length=getattr(args, "max_text_length", 32),
             )
             sampler = None
             dataset_size = len(dataset)
@@ -664,6 +665,7 @@ class TrainingPipelineOrchestrator:
                 tokenizer_name=args.tokenizer_name,
                 transform=None,
                 fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
+                max_text_length=getattr(args, "max_text_length", 32),
             )
 
             # Build dimension cache. When aspect_ratio_bucketing is enabled,
@@ -706,6 +708,7 @@ class TrainingPipelineOrchestrator:
                 noise_std=dataset_config.noise_std,
                 tokenizer_name=args.tokenizer_name,
                 transform=None,
+                max_text_length=getattr(args, "max_text_length", 32),
             )
 
             # No dimension cache needed for synthetic data
@@ -1076,6 +1079,14 @@ class TrainingPipelineOrchestrator:
                 mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
                 lambda_ctx_aux=step.lambda_ctx_aux if hasattr(step, "lambda_ctx_aux") else 0.01,
                 ctx_input_dim=_ctx_input_dim,
+                # Additive opt-in efficiency knob; default 1 preserves current behavior.
+                discriminator_update_freq=getattr(step, "discriminator_update_freq", 1),
+                # v0.10.0 (design §5.5): kl_z_weight / ctx_shrinkage_weight. Effective
+                # default comes from PipelineStepConfig (0.5 / 0.001 per design doc);
+                # the getattr fallback here is VAETrainer's own inert default (0.0),
+                # used only if ``step`` is missing the attribute entirely.
+                kl_z_weight=getattr(step, "kl_z_weight", 0.0),
+                ctx_shrinkage_weight=getattr(step, "ctx_shrinkage_weight", 0.0),
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
                 disc_logit_diagnostic_interval=getattr(step, "disc_logit_diagnostic_interval", 0),
@@ -1552,7 +1563,27 @@ class TrainingPipelineOrchestrator:
                 vae_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 kl_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 flow_errors = FloatBuffer(max(args.log_interval * 2, 10))
-                ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))  # context dim loss
+                # NOTE: this is the FLOW trainer's context-dim v-prediction loss
+                # (flow_losses["ctx_loss"], see flow_trainer.py), logged below as
+                # "Ctx". It is unrelated to the VAE trainer's ctx_probe_alignment /
+                # ctx_shrinkage_loss / ctx_aux_loss metrics logged as "CtxProbe" /
+                # "CtxShrink" / "CtxAux" — do not confuse the two "ctx" families.
+                ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))  # context dim loss (flow)
+                # VAE trainer's ctx-related diagnostics (see vae_trainer.py train_step):
+                # ctx_probe_errors: context_alignment_loss, a diagnostic probe with
+                #   both inputs detached -> zero gradient into SPADE/compressor/expander.
+                #   Its ~1.0 plateau is the MSE "predict the mean" floor, not a training signal.
+                ctx_probe_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                # ctx_shrinkage_errors / ctx_aux_errors: gradient-carrying ctx terms
+                #   (active only when their respective weights are > 0).
+                ctx_shrinkage_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                ctx_aux_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                # SPADE gamma/beta drift from init (0 at init) — first real signal of
+                # whether SPADE conditioning is learning anything.
+                spade_gamma_drift_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                spade_beta_drift_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                # Convergence diagnostic: Lion update-norm/grad-norm ratio (0.0 for non-Lion)
+                update_ratio_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 g_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN generator loss
                 d_errors = FloatBuffer(max(args.log_interval * 2, 10))  # GAN discriminator loss
                 lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))  # LPIPS loss
@@ -1620,6 +1651,19 @@ class TrainingPipelineOrchestrator:
                             if step.train_coarseness and "coarseness_loss" in vae_losses:
                                 coarseness_errors.add_item(vae_losses["coarseness_loss"])
 
+                            # Track VAE ctx-related diagnostics (probe vs gradient-carrying)
+                            # and SPADE drift if available.
+                            if "ctx_probe_alignment" in vae_losses:
+                                ctx_probe_errors.add_item(vae_losses["ctx_probe_alignment"])
+                            if "ctx_shrinkage_loss" in vae_losses:
+                                ctx_shrinkage_errors.add_item(vae_losses["ctx_shrinkage_loss"])
+                            if "ctx_aux_loss" in vae_losses:
+                                ctx_aux_errors.add_item(vae_losses["ctx_aux_loss"])
+                            if "spade_gamma_drift" in vae_losses:
+                                spade_gamma_drift_errors.add_item(vae_losses["spade_gamma_drift"])
+                            if "spade_beta_drift" in vae_losses:
+                                spade_beta_drift_errors.add_item(vae_losses["spade_beta_drift"])
+
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"vae_loss": vae_losses["vae"]})
 
@@ -1636,6 +1680,8 @@ class TrainingPipelineOrchestrator:
                             flow_errors.add_item(flow_loss)
                             if isinstance(flow_losses, dict) and "ctx_loss" in flow_losses:
                                 ctx_errors.add_item(flow_losses["ctx_loss"])
+                            if isinstance(flow_losses, dict) and "update_ratio_flow" in flow_losses:
+                                update_ratio_errors.add_item(flow_losses["update_ratio_flow"])
 
                             # Update metrics for transition monitoring
                             self.update_metrics(step.name, {"flow_loss": flow_loss})
@@ -1720,11 +1766,30 @@ class TrainingPipelineOrchestrator:
                                 log_msg += f" | Contrast: {contrast_errors.average:.4f}"
                             if step.train_coarseness and len(coarseness_errors._items) > 0:
                                 log_msg += f" | Coarseness: {coarseness_errors.average:.4f}"
+                            # Diagnostic probe (no gradient into SPADE/compressor/expander) —
+                            # plateaus near 1.0 by construction, see vae_trainer.py comments.
+                            if len(ctx_probe_errors._items) > 0:
+                                log_msg += f" | CtxProbe: {ctx_probe_errors.average:.4f}"
+                            # Gradient-carrying ctx terms (0 unless their weights are wired > 0).
+                            if len(ctx_shrinkage_errors._items) > 0:
+                                log_msg += f" | CtxShrink: {ctx_shrinkage_errors.average:.4f}"
+                            if len(ctx_aux_errors._items) > 0:
+                                log_msg += f" | CtxAux: {ctx_aux_errors.average:.4f}"
+                            # First real signal of whether SPADE conditioning is learning.
+                            if len(spade_gamma_drift_errors._items) > 0:
+                                log_msg += (
+                                    f" | SpadeGammaDrift: {spade_gamma_drift_errors.average:.4f}"
+                                    f" | SpadeBetaDrift: {spade_beta_drift_errors.average:.4f}"
+                                )
 
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
+                            # Flow's context-dim v-prediction loss — unrelated to the VAE
+                            # CtxProbe/CtxShrink/CtxAux metrics above (see buffer comment).
                             if len(ctx_errors._items) > 0:
                                 log_msg += f" | Ctx: {ctx_errors.average:.4f}"
+                            if len(update_ratio_errors._items) > 0:
+                                log_msg += f" | UpdRatio: {update_ratio_errors.average:.4f}"
 
                         # Add average batch time
                         if len(batch_times._items) > 0:
@@ -1754,11 +1819,23 @@ class TrainingPipelineOrchestrator:
                                 metrics["contrast_loss"] = contrast_errors.average
                             if step.train_coarseness and len(coarseness_errors._items) > 0:
                                 metrics["coarseness_loss"] = coarseness_errors.average
+                            if len(ctx_probe_errors._items) > 0:
+                                metrics["ctx_probe_alignment"] = ctx_probe_errors.average
+                            if len(ctx_shrinkage_errors._items) > 0:
+                                metrics["ctx_shrinkage_loss"] = ctx_shrinkage_errors.average
+                            if len(ctx_aux_errors._items) > 0:
+                                metrics["ctx_aux_loss"] = ctx_aux_errors.average
+                            if len(spade_gamma_drift_errors._items) > 0:
+                                metrics["spade_gamma_drift"] = spade_gamma_drift_errors.average
+                                metrics["spade_beta_drift"] = spade_beta_drift_errors.average
 
                         if step.train_diff or step.train_diff_full:
                             metrics["flow_loss"] = flow_errors.average
+                            # Flow's context-dim v-prediction loss (see ctx_errors comment above).
                             if len(ctx_errors._items) > 0:
                                 metrics["ctx_loss"] = ctx_errors.average
+                            if len(update_ratio_errors._items) > 0:
+                                metrics["update_ratio_flow"] = update_ratio_errors.average
 
                         progress_logger.log_metrics(
                             epoch=epoch,

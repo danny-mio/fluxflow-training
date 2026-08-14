@@ -82,6 +82,24 @@ Not yet released — work in progress toward v0.10.0.
   to the existing standalone `text_encoder.safetensors` sibling file, which
   is still written unchanged. The sibling file takes precedence at load
   time — see `BertTextEncoder.load_with_override` in `fluxflow-core`.
+- **`update_ratio_flow` diagnostic**: Lion update-norm/grad-norm ratio,
+  logged alongside the console "Flow" metric so a fixed-amplitude Lion
+  oscillation can be told apart from genuine convergence.
+- **`optimizer_type` param on `get_default_optimizer_config`**: gives
+  vae/text_encoder/discriminator Lion-appropriate lr/weight_decay defaults
+  if a user opts one of them into Lion; their existing AdamW defaults are
+  unchanged unless opted in.
+- **`discriminator_update_freq` config knob** (default `1`, matching current
+  every-step behavior) for the VAE/GAN pipeline step.
+- **SPADE γ/β drift-from-init logging** (`spade_gamma_drift`,
+  `spade_beta_drift`) and **`ctx_shrinkage_loss`/`ctx_aux_loss` logging**
+  alongside the renamed ctx probe metric (see Fixed) — these two do carry
+  gradient to SPADE, unlike the probe.
+- **Prompt-truncation diagnostics**: sampled (1-in-50) truncation-rate and
+  caption-length-percentile logging across all three dataset classes.
+  `max_text_length` is now a real `--max_text_length` CLI flag /
+  `data.max_text_length` YAML key (previously hardcoded to `32` with no
+  override); default unchanged.
 
 ### Changed
 - **Flow trainer text contract**: pooled `[B, D]` text vectors are replaced
@@ -99,6 +117,23 @@ Not yet released — work in progress toward v0.10.0.
 - **`fluxflow` dependency bumped to `>=0.10.0`**: required for
   `fluxflow.utils.visualization.build_cfg_null_pair` and the v0.10.0 model
   architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).
+- **Flow Lion hyperparameters retuned**: `lr` `5e-7` → `1e-7`,
+  `weight_decay` `0.01` → `0.05`; cosine schedule floor (`eta_min_factor`)
+  `0.1` → `0.01` for flow. Root cause: Lion previously shared AdamW's
+  learning rate, a known Lion misconfiguration (Lion needs roughly 5-10x
+  smaller lr and larger weight_decay than AdamW), producing a fixed-point
+  plateau instead of convergence.
+- **`kl_z_weight`/`ctx_shrinkage_weight` now actually wired into
+  `VAETrainer`** (`pipeline_orchestrator.py`, `scripts/train.py`) — these
+  `PipelineStepConfig` fields existed but were previously never passed
+  through, so setting them had zero effect. **Behavior change**: any
+  pipeline-mode step with `train_vae: true` that doesn't explicitly
+  override these two keys now switches from the prior real behavior
+  (legacy `kl_beta` KL path, inactive ctx-shrinkage) to the ratified
+  v0.10.0 defaults actually taking effect (`kl_z_weight=0.5` cosine-warmup
+  KL_z, `ctx_shrinkage_weight=0.001` active ctx-shrinkage). The legacy
+  `scripts/train.py` CLI driver's new flags default to `0.0` instead, so
+  that path has no behavior change unless explicitly opted in.
 
 ### Deprecated
 - `kl_beta` — use `kl_z_weight`.
@@ -137,6 +172,13 @@ Both legacy keys still load via `_parse_step_config` and emit a
   training loop used `logger.error(...)`, which never reaches this
   project's `train.log` (only `print()` output does) — changed to
   `print()` so a crash's step/batch/shape context is actually visible.
+- **Mislabeled `context_alignment` metric renamed to `ctx_probe_alignment`**
+  and clarified in comments as a fully-detached diagnostic probe with no
+  gradient path to SPADE — not to be confused with the console "Ctx"
+  metric, which is `flow_trainer.py`'s own context-dim loss.
+- **Silently-swallowed `except Exception` around `ctx_aux_loss`**, which
+  used to zero the loss with only a generic warning, now logs the real
+  exception.
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,

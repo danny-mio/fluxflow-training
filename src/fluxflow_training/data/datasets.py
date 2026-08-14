@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterator, Optional
 import torch
 import webdataset as wds
 from fluxflow.types import DimensionCacheData, SamplerState  # type: ignore[attr-defined]
+from fluxflow.utils import get_logger
 from huggingface_hub import HfFileSystem, hf_hub_url
 from PIL import Image
 from torch.utils.data import Dataset, IterableDataset, Sampler
@@ -31,6 +32,86 @@ try:
     HAS_ORJSON = True
 except ImportError:
     HAS_ORJSON = False
+
+logger = get_logger(__name__)
+
+# Fraction of captions sampled for true (untruncated) length measurement.
+# Computing the true length requires a second, unpadded tokenizer call, so
+# only 1-in-N captions pay that cost instead of every __getitem__/__iter__.
+_TRUNCATION_SAMPLE_RATE = 50
+# Emit a running summary log line every this many *sampled* observations.
+_TRUNCATION_LOG_EVERY = 500
+
+
+class _TruncationTracker:
+    """Samples captions to report how often/how much tokenization truncates.
+
+    Truncation (``truncation=True`` + fixed ``max_length``) is silent by
+    design in the tokenizer API: the padded/truncated ``input_ids`` look
+    identical whether or not truncation actually fired. To detect it we
+    need the *true* (untruncated) token count, which costs a second
+    tokenizer call — so this only samples every ``sample_rate``-th caption
+    rather than checking each one, keeping the extra pass off the hot path.
+    """
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        max_text_length: int,
+        name: str,
+        sample_rate: int = _TRUNCATION_SAMPLE_RATE,
+        log_every: int = _TRUNCATION_LOG_EVERY,
+        logger: Any = logger,
+    ):
+        self._tokenizer = tokenizer
+        self.max_text_length = max_text_length
+        self._name = name
+        self._sample_rate = max(1, sample_rate)
+        self._log_every = max(1, log_every)
+        self._logger = logger
+
+        self.seen_count = 0
+        self.sampled_count = 0
+        self.truncated_count = 0
+        self._lengths: list[int] = []
+
+    def observe(self, caption: str) -> None:
+        """Record one caption; every ``sample_rate``-th call measures true length."""
+        self.seen_count += 1
+        if self.seen_count % self._sample_rate != 0:
+            return
+
+        true_length = len(self._tokenizer(caption, truncation=False)["input_ids"])
+        self.sampled_count += 1
+        self._lengths.append(true_length)
+        if true_length > self.max_text_length:
+            self.truncated_count += 1
+
+        if self.sampled_count % self._log_every == 0:
+            self._log_summary()
+
+    def _log_summary(self) -> None:
+        lengths = sorted(self._lengths)
+        n = len(lengths)
+        pct_truncated = 100.0 * self.truncated_count / n
+        p50 = lengths[n // 2]
+        p95 = lengths[min(n - 1, int(n * 0.95))]
+        self._logger.info(
+            "%s: caption truncation stats (sampled %d/%d, 1-in-%d) — "
+            "%.1f%% exceed max_text_length=%d | true length min=%d max=%d "
+            "mean=%.1f p50=%d p95=%d",
+            self._name,
+            n,
+            self.seen_count,
+            self._sample_rate,
+            pct_truncated,
+            self.max_text_length,
+            lengths[0],
+            lengths[-1],
+            sum(lengths) / n,
+            p50,
+            p95,
+        )
 
 
 class TextImageDataset(Dataset):
@@ -71,6 +152,10 @@ class TextImageDataset(Dataset):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+
+        self._truncation_tracker = _TruncationTracker(
+            self.tokenizer, self.max_text_length, name="TextImageDataset"
+        )
 
         if not generate_mode:
             # Load captions and image paths from tab-separated file
@@ -129,6 +214,7 @@ class TextImageDataset(Dataset):
             Train mode: (input_ids, image_path)
         """
         caption = self.captions[idx]
+        self._truncation_tracker.observe(caption)
         encoding = self.tokenizer(
             caption,
             max_length=self.max_text_length,
@@ -191,6 +277,10 @@ class StreamingWebDataset(IterableDataset):
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+
+        self._truncation_tracker = _TruncationTracker(
+            self.tokenizer, self.max_text_length, name="StreamingWebDataset"
+        )
 
         self.token = token
         self.channels = channels
@@ -299,6 +389,7 @@ class StreamingWebDataset(IterableDataset):
                         if self.fixed_prompt_prefix:
                             prompt = f"{self.fixed_prompt_prefix}. {prompt}"
 
+                        self._truncation_tracker.observe(prompt)
                         encoding = self.tokenizer(
                             prompt,
                             max_length=self.max_text_length,
@@ -404,6 +495,16 @@ class NoiseDataset(Dataset):
             return_tensors="pt",
         )
         self.empty_caption_tokens = encoding["input_ids"].squeeze(0)
+
+        # The caption is always empty and tokenized once above, so a full
+        # sampled tracker is unnecessary — just check/log truncation once.
+        true_length = len(self.tokenizer("", truncation=False)["input_ids"])
+        logger.info(
+            "NoiseDataset: empty-caption true length=%d, max_text_length=%d, truncated=%s",
+            true_length,
+            self.max_text_length,
+            true_length > self.max_text_length,
+        )
 
     def __len__(self) -> int:
         return self.num_samples

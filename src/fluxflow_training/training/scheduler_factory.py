@@ -197,7 +197,13 @@ def get_default_scheduler_config(model_name: str) -> Dict[str, Any]:
     defaults = {
         "flow": {
             "type": "CosineAnnealingLR",
-            "eta_min_factor": 0.1,
+            # Anneal much closer to 0 (was 0.1 = 10% floor). A 10% floor never
+            # let the step size shrink enough to settle, which — combined
+            # with Lion's constant-magnitude sign-based update — compounded
+            # into oscillation around a fixed point instead of convergence.
+            # Kept just above 0 (not exactly 0) since validate_scheduler_config
+            # requires eta_min_factor in (0, 1].
+            "eta_min_factor": 0.01,
         },
         "vae": {
             "type": "CosineAnnealingLR",

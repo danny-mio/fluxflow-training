@@ -10,47 +10,54 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+_MOCKED_MODULES = [
+    "accelerate",
+    "torch",
+    "torch.nn",
+    "torch.optim",
+    "torch.optim.lr_scheduler",
+    "torch.utils.data",
+    "torchvision",
+    "torchvision.utils",
+    "transformers",
+    "diffusers",
+    "lion_pytorch",
+    "safetensors",
+    "safetensors.torch",
+    "fluxflow.models",
+    "fluxflow_training.data",
+    "fluxflow_training.training",
+    "fluxflow.utils",
+    "fluxflow_training.training.optimizer_factory",
+    "fluxflow_training.training.scheduler_factory",
+]
+
 
 def import_script_module(script_name):
-    """Dynamically import a script module with mocked dependencies."""
+    """Dynamically import a script module with mocked dependencies.
+
+    Uses ``patch.dict`` (scoped to this call) rather than mutating
+    ``sys.modules`` directly, so the mocks don't leak into later tests in the
+    same pytest session -- a real torch/transformers import elsewhere (e.g.
+    ``tests/unit/test_datasets.py``) would otherwise silently pick up these
+    Mock() stand-ins if it happened to run afterward.
+    """
     scripts_path = Path(__file__).parent.parent.parent / "src" / "fluxflow_training" / "scripts"
     script_path = scripts_path / f"{script_name}.py"
 
-    # Mock heavy dependencies before import
-    sys.modules["accelerate"] = Mock()
-    sys.modules["torch"] = Mock()
-    sys.modules["torch.nn"] = Mock()
-    sys.modules["torch.optim"] = Mock()
-    sys.modules["torch.optim.lr_scheduler"] = Mock()
-    sys.modules["torch.utils.data"] = Mock()
-    sys.modules["torchvision"] = Mock()
-    sys.modules["torchvision.utils"] = Mock()
-    sys.modules["transformers"] = Mock()
-    sys.modules["diffusers"] = Mock()
-    sys.modules["lion_pytorch"] = Mock()
-    sys.modules["safetensors"] = Mock()
-    sys.modules["safetensors.torch"] = Mock()
+    with patch.dict(sys.modules, {name: Mock() for name in _MOCKED_MODULES}):
+        # Import the script
+        spec = importlib.util.spec_from_file_location(script_name, script_path)
+        module = importlib.util.module_from_spec(spec)
 
-    # Mock FluxFlow modules
-    sys.modules["fluxflow.models"] = Mock()
-    sys.modules["fluxflow_training.data"] = Mock()
-    sys.modules["fluxflow_training.training"] = Mock()
-    sys.modules["fluxflow.utils"] = Mock()
-    sys.modules["fluxflow_training.training.optimizer_factory"] = Mock()
-    sys.modules["fluxflow_training.training.scheduler_factory"] = Mock()
-
-    # Import the script
-    spec = importlib.util.spec_from_file_location(script_name, script_path)
-    module = importlib.util.module_from_spec(spec)
-
-    # Only execute to get the parse_args and main functions
-    # We need to patch out the actual execution
-    with patch.object(sys, "exit"):
-        try:
-            spec.loader.exec_module(module)
-        except Exception:
-            # Some imports might fail, but we only need parse_args
-            pass
+        # Only execute to get the parse_args and main functions
+        # We need to patch out the actual execution
+        with patch.object(sys, "exit"):
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                # Some imports might fail, but we only need parse_args
+                pass
 
     return module
 
@@ -113,6 +120,7 @@ class TestTrainScriptArgumentParsing:
             assert args.vae_dim == 128
             assert args.text_embedding_dim == 1024
             assert args.kl_beta == 0.0001
+            assert args.max_text_length == 32
             assert args.kl_warmup_steps == 5000
 
     def test_parse_args_custom_hyperparameters(self):
@@ -147,6 +155,67 @@ class TestTrainScriptArgumentParsing:
             assert args.kl_beta == 0.001
             assert args.kl_warmup_steps == 10000
             assert args.vae_dim == 256
+
+    def test_parse_args_max_text_length_override(self):
+        """--max_text_length overrides the 32-token v0.10.0 default."""
+        train = import_script_module("train")
+        test_args = [
+            "--data_path",
+            "/tmp/images",
+            "--captions_file",
+            "/tmp/captions.tsv",
+            "--train_vae",
+            "--output_path",
+            "/tmp/output",
+            "--max_text_length",
+            "64",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.max_text_length == 64
+
+
+class TestTrainScriptConfigFileMerge:
+    """Tests for YAML config merging into CLI args (train.parse_args)."""
+
+    def test_config_max_text_length_applied_when_not_on_cli(self, tmp_path):
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "  max_text_length: 96\n"
+            "training:\n"
+            "  train_vae: true\n"
+        )
+        test_args = ["--config", str(config_path), "--output_path", "/tmp/output"]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.max_text_length == 96
+
+    def test_cli_max_text_length_overrides_config(self, tmp_path):
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "  max_text_length: 96\n"
+            "training:\n"
+            "  train_vae: true\n"
+        )
+        test_args = [
+            "--config",
+            str(config_path),
+            "--output_path",
+            "/tmp/output",
+            "--max_text_length",
+            "48",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.max_text_length == 48
 
 
 class TestTrainScriptOptimizerConfig:

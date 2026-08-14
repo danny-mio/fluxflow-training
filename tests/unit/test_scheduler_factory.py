@@ -226,10 +226,14 @@ class TestGetDefaultSchedulerConfig:
     """Tests for get_default_scheduler_config function."""
 
     def test_flow_default(self):
-        """Flow model should use CosineAnnealingLR."""
+        """Flow model should anneal much closer to 0 than the generic 0.1 floor.
+
+        The old 0.1 floor (10% of peak lr) never let Lion's step size shrink
+        enough to settle, compounding the Lion lr/weight_decay mismatch.
+        """
         config = get_default_scheduler_config("flow")
         assert config["type"] == "CosineAnnealingLR"
-        assert config["eta_min_factor"] == 0.1
+        assert config["eta_min_factor"] == 0.01
 
     def test_vae_default(self):
         """VAE model should use CosineAnnealingLR."""

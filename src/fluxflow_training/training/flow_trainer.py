@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from diffusers import DPMSolverMultistepScheduler
 from fluxflow.utils import get_logger
+from lion_pytorch import Lion
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
@@ -68,6 +69,31 @@ def compute_grad_norm(parameters):
             param_norm = p.grad.data.norm(2)
             total_norm += param_norm.item() ** 2
     return total_norm**0.5
+
+
+def compute_lion_update_ratio(
+    optimizer: Optimizer, n_trainable_params: int, grad_norm: float
+) -> float:
+    """Ratio of Lion's update norm to the gradient norm — a convergence diagnostic.
+
+    Lion's per-step update is ``sign(momentum) * lr``: a constant-magnitude
+    step for every parameter every step, regardless of gradient scale
+    (unlike AdamW's variance-normalized step, which naturally shrinks near a
+    minimum). Its L2 update norm is therefore ``lr * sqrt(n_params)`` to
+    first order (ignoring the much smaller decoupled weight-decay term).
+
+    A ratio that stays roughly constant across training as the loss drops
+    indicates the optimizer is oscillating around a fixed point rather than
+    converging (the update size never shrinks relative to the gradient
+    scale). A ratio that shrinks as the loss drops indicates convergence.
+
+    Returns 0.0 for non-Lion optimizers — the diagnostic is not applicable.
+    """
+    if not isinstance(optimizer, Lion):
+        return 0.0
+    current_lr = float(optimizer.param_groups[0]["lr"])
+    update_norm = current_lr * (n_trainable_params**0.5)
+    return float(update_norm / (grad_norm + 1e-8))
 
 
 def _empty_cache(device: torch.device) -> None:
@@ -195,6 +221,13 @@ class FlowTrainer:
 
         # Track if this is the first training step (to avoid scheduler warning)
         self._first_step = True
+
+        # Convergence diagnostic (see compute_lion_update_ratio): count of
+        # trainable flow_processor parameters, precomputed once since Lion's
+        # sign-based update norm is lr * sqrt(n_params) regardless of step.
+        self._flow_trainable_param_count = sum(
+            p.numel() for p in flow_processor.parameters() if p.requires_grad
+        )
 
     def train_step(
         self,
@@ -456,6 +489,7 @@ class FlowTrainer:
         # Get loss value for metrics (defined before accumulation check)
         loss_value = float(total_loss.detach().item())
         grad_norm: float = 0.0
+        update_ratio_flow: float = 0.0
 
         # Only update weights after accumulating gradients
         self._accumulation_step += 1
@@ -474,6 +508,12 @@ class FlowTrainer:
                 self.text_encoder_optimizer.step()
             for opt in self.text_encoder_extra_optimizers.values():
                 opt.step()
+
+            # Convergence diagnostic: Lion update-norm/grad-norm ratio (0.0 for
+            # non-Lion optimizers). See compute_lion_update_ratio docstring.
+            update_ratio_flow = compute_lion_update_ratio(
+                self.optimizer, self._flow_trainable_param_count, grad_norm
+            )
 
             # Update EMA
             self.ema.update()
@@ -518,6 +558,7 @@ class FlowTrainer:
             "align_loss": float(align_loss.detach().item()),
             "grad_norm_flow": grad_norm,
             "grad_norm_text": compute_grad_norm(self.text_encoder.parameters()),
+            "update_ratio_flow": update_ratio_flow,
             "lr_flow": self.optimizer.param_groups[0]["lr"],
             "pred_mean": pred_seq.mean().item(),
             "pred_std": pred_seq.std().item(),

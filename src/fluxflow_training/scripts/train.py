@@ -61,6 +61,15 @@ from fluxflow_training.training.scheduler_factory import (
     get_default_scheduler_config,
 )
 
+try:
+    # Shared single source of truth with generation (fluxflow-core, fluxflow-ui,
+    # fluxflow-comfyui) -- see fluxflow.text_length for why this must not be an
+    # independently-hardcoded literal. Falls back to the same value if the
+    # installed fluxflow-core predates this constant (not yet reinstalled).
+    from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
+except ImportError:  # pragma: no cover - stale fluxflow-core install
+    DEFAULT_MAX_TEXT_LENGTH = 32
+
 # Environment setup
 warnings.filterwarnings(
     "ignore",
@@ -477,6 +486,7 @@ def initialize_dataloader(args, accelerator):
             dataset_size=args.webdataset_size,
             samples_per_shard=args.webdataset_samples_per_shard,
             fixed_prompt_prefix=args.fixed_prompt_prefix,
+            max_text_length=args.max_text_length,
         )
         print(f"  Shards: {dataset.num_shards}, Estimated size: {dataset.dataset_size:,} samples")
         if args.fixed_prompt_prefix:
@@ -490,6 +500,7 @@ def initialize_dataloader(args, accelerator):
             tokenizer_name=args.tokenizer_name,
             transform=None,
             fixed_prompt_prefix=args.fixed_prompt_prefix,
+            max_text_length=args.max_text_length,
         )
         if args.fixed_prompt_prefix:
             print(f"  Fixed prompt prefix: '{args.fixed_prompt_prefix}'")
@@ -829,6 +840,7 @@ def train_legacy(args):
             dataset_size=args.webdataset_size,
             samples_per_shard=args.webdataset_samples_per_shard,
             fixed_prompt_prefix=args.fixed_prompt_prefix,
+            max_text_length=args.max_text_length,
         )
         print(f"  Shards: {dataset.num_shards}, Estimated size: {dataset.dataset_size:,} samples")
         if args.fixed_prompt_prefix:
@@ -841,6 +853,7 @@ def train_legacy(args):
             tokenizer_name=args.tokenizer_name,
             transform=None,
             fixed_prompt_prefix=args.fixed_prompt_prefix,
+            max_text_length=args.max_text_length,
         )
         if args.fixed_prompt_prefix:
             print(f"  Fixed prompt prefix: '{args.fixed_prompt_prefix}'")
@@ -1045,6 +1058,8 @@ def train_legacy(args):
     lpips_errors = FloatBuffer(max(args.log_interval * 2, 10))
     diff_errors = FloatBuffer(max(args.log_interval * 2, 10))
     adv_img_errors = FloatBuffer(max(args.log_interval * 2, 10))
+    # Convergence diagnostic: Lion update-norm/grad-norm ratio (0.0 for non-Lion)
+    update_ratio_errors = FloatBuffer(max(args.log_interval * 2, 10))
 
     # Create trainers for modular training
     vae_trainer = None
@@ -1076,6 +1091,9 @@ def train_legacy(args):
             lambda_lpips=args.lambda_lpips,
             r1_gamma=5.0,
             r1_interval=16,
+            discriminator_update_freq=args.discriminator_update_freq,
+            kl_z_weight=args.kl_z_weight,
+            ctx_shrinkage_weight=args.ctx_shrinkage_weight,
             gradient_clip_norm=args.initial_clipping_norm,
             accelerator=accelerator,
         )
@@ -1207,6 +1225,11 @@ def train_legacy(args):
                             )
                             avg_diff_loss += diff_loss / resolutions
                             diff_errors.add_item(diff_loss)
+                            if (
+                                isinstance(diff_metrics, dict)
+                                and "update_ratio_flow" in diff_metrics
+                            ):
+                                update_ratio_errors.add_item(diff_metrics["update_ratio_flow"])
 
                 # Increment global step once per batch (after all training steps)
                 global_step += 1
@@ -1273,6 +1296,8 @@ def train_legacy(args):
                             )
                     if args.train_diff or args.train_diff_full:
                         log_msg += f" | Flow: {avg_diff_loss:.4f}"
+                        if len(update_ratio_errors._items) > 0:
+                            log_msg += f" | UpdRatio: {update_ratio_errors.average:.4f}"
 
                     # Show appropriate LR based on what's being trained
                     if args.train_diff or args.train_diff_full:
@@ -1301,6 +1326,8 @@ def train_legacy(args):
                             metrics["generator_loss"] = avg_G_img_loss
                     if args.train_diff or args.train_diff_full:
                         metrics["flow_loss"] = avg_diff_loss
+                        if len(update_ratio_errors._items) > 0:
+                            metrics["update_ratio_flow"] = update_ratio_errors.average
 
                     progress_logger.log_metrics(
                         epoch=epoch,
@@ -1763,6 +1790,19 @@ def parse_args():
         default="distilbert-base-uncased",
         help="Tokenizer name",
     )
+    parser.add_argument(
+        "--max_text_length",
+        type=int,
+        default=DEFAULT_MAX_TEXT_LENGTH,
+        help=(
+            "Max tokenized caption length (padding/truncation) for training datasets. "
+            "Default (fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH, currently 32) matches "
+            "the v0.10.0 flow processor's T_txt; generation reads the same shared constant "
+            "so the two never silently diverge. Raise only after checking the "
+            "truncation-rate/length distribution logged by the dataset classes (see "
+            "docs/MULTI_DATASET_TRAINING.md)."
+        ),
+    )
     parser.add_argument("--img_size", type=int, default=1024, help="Image size")
     parser.add_argument("--channels", type=int, default=3, help="Image channels")
     parser.add_argument(
@@ -1800,10 +1840,32 @@ def parse_args():
         "--lambda_adv", type=float, default=0.5, help="GAN loss weight (increased from 0.1)"
     )
     parser.add_argument(
+        "--discriminator_update_freq",
+        type=int,
+        default=1,
+        help="Run discriminator forward+backward every N global steps "
+        "(default 1 = every step, current behavior; opt-in efficiency knob)",
+    )
+    parser.add_argument(
         "--lambda_lpips",
         type=float,
         default=0.1,
         help="LPIPS perceptual loss weight (lower=sharper, higher=smoother)",
+    )
+    parser.add_argument(
+        "--kl_z_weight",
+        type=float,
+        default=0.0,
+        help="v0.10.0: KL weight on the clean Gaussian z latent (design §5.5), an "
+        "alternative to kl_beta. Default 0.0 preserves the legacy kl_beta/kl_warmup_steps "
+        "path (current behavior); values > 0 switch to the cosine-warmup kl_z schedule.",
+    )
+    parser.add_argument(
+        "--ctx_shrinkage_weight",
+        type=float,
+        default=0.0,
+        help="v0.10.0: L2-like shrinkage pressure on the ctx branch (design §5.5). "
+        "Default 0.0 = inactive (current behavior).",
     )
 
     args = parser.parse_args()
@@ -1897,6 +1959,8 @@ def parse_args():
                 args.channels = config["data"]["channels"]
             if "tokenizer_name" in config["data"] and "tokenizer_name" not in cli_provided:
                 args.tokenizer_name = config["data"]["tokenizer_name"]
+            if "max_text_length" in config["data"] and "max_text_length" not in cli_provided:
+                args.max_text_length = config["data"]["max_text_length"]
             if (
                 "dataloader_max_retries" in config["data"]
                 and "dataloader_max_retries" not in cli_provided
@@ -1969,6 +2033,18 @@ def parse_args():
                 args.lambda_adv = config["training"]["lambda_adv"]
             if "lambda_lpips" in config["training"] and "lambda_lpips" not in cli_provided:
                 args.lambda_lpips = config["training"]["lambda_lpips"]
+            if (
+                "discriminator_update_freq" in config["training"]
+                and "discriminator_update_freq" not in cli_provided
+            ):
+                args.discriminator_update_freq = config["training"]["discriminator_update_freq"]
+            if "kl_z_weight" in config["training"] and "kl_z_weight" not in cli_provided:
+                args.kl_z_weight = config["training"]["kl_z_weight"]
+            if (
+                "ctx_shrinkage_weight" in config["training"]
+                and "ctx_shrinkage_weight" not in cli_provided
+            ):
+                args.ctx_shrinkage_weight = config["training"]["ctx_shrinkage_weight"]
 
         if "optimization" in config:
             if (

@@ -3,7 +3,7 @@ Optimizer factory for creating optimizers based on configuration.
 Supports per-model optimizer selection with customizable hyperparameters.
 """
 
-from typing import Any, Dict, Iterator, cast
+from typing import Any, Dict, Iterator, Optional, cast
 
 import torch.nn as nn
 import torch.optim as optim
@@ -143,22 +143,70 @@ def create_optimizer(
     return result
 
 
-def get_default_optimizer_config(model_name: str) -> Dict[str, Any]:
+def get_default_optimizer_config(
+    model_name: str, optimizer_type: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Get default optimizer configuration for a specific model.
 
     Args:
         model_name: Name of the model (flow, vae, text_encoder, discriminator)
+        optimizer_type: If given and equal to "Lion" while the model's native
+            default is a different optimizer (currently vae, discriminator,
+            text_encoder — flow already defaults to Lion), returns a
+            Lion-appropriate config instead of the model's native (AdamW)
+            defaults. Lion's update is sign(momentum) * lr — a
+            constant-magnitude step every parameter every step — so reusing
+            an AdamW-tuned lr/weight_decay causes oscillation instead of
+            convergence (the same bug fixed for flow; see the "flow" entry
+            below). Any other value (including None, the default) returns
+            the model's native default dict unchanged — this parameter only
+            rescales the specific Lion-vs-AdamW mismatch, not arbitrary
+            optimizer-type swaps.
 
     Returns:
         Default optimizer configuration dictionary
     """
+    # Lion-appropriate overrides for models that default to AdamW. Ratios
+    # (~5x lower lr, ~5x higher weight_decay than the model's AdamW default)
+    # mirror the same Chen et al. 2023 guidance already applied to flow.
+    lion_overrides = {
+        "vae": {
+            "type": "Lion",
+            "lr": 1e-7,  # AdamW default 5e-7 / 5
+            "betas": [0.9, 0.95],
+            "weight_decay": 0.05,  # AdamW default 0.01 * 5
+            "decoupled_weight_decay": True,
+        },
+        "text_encoder": {
+            "type": "Lion",
+            "lr": 1e-8,  # AdamW default 5e-8 / 5
+            "betas": [0.9, 0.95],
+            "weight_decay": 0.05,  # AdamW default 0.01 * 5
+            "decoupled_weight_decay": True,
+        },
+        "discriminator": {
+            "type": "Lion",
+            "lr": 1e-7,  # AdamW default 5e-7 / 5
+            "betas": [0.9, 0.95],
+            "weight_decay": 0.005,  # AdamW default 0.001 * 5
+            "decoupled_weight_decay": True,
+        },
+    }
+
     defaults = {
         "flow": {
             "type": "Lion",
-            "lr": 5e-7,
+            # Lion's update is sign(momentum) * lr: a constant-magnitude step
+            # every parameter every step, unlike AdamW's variance-normalized
+            # step which naturally shrinks near a minimum. Per Chen et al.
+            # 2023, Lion needs ~3-10x smaller lr and ~3-10x larger
+            # weight_decay than an equivalent AdamW setting (was lr=5e-7,
+            # weight_decay=0.01 — identical to AdamW's, causing oscillation
+            # instead of convergence).
+            "lr": 1e-7,
             "betas": [0.9, 0.95],
-            "weight_decay": 0.01,
+            "weight_decay": 0.05,
             "decoupled_weight_decay": True,
         },
         "vae": {
@@ -182,4 +230,10 @@ def get_default_optimizer_config(model_name: str) -> Dict[str, Any]:
         },
     }
 
-    return defaults.get(model_name, defaults["vae"])
+    base = defaults.get(model_name, defaults["vae"])
+
+    if optimizer_type == "Lion" and base["type"] != "Lion":
+        override_key = model_name if model_name in lion_overrides else "vae"
+        return lion_overrides[override_key]
+
+    return base

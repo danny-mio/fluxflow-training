@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Context encoder uses SiLU activation
+from fluxflow.models.v100.conditioning import SPADE_v100b
 from fluxflow.utils import get_logger
 from fluxflow.utils.mps import mps_safe_pool2d
 from torch.optim import Optimizer
@@ -195,6 +196,9 @@ class VAETrainer:
         # 0 = disabled (default). Writes PNG + JSONL to disc_logit_diagnostic_dir.
         disc_logit_diagnostic_interval: int = 0,
         disc_logit_diagnostic_dir: Optional[Union[str, Path]] = None,
+        # Additive opt-in efficiency knob: skip discriminator forward+backward on
+        # off-cycle steps. 1 (default) reproduces the historical every-step behavior.
+        discriminator_update_freq: int = 1,
     ):
         """
         Initialize VAE trainer.
@@ -236,6 +240,10 @@ class VAETrainer:
                 Default 0.01. Only active when train_ctx_aux=True.
             train_ctx_aux: Compute auxiliary context reconstruction loss (default: True).
             accelerator: Accelerate accelerator instance
+            discriminator_update_freq: Run discriminator forward+backward every N
+                global steps (default 1 = every step, current behavior). Values > 1
+                skip it on off-cycle steps as an opt-in efficiency knob; VAE/generator
+                training is unaffected.
         """
         self.compressor = compressor
         self.expander = expander
@@ -298,6 +306,11 @@ class VAETrainer:
         self.disc_logit_diagnostic_dir = (
             Path(disc_logit_diagnostic_dir) if disc_logit_diagnostic_dir is not None else None
         )
+        if discriminator_update_freq < 1:
+            raise ValueError(
+                f"discriminator_update_freq must be >= 1, got {discriminator_update_freq}"
+            )
+        self.discriminator_update_freq = discriminator_update_freq
 
         # Initialize LPIPS if needed
         if self.use_lpips:
@@ -444,6 +457,40 @@ class VAETrainer:
         if self._ctx_hook_handle is not None:
             self._ctx_hook_handle.remove()
             self._ctx_hook_handle = None
+
+    def _should_train_discriminator(self, global_step: int) -> bool:
+        """Whether discriminator forward+backward should run this step.
+
+        Gated by ``discriminator_update_freq`` (default 1 = every step, the
+        historical behavior). Values > 1 skip the discriminator on off-cycle
+        steps as an opt-in efficiency knob; VAE/generator training is unaffected.
+        """
+        return (
+            self.use_gan
+            and self.discriminator is not None
+            and global_step % self.discriminator_update_freq == 0
+        )
+
+    def _compute_spade_drift(self) -> tuple[float, float]:
+        """Mean SPADE γ/β drift from init, averaged across SPADE_v100b blocks
+        in the expander.
+
+        Independent of the disconnected ``ctx_probe_alignment`` diagnostic — this
+        reads gradient-trained ``gamma_scale``/``beta_scale`` parameters directly,
+        so nonzero drift is a real signal that SPADE conditioning is learning.
+        Returns ``(0.0, 0.0)`` when the expander has no SPADE_v100b blocks (e.g.
+        legacy v060/v070 models).
+        """
+        gamma_drifts: list[float] = []
+        beta_drifts: list[float] = []
+        for module in self.expander.modules():
+            if isinstance(module, SPADE_v100b):
+                gamma_drift, beta_drift = module.scale_drift()
+                gamma_drifts.append(gamma_drift)
+                beta_drifts.append(beta_drift)
+        if not gamma_drifts:
+            return 0.0, 0.0
+        return sum(gamma_drifts) / len(gamma_drifts), sum(beta_drifts) / len(beta_drifts)
 
     def save_context_predictor(self, checkpoint_path: str):
         """Save context predictor state for persistence."""
@@ -807,8 +854,8 @@ class VAETrainer:
         losses = {}
         discriminator_was_stepped: bool = False
 
-        # Train discriminator first if using GAN
-        if self.use_gan and self.discriminator is not None:
+        # Train discriminator first if using GAN (gated by discriminator_update_freq)
+        if self._should_train_discriminator(global_step):
             # Extra safety check (should never happen due to __init__ validation)
             if self.discriminator_optimizer is None:
                 raise RuntimeError(
@@ -850,6 +897,19 @@ class VAETrainer:
         losses["coarseness_loss"] = gen_losses.get("coarseness_loss", 0.0)
         # v0.10.0: auxiliary context reconstruction loss
         losses["ctx_aux_loss"] = gen_losses.get("ctx_aux_loss", 0.0)
+        # v0.10.0: gradient-carrying ctx-shrinkage term (see ctx_shrinkage_weight).
+        # Reads 0.0 unless the caller explicitly wires a nonzero weight in.
+        losses["ctx_shrinkage_loss"] = gen_losses.get("ctx_shrinkage_loss", 0.0)
+        losses["ctx_shrinkage_alpha"] = gen_losses.get("ctx_shrinkage_alpha", 0.0)
+        # Diagnostic probe only — no gradient into SPADE/compressor/expander. See
+        # the comment on context_alignment_loss in _train_generator for why this
+        # plateaus near 1.0 regardless of optimizer/training quality.
+        losses["ctx_probe_alignment"] = gen_losses.get("ctx_probe_alignment", 0.0)
+        # First real, gradient-connected signal of whether SPADE conditioning is
+        # learning anything — independent of the disconnected probe above.
+        spade_gamma_drift, spade_beta_drift = self._compute_spade_drift()
+        losses["spade_gamma_drift"] = spade_gamma_drift
+        losses["spade_beta_drift"] = spade_beta_drift
 
         # Check if optimizer was actually stepped (could be skipped due to NaN)
         optimizer_was_stepped = gen_losses.pop("_optimizer_stepped", True)
@@ -1081,7 +1141,7 @@ class VAETrainer:
 
         Returns:
             Dictionary with loss values keyed by ``vae``, ``kl``, ``generator``,
-            ``lpips``, ``recon``, ``ctx_aux_loss``, ``context_alignment``,
+            ``lpips``, ``recon``, ``ctx_aux_loss``, ``ctx_probe_alignment``,
             ``color_stats``, ``hist_loss``, ``contrast_loss``, ``coarseness_loss``.
         """
         self.optimizer.zero_grad(set_to_none=True)
@@ -1217,7 +1277,15 @@ class VAETrainer:
                     ctx_tokens_half = img_seq_rec[:, :, half:]  # [B, T, D]
                     ctx_aux_loss = F.mse_loss(ctx_tokens_half, z_tokens_half.detach())
             except Exception as exc:
-                logger.warning(f"ctx_aux_loss computation skipped: {exc}")
+                # Non-fatal by design (training must continue), but loud: a broad
+                # except here previously swallowed real bugs behind a generic
+                # warning. Surface the exception type/message so a regression in
+                # this path is actually noticeable instead of silently zeroing.
+                logger.error(
+                    f"ctx_aux_loss computation failed ({type(exc).__name__}): {exc} "
+                    "— forcing ctx_aux_loss to 0.0 for this step.",
+                    exc_info=True,
+                )
 
         # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
         B = real_imgs.shape[0]
@@ -1256,7 +1324,13 @@ class VAETrainer:
             B, self.context_channels, self.context_height, self.context_width
         )
 
-        # Context alignment loss - compare predicted context to ideal context from real images
+        # Diagnostic probe only — NOT a training-quality signal for SPADE/compressor/expander.
+        # predicted_context is built from latent_repr.detach() and ideal_context from
+        # real_imgs.detach(), so context_alignment_loss has zero gradient path into the VAE;
+        # it is trained by its own separate context_predictor_optimizer (see __init__). Its
+        # ~1.0 plateau is just the MSE "predict the mean" floor against the InstanceNorm2d
+        # target's unit variance, not a sign of anything converging or failing to. Logged as
+        # ``ctx_probe_alignment`` (see train_step) to keep that distinction visible.
         ideal_context = self.context_encoder(real_imgs.detach())
         context_alignment_loss = F.mse_loss(predicted_context, ideal_context)
 
@@ -1476,7 +1550,9 @@ class VAETrainer:
             # v0.10.0: ctx-features L2 shrinkage (design §5.5)
             "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
             "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
-            "context_alignment": float(context_alignment_loss.detach().item()),
+            # Diagnostic probe, no gradient into SPADE/compressor/expander — see the
+            # comment above the context_alignment_loss computation for why.
+            "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),

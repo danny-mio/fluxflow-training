@@ -2,9 +2,11 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from lion_pytorch import Lion
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import ConstantLR
 
@@ -474,3 +476,113 @@ class TestFlowTrainerSplitTextEncoderOptimizers:
         assert (
             len(zero_grad_calls) == 1
         ), f"Expected 1 zero_grad call over 2 micro-steps, got {len(zero_grad_calls)}"
+
+
+# ---------------------------------------------------------------------------
+# Convergence diagnostic: update-norm-to-grad-norm ratio
+# ---------------------------------------------------------------------------
+
+
+def _make_trainer_with_optimizer(optimizer_cls, lr=1e-4, **optimizer_kwargs):
+    """Build a minimal FlowTrainer using the given optimizer class for the flow processor."""
+    from fluxflow_training.training.flow_trainer import FlowTrainer
+
+    flow = _MinimalFlow(4)
+    text = _SimpleTextEncoder()
+    comp = _make_mock_compressor(vae_dim=4, context_dims=0, token_count=4)
+
+    opt = optimizer_cls(flow.parameters(), lr=lr, **optimizer_kwargs)
+    sched = ConstantLR(opt)
+
+    accel = MagicMock()
+    accel.backward = lambda loss: loss.backward()
+    accel.clip_grad_norm_ = nn.utils.clip_grad_norm_
+
+    trainer = FlowTrainer(
+        flow_processor=flow,
+        text_encoder=text,
+        compressor=comp,
+        optimizer=opt,
+        scheduler=sched,
+        gradient_clip_norm=1.0,
+        num_train_timesteps=100,
+        accelerator=accel,
+    )
+    return trainer, flow
+
+
+class TestUpdateRatioFlowDiagnostic:
+    """``update_ratio_flow`` should expose the Lion update-norm/grad-norm mismatch."""
+
+    def test_present_in_metrics(self):
+        """Metric key must always be present after a stepped batch."""
+        trainer, _ = _make_trainer_with_optimizer(AdamW)
+        metrics = trainer.train_step(
+            torch.randn(2, 3, 16, 16),
+            torch.randint(0, 100, (2, 8)),
+            torch.ones(2, 8, dtype=torch.long),
+            global_step=0,
+        )
+        assert "update_ratio_flow" in metrics
+
+    def test_zero_for_non_lion_optimizer(self):
+        """Non-Lion optimizers (e.g. AdamW) report 0.0 — diagnostic not applicable."""
+        trainer, _ = _make_trainer_with_optimizer(AdamW)
+        metrics = trainer.train_step(
+            torch.randn(2, 3, 16, 16),
+            torch.randint(0, 100, (2, 8)),
+            torch.ones(2, 8, dtype=torch.long),
+            global_step=0,
+        )
+        assert metrics["update_ratio_flow"] == 0.0
+
+    def test_positive_for_lion_optimizer(self):
+        """Lion optimizer yields a positive ratio once gradients exist."""
+        trainer, _ = _make_trainer_with_optimizer(Lion, lr=1e-3, weight_decay=0.05)
+        metrics = trainer.train_step(
+            torch.randn(2, 3, 16, 16),
+            torch.randint(0, 100, (2, 8)),
+            torch.ones(2, 8, dtype=torch.long),
+            global_step=0,
+        )
+        assert metrics["update_ratio_flow"] > 0.0
+
+    def test_lion_ratio_matches_analytic_formula(self):
+        """ratio == lr * sqrt(n_trainable_params) / (grad_norm_flow + eps).
+
+        Lion's update is sign(momentum) * lr — constant magnitude per element —
+        so the update norm is exactly lr * sqrt(n_params) to first order
+        (ignoring the much smaller decoupled weight-decay term).
+        """
+        trainer, flow = _make_trainer_with_optimizer(Lion, lr=1e-3, weight_decay=0.0)
+        # ConstantLR rescales lr by its default factor (1/3) immediately at
+        # construction — read the *live* lr rather than assuming the literal
+        # value passed to Lion(...) is what train_step will actually see.
+        live_lr = trainer.optimizer.param_groups[0]["lr"]
+        metrics = trainer.train_step(
+            torch.randn(2, 3, 16, 16),
+            torch.randint(0, 100, (2, 8)),
+            torch.ones(2, 8, dtype=torch.long),
+            global_step=0,
+        )
+        n_params = sum(p.numel() for p in flow.parameters() if p.requires_grad)
+        expected_update_norm = live_lr * (n_params**0.5)
+        expected_ratio = expected_update_norm / (metrics["grad_norm_flow"] + 1e-8)
+        assert metrics["update_ratio_flow"] == pytest.approx(expected_ratio, rel=1e-4)
+
+    def test_zero_when_batch_skipped_for_nan(self):
+        """No stepping occurred (NaN-skip early return) — key still present, defaults to absent/0."""
+        trainer, _ = _make_trainer_with_optimizer(Lion, lr=1e-3)
+        with patch.object(
+            trainer.text_encoder,
+            "forward",
+            side_effect=lambda *a, **kw: torch.full((2, 4), float("nan")),
+        ):
+            metrics = trainer.train_step(
+                torch.randn(2, 3, 16, 16),
+                torch.randint(0, 100, (2, 8)),
+                torch.ones(2, 8, dtype=torch.long),
+                global_step=0,
+            )
+        # NaN-skip path returns the early minimal dict — no update_ratio_flow key.
+        assert metrics.get("update_ratio_flow", 0.0) == 0.0

@@ -54,6 +54,19 @@ data:
   channels: 3
   tokenizer_name: "distilbert-base-uncased"
 
+  # Max tokenized caption length (padding/truncation) for training. Default 32
+  # matches the v0.10.0 flow processor's T_txt (fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH,
+  # the single shared constant generation also reads -- see fluxflow-core/src/fluxflow/text_length.py).
+  # Truncation beyond this length is SILENT by default: the dataset classes in
+  # fluxflow_training/data/datasets.py sample captions and log a running
+  # truncation-rate / true-length-distribution summary (min/max/mean/p50/p95)
+  # via the standard logger -- watch for "caption truncation stats" log lines
+  # during an epoch before deciding whether/how far to raise this value.
+  # Raising it is a real behavior change requiring retraining (the model has
+  # never seen text sequences longer than whatever this was during training),
+  # not just a config tweak -- see docs/MULTI_DATASET_TRAINING.md.
+  max_text_length: 32
+
   # Multi-scale training: train on reduced versions of images
   # For each size smaller than image's min dimension, creates a downscaled version
   # Example: [128, 256, 512] - a 1024px image trains at 128, 256, 512, and 1024
@@ -86,6 +99,32 @@ training:
   kl_beta: 0.001  # Increased 10× to compensate for normalized KL
   kl_warmup_steps: 5000
   kl_free_bits: 0.0
+
+  # v0.10.0: KL weight on the clean Gaussian z latent (design §5.5), an alternative
+  # to the legacy kl_beta path above. Wired into both the legacy train.py script and
+  # the pipeline orchestrator's VAETrainer(...) call. Default 0.0 (this key's default
+  # in both --kl_z_weight and legacy-script YAML) means kl_beta/kl_warmup_steps stays
+  # active. kl_z_weight > 0 takes priority over kl_beta (cosine warmup over
+  # kl_z_warmup_steps instead of kl_warmup_steps). NOTE: in pipeline-mode configs,
+  # PipelineStepConfig's own field default is 0.5 (design doc default) — omitting
+  # this key from a pipeline step's YAML uses 0.5, not 0.0. Set it explicitly (as
+  # here) to opt out and keep the legacy kl_beta path.
+  kl_z_weight: 0.0
+
+  # v0.10.0: L2-like shrinkage pressure on the ctx branch to keep it informative
+  # without collapsing (design §5.5); warms up from ctx_shrinkage_warmup_start_step
+  # over ctx_shrinkage_warmup_steps. Wired into both training drivers. Default 0.0
+  # (this key's default in both --ctx_shrinkage_weight and legacy-script YAML) =
+  # inactive. NOTE: in pipeline-mode configs, PipelineStepConfig's own field default
+  # is 0.001 — omitting this key from a pipeline step's YAML uses 0.001, not 0.0. Set
+  # it explicitly (as here) to opt out and keep it inactive.
+  ctx_shrinkage_weight: 0.0
+
+  # Discriminator update-frequency knob (opt-in efficiency tuning, additive only).
+  # Runs discriminator forward+backward every N global steps. 1 (default) = every
+  # step, exactly matching current behavior. Increase to reduce discriminator
+  # compute at the cost of a staler adversarial signal.
+  discriminator_update_freq: 1
 
   # VAE loss component settings
   train_kl: true
@@ -289,7 +328,29 @@ training:
   #       #       lr: 0.00005    # Higher LR for projection head
 
 optimization:
-  # Path to JSON file with detailed optimizer/scheduler configs (optional)
+  # Path to JSON file with detailed optimizer/scheduler configs (optional).
+  # Overrides the per-model defaults in optimizer_factory.get_default_optimizer_config
+  # / scheduler_factory.get_default_scheduler_config (used by the legacy train.py
+  # script's load_optimizer_scheduler_config). File shape:
+  #
+  #   {
+  #     "optimizers": {
+  #       "flow": {
+  #         "type": "Lion",
+  #         "lr": 1e-7,            # ~5-10x smaller than the equivalent AdamW lr —
+  #                                # Lion's sign-based update is constant-magnitude
+  #                                # per step, so a too-large lr oscillates instead
+  #                                # of converging (Chen et al. 2023).
+  #         "betas": [0.9, 0.95],
+  #         "weight_decay": 0.05,  # ~5-10x larger than the equivalent AdamW value
+  #         "decoupled_weight_decay": true
+  #       },
+  #       "vae": {"type": "AdamW", "lr": 5e-7, "weight_decay": 0.01}
+  #     },
+  #     "schedulers": {
+  #       "flow": {"type": "CosineAnnealingLR", "eta_min_factor": 0.01}
+  #     }
+  #   }
   optim_sched_config: null
 
 output:

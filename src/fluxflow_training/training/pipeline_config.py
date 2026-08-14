@@ -225,6 +225,9 @@ class PipelineStepConfig:
     instance_noise_std: float = 0.01
     instance_noise_decay: float = 0.9999
     adaptive_weights: bool = True
+    # Additive opt-in efficiency knob: run discriminator forward+backward every N
+    # global steps. 1 (default) reproduces the historical every-step behavior.
+    discriminator_update_freq: int = 1
 
     # Optimization configuration (inline YAML)
     optimization: Optional[OptimizationConfig] = None
@@ -763,6 +766,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         instance_noise_std=step_dict.get("instance_noise_std", 0.01),
         instance_noise_decay=step_dict.get("instance_noise_decay", 0.9999),
         adaptive_weights=step_dict.get("adaptive_weights", True),
+        discriminator_update_freq=step_dict.get("discriminator_update_freq", 1),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),

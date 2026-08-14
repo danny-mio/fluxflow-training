@@ -214,10 +214,18 @@ class TestGetDefaultOptimizerConfig:
     """Tests for get_default_optimizer_config function."""
 
     def test_flow_default(self):
-        """Flow model should use Lion optimizer."""
+        """Flow model should use Lion optimizer.
+
+        lr=1e-7 (5x below AdamW's 5e-7) and weight_decay=0.05 (5x AdamW's 0.01)
+        per Lion's published guidance (Chen et al. 2023): Lion's sign-based
+        update is constant-magnitude per step, so it needs a smaller lr and
+        larger weight_decay than an equivalent AdamW setting to converge
+        instead of oscillating around a fixed point.
+        """
         config = get_default_optimizer_config("flow")
         assert config["type"] == "Lion"
-        assert config["lr"] == 5e-7
+        assert config["lr"] == 1e-7
+        assert config["weight_decay"] == 0.05
 
     def test_vae_default(self):
         """VAE model should use AdamW optimizer."""
@@ -248,6 +256,76 @@ class TestGetDefaultOptimizerConfig:
         """All default configs should pass validation."""
         for model_name in ["flow", "vae", "text_encoder", "discriminator"]:
             config = get_default_optimizer_config(model_name)
+            validate_optimizer_config(config)  # Should not raise
+
+
+class TestGetDefaultOptimizerConfigLionOverride:
+    """Tests for the optional Lion-rescaled override (additive; vae/discriminator/
+    text_encoder still default to AdamW unless optimizer_type='Lion' is requested).
+    """
+
+    def test_vae_default_unchanged_without_optimizer_type(self):
+        """Omitting optimizer_type must not change vae's actual default (AdamW)."""
+        config = get_default_optimizer_config("vae")
+        assert config["type"] == "AdamW"
+        assert config["lr"] == 5e-7
+        assert config["weight_decay"] == 0.01
+
+    def test_vae_lion_override(self):
+        """vae + optimizer_type='Lion' should return Lion-appropriate values,
+        not AdamW's lr=5e-7/weight_decay=0.01 reused verbatim.
+        """
+        config = get_default_optimizer_config("vae", optimizer_type="Lion")
+        assert config["type"] == "Lion"
+        assert config["lr"] == 1e-7  # 5x below AdamW's 5e-7
+        assert config["weight_decay"] == 0.05  # 5x AdamW's 0.01
+
+    def test_text_encoder_lion_override(self):
+        """text_encoder + optimizer_type='Lion' should rescale relative to its
+        own (already lower) AdamW lr, not vae's.
+        """
+        config = get_default_optimizer_config("text_encoder", optimizer_type="Lion")
+        assert config["type"] == "Lion"
+        assert config["lr"] == 1e-8  # 5x below AdamW's 5e-8
+        assert config["weight_decay"] == 0.05  # 5x AdamW's 0.01
+
+    def test_discriminator_lion_override(self):
+        """discriminator + optimizer_type='Lion' should rescale relative to its
+        own (already low) AdamW weight_decay, not vae's/flow's.
+        """
+        config = get_default_optimizer_config("discriminator", optimizer_type="Lion")
+        assert config["type"] == "Lion"
+        assert config["lr"] == 1e-7  # 5x below AdamW's 5e-7
+        assert config["weight_decay"] == 0.005  # 5x AdamW's 0.001
+
+    def test_flow_lion_override_is_a_no_op(self):
+        """flow already defaults to Lion — requesting optimizer_type='Lion' must
+        not double-apply the rescale.
+        """
+        config = get_default_optimizer_config("flow", optimizer_type="Lion")
+        assert config["type"] == "Lion"
+        assert config["lr"] == 1e-7
+        assert config["weight_decay"] == 0.05
+
+    def test_unknown_model_lion_override_falls_back_to_vae(self):
+        """Unknown model + optimizer_type='Lion' should use vae's Lion override."""
+        config = get_default_optimizer_config("unknown_model", optimizer_type="Lion")
+        assert config["type"] == "Lion"
+        assert config["lr"] == 1e-7
+        assert config["weight_decay"] == 0.05
+
+    def test_non_lion_optimizer_type_is_ignored(self):
+        """A non-Lion optimizer_type does not trigger any rescaling — vae still
+        returns its native AdamW default (only the Lion mismatch is addressed).
+        """
+        config = get_default_optimizer_config("vae", optimizer_type="SGD")
+        assert config["type"] == "AdamW"
+        assert config["lr"] == 5e-7
+
+    def test_all_lion_overrides_pass_validation(self):
+        """Every Lion-override config must itself be a valid optimizer config."""
+        for model_name in ["vae", "text_encoder", "discriminator", "flow", "unknown_model"]:
+            config = get_default_optimizer_config(model_name, optimizer_type="Lion")
             validate_optimizer_config(config)  # Should not raise
 
 

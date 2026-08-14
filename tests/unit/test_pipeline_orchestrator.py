@@ -655,6 +655,37 @@ class TestTrainReconstructionParameter:
         assert "self.train_reconstruction = train_reconstruction" in content
 
 
+class TestKlZWeightAndCtxShrinkageWiring:
+    """v0.10.0: kl_z_weight / ctx_shrinkage_weight must flow from PipelineStepConfig
+    into the VAETrainer(...) construction call (previously a documented no-op)."""
+
+    def test_kl_z_weight_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert 'kl_z_weight=getattr(step, "kl_z_weight", 0.0)' in content
+
+    def test_ctx_shrinkage_weight_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert 'ctx_shrinkage_weight=getattr(step, "ctx_shrinkage_weight", 0.0)' in content
+
+
 class TestLoggingOutput:
     """Test console and metrics logging for different config combinations."""
 
