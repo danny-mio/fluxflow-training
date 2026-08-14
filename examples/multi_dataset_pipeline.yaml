@@ -14,6 +14,16 @@ training:
         captions_file: /path/to/highres/captions.txt
         batch_size: 2  # Override default batch size
         workers: 8
+        # Opt-in, off by default. Groups images by their exact post-transform
+        # target shape (instead of rounded native size), so every batch drawn
+        # is shape-uniform batch-to-batch, not just within a batch. Use this
+        # on backends whose convolution kernels are keyed/autotuned per input
+        # shape (e.g. no precompiled kernel database for the target), where
+        # near-every-batch shape drift forces repeated kernel search/compile.
+        # local-only (type: local); rejected for webdataset by the validator.
+        # Cannot be combined with reduced_min_sizes on the same dataset yet
+        # (mutually exclusive for now — see PipelineConfigValidator).
+        aspect_ratio_bucketing: false
 
       # Another local dataset
       local_lowres:

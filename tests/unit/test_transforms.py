@@ -5,6 +5,7 @@ import pytest
 import torch
 from PIL import Image
 
+from fluxflow_training.data import transforms as transforms_module
 from fluxflow_training.data.transforms import (
     collate_fn_generate,
     collate_fn_variable,
@@ -671,3 +672,67 @@ class TestCollateWithReducedVersions:
         assert (
             abs(cols - rows) <= 3
         ), f"marker distorted: {cols}x{rows} px — aspect ratio not preserved"
+
+
+class TestCollateBucketedBatchNoCropInvariant:
+    """When a batch is pre-selected so every image resolves to the same
+    target shape (as aspect_ratio_bucketing guarantees via
+    build_shape_dimension_cache), collate_fn_variable's conform_image_to_size
+    safety net must be a no-op: it must not be invoked at all, since
+    len(set(sizes)) == 1 for the batch's scale group.
+
+    (342, 318) and (352, 305) have different native aspect ratios but both
+    resolve to (352, 320) under the same min/max convention
+    build_shape_dimension_cache uses -- see test_shape_dimension_cache.py.
+    """
+
+    def test_conform_image_to_size_not_called_for_uniform_bucket(self, temp_dir, monkeypatch):
+        path_a = temp_dir / "same_a.jpg"
+        path_b = temp_dir / "same_b.jpg"
+        Image.new("RGB", (342, 318)).save(path_a)
+        Image.new("RGB", (352, 305)).save(path_b)
+
+        calls = []
+        original = transforms_module.conform_image_to_size
+
+        def spy(image, target):
+            calls.append(target)
+            return original(image, target)
+
+        monkeypatch.setattr(transforms_module, "conform_image_to_size", spy)
+
+        data = [
+            (torch.tensor([1, 2]), str(path_a)),
+            (torch.tensor([3, 4]), str(path_b)),
+        ]
+        images, captions = collate_fn_variable(data, channels=3, img_size=512)
+
+        assert calls == [], "conform_image_to_size should not fire for a shape-uniform bucket"
+        assert captions.shape[0] == 2
+        # Both images already resize to the identical (352, 320) target.
+        assert images[0].shape[-2:] == (320, 352)
+
+    def test_conform_image_to_size_called_for_non_uniform_batch(self, temp_dir, monkeypatch):
+        """Sanity check: the spy setup does detect crops on ordinary
+        (non-bucketed) mixed-size batches, so the assertion above is meaningful."""
+        path_square = temp_dir / "square.jpg"
+        path_wide = temp_dir / "wide.jpg"
+        Image.new("RGB", (256, 256)).save(path_square)
+        Image.new("RGB", (336, 256)).save(path_wide)
+
+        calls = []
+        original = transforms_module.conform_image_to_size
+
+        def spy(image, target):
+            calls.append(target)
+            return original(image, target)
+
+        monkeypatch.setattr(transforms_module, "conform_image_to_size", spy)
+
+        data = [
+            (torch.tensor([1, 2]), str(path_square)),
+            (torch.tensor([3, 4]), str(path_wide)),
+        ]
+        collate_fn_variable(data, channels=3, img_size=128)
+
+        assert len(calls) > 0

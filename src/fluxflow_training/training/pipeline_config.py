@@ -45,6 +45,25 @@ class DatasetConfig:
     batch_size: Optional[int] = None  # Override step batch_size
     workers: Optional[int] = None  # Override step workers
 
+    # v0.10.0: opt-in exact-shape bucketing. Off by default. When True, local
+    # datasets group images by their exact post-transform target shape (see
+    # ``build_shape_dimension_cache``) instead of rounded native size, so
+    # every batch a dataloader draws is shape-uniform batch-to-batch — not
+    # just within a batch. Useful on backends whose convolution kernels are
+    # keyed/autotuned per input shape, where near-every-batch shape drift
+    # forces repeated kernel search/compilation. local-only (type='local');
+    # rejected for 'webdataset' (no random access for bucketed sampling) by
+    # PipelineConfigValidator.
+    aspect_ratio_bucketing: bool = False
+    # Per-dataset override of the multi-scale-per-image reduced sizes. Takes
+    # precedence over the global ``args.reduced_min_sizes`` CLI/config value
+    # for this dataset's collate behavior when set (see
+    # TrainingPipelineOrchestrator._create_dataloader_for_dataset). Mutually
+    # exclusive with aspect_ratio_bucketing — combining true-shape bucketing
+    # with the multi-scale-versions-per-image path is real added complexity,
+    # out of scope for this version.
+    reduced_min_sizes: Optional[list[int]] = None
+
 
 @dataclass
 class TransitionCriteria:
@@ -352,6 +371,28 @@ class PipelineConfigValidator:
                     f"Valid types: 'local', 'webdataset', 'noise'"
                 )
 
+            self._validate_aspect_ratio_bucketing(name, dataset)
+
+    def _validate_aspect_ratio_bucketing(self, name: str, dataset: DatasetConfig) -> None:
+        """Validate ``aspect_ratio_bucketing`` (exact post-transform shape bucketing)."""
+        if not dataset.aspect_ratio_bucketing:
+            return
+
+        if dataset.type != "local":
+            self.errors.append(
+                f"Dataset '{name}': aspect_ratio_bucketing requires type='local' "
+                f"(webdataset is streamed with no random access for bucketed sampling)"
+            )
+
+        if dataset.reduced_min_sizes:
+            self.errors.append(
+                f"Dataset '{name}': aspect_ratio_bucketing cannot be combined with "
+                f"reduced_min_sizes on the same dataset. Combining true-shape "
+                f"bucketing with the multi-scale-versions-per-image path is real "
+                f"added complexity, explicitly out of scope for this version — "
+                f"disable one of the two."
+            )
+
     def _validate_step(self, step: PipelineStepConfig, step_name: str, step_index: int) -> None:
         """Validate a single pipeline step."""
         # Check epoch count
@@ -542,6 +583,8 @@ def _parse_dataset_config(dataset_dict: dict) -> DatasetConfig:
         # Common fields
         batch_size=dataset_dict.get("batch_size"),
         workers=dataset_dict.get("workers"),
+        aspect_ratio_bucketing=dataset_dict.get("aspect_ratio_bucketing", False),
+        reduced_min_sizes=dataset_dict.get("reduced_min_sizes"),
     )
 
 

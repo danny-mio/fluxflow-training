@@ -1324,3 +1324,53 @@ class TestGANOnlyCheckpointSave:
         saved_disc = discriminators["D_img"]
         # Verify it's the trained disc, not a fresh one — ctx_proj.weight should be 0.42
         assert abs(saved_disc.ctx_proj.weight.mean().item() - 0.42) < 1e-4
+
+
+class TestCrashLoggingUsesPrint:
+    """Crash-context logging for the vae train_step exception must use print(...).
+
+    logger.error(...) calls in this codebase do not reach train.log (fed by a
+    shell redirect of stdout/stderr), so a crash's diagnostic context never
+    surfaced even though the exception itself did. Every other user-visible
+    line in this loop already uses print(...); the crash-context call must
+    match.
+    """
+
+    @staticmethod
+    def _source():
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        return orchestrator_path.read_text()
+
+    def test_no_logger_error_calls_remain(self):
+        """logger.error was only ever used for this one crash-context call."""
+        content = self._source()
+        assert "logger.error" not in content, (
+            "logger.error(...) calls don't reach train.log. The crash-context call "
+            "must be converted to print(...)."
+        )
+
+    def test_crash_context_uses_print_with_full_context(self):
+        """The vae train_step crash handler must print step/batch/global_step/shape."""
+        content = self._source()
+        assert (
+            'print(\n                                    f"Crash in vae train_step' in content
+        ), "Crash-context message must be emitted via print(...), not logger.error(...)."
+        assert 'f"Crash in vae train_step | Step {step.name} | "' in content
+        assert 'f"Batch {batch_idx} | global_step={self.global_step} | "' in content
+        assert 'f"image shape={tuple(real_imgs.shape)}"' in content
+
+    def test_exception_still_reraised(self):
+        """The except block must still re-raise after logging, so the crash is not swallowed."""
+        content = self._source()
+        idx = content.index("Crash in vae train_step")
+        # The next non-blank statement after the print block must be a bare raise.
+        tail = content[idx : idx + 400]
+        assert "raise" in tail, "Exception must still propagate after crash logging."

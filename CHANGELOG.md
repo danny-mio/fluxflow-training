@@ -19,6 +19,20 @@ Not yet released — work in progress toward v0.10.0.
   models built via the factory path). New `examples/config-rocm.yaml`
   starting-point config for Strix Halo. See `docs/ROCM.md` in fluxflow-core.
   Not yet empirically validated on real hardware.
+- **Opt-in aspect-ratio bucketing** (`aspect_ratio_bucketing: bool`,
+  per-dataset, default `false`) for `type: local` datasets: groups images by
+  their exact post-transform target shape (`build_shape_dimension_cache`)
+  instead of rounded native size, so every batch drawn from a group is
+  shape-uniform batch-to-batch — existing behavior is unchanged when left
+  off. Rejected by config validation when combined with `type: webdataset`
+  or with per-dataset `reduced_min_sizes`. Mitigates pathological training
+  slowdowns on ROCm targets with no precompiled MIOpen kernel database for
+  the architecture (e.g. gfx1151), where every distinct convolution shape
+  triggers a full kernel re-benchmark/recompile; not needed on backends
+  without shape-keyed kernel autotuning (e.g. MPS, or CUDA with a populated
+  kernel cache). Also: per-dataset `reduced_min_sizes` now takes precedence
+  over the global `--reduced_min_sizes` value when set, matching the
+  existing `batch_size`/`workers` per-dataset override convention.
 
 ### Added
 - **Per-token text conditioning helpers**: `apply_cfg_null_substitution` in
@@ -101,6 +115,28 @@ Both legacy keys still load via `_parse_step_config` and emit a
   `BaseModel` evaluates `False` instead of raising, since `__iter__` yields
   `(name, value)` tuples, not field names. `model_config` is now normalized
   via `model_dump()` when available.
+- **Aspect-ratio bucketing's shape locality**: `ResumableDimensionSampler`
+  shuffled batches across *all* size groups each epoch, so consecutive
+  batches almost never shared a shape even with `aspect_ratio_bucketing`
+  enabled — defeating the point (MIOpen kernel-cache reuse). New opt-in
+  `group_contiguous` sampler param keeps all batches of one group
+  contiguous, shuffling only group *visitation* order (and image order
+  within each group); wired on automatically for `aspect_ratio_bucketing`
+  datasets, unchanged (off) otherwise.
+- **Training loop crash on ROCm GAN discriminator step**:
+  `_train_discriminator`'s R1 gradient penalty
+  (`torch.autograd.grad(..., create_graph=True)`, a double-backward)
+  reliably triggers a MIOpen GEMM/Im2Col solver that fails to compile under
+  HIPRTC on gfx1151, crashing the whole run every `r1_interval` steps.
+  `_train_discriminator` now catches this specific `RuntimeError` (matched
+  narrowly on `"miopen"` in the message — other errors still propagate),
+  skips the discriminator's optimizer step for that iteration, and reports
+  it via the existing `_optimizer_stepped` skip convention already used for
+  NaN-guarded generator steps, so it doesn't pollute loss buffers or step
+  the discriminator scheduler. Separately, the crash-logging call in the
+  training loop used `logger.error(...)`, which never reaches this
+  project's `train.log` (only `print()` output does) — changed to
+  `print()` so a crash's step/batch/shape context is actually visible.
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,

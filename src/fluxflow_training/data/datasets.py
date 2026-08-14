@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import math
 import os
 import random
 import time
@@ -580,6 +581,143 @@ def build_dimension_cache(
     return cache_data
 
 
+def build_shape_dimension_cache(
+    dataset: TextImageDataset,
+    show_progress: bool = True,
+) -> DimensionCacheData:
+    """
+    Scan all images once and build a dimension cache keyed by exact post-transform shape.
+
+    Unlike :func:`build_dimension_cache` (which groups by the *native* image size
+    rounded to a multiple), this groups by the exact ``(w, h)`` tensor shape that
+    :func:`~fluxflow_training.data.transforms.resize_preserving_aspect_min_distortion`
+    would produce for that image. Every image placed in the same group therefore
+    resizes to an *identical* shape, closing the batch-to-batch shape drift that
+    native-size rounding leaves open (the root cause of MIOpen kernel-search
+    thrashing on ROCm targets with no precompiled kernel database).
+
+    The min/max size bounds passed to ``resize_preserving_aspect_min_distortion``
+    mirror the convention ``upscale_image`` uses for the single (non-multi-scale)
+    version of an image: ``min_size = min(native_h, native_w)`` and
+    ``max_size = ceil(max(native_h, native_w) / 16) * 16``. This matches what the
+    default (non-``reduced_min_sizes``) training path actually produces today —
+    see ``collate_fn_variable`` / ``upscale_image`` in ``transforms.py``.
+
+    Args:
+        dataset: TextImageDataset instance
+        show_progress: Show progress bar during scanning
+
+    Returns:
+        Dictionary with dimension groups and statistics (same schema as
+        ``build_dimension_cache``, but grouped by exact target shape).
+    """
+    from .transforms import resize_preserving_aspect_min_distortion
+
+    size_buckets = defaultdict(list)
+
+    iterator = range(len(dataset))
+    if show_progress and tqdm is not None:
+        iterator = tqdm(iterator, desc="Scanning image shapes (bucketing)", unit="img")
+
+    for idx in iterator:
+        image_path = dataset.image_paths[idx]
+        with Image.open(image_path) as img:
+            native_w, native_h = img.size
+            min_size = min(native_h, native_w)
+            max_size = int(math.ceil(max(native_h, native_w) / 16)) * 16
+            target_w, target_h = resize_preserving_aspect_min_distortion(
+                img, min_size, max_size
+            ).size
+        size_buckets[str((target_w, target_h))].append(idx)
+
+    group_sizes = [len(indices) for indices in size_buckets.values()]
+
+    cache_data = {
+        "dataset_path": dataset.data_path,
+        "captions_file": getattr(dataset, "captions_file", None),
+        "scan_date": datetime.now().isoformat(),
+        "total_images": len(dataset),
+        "multiple": 16,  # fixed grid used by resize_preserving_aspect_min_distortion
+        "size_groups": {
+            size: {"indices": indices, "count": len(indices)}
+            for size, indices in size_buckets.items()
+        },
+        "statistics": {
+            "num_groups": len(size_buckets),
+            "min_group_size": min(group_sizes) if group_sizes else 0,
+            "max_group_size": max(group_sizes) if group_sizes else 0,
+            "avg_group_size": sum(group_sizes) // len(group_sizes) if group_sizes else 0,
+        },
+    }
+
+    return cache_data
+
+
+def _dimension_cache_key(dataset: TextImageDataset) -> str:
+    """Build the md5 cache key shared by dimension-cache filenames."""
+    cache_key_str = f"{dataset.data_path}"
+    if hasattr(dataset, "captions_file") and dataset.captions_file:
+        cache_key_str += f"|{dataset.captions_file}"
+    return hashlib.md5(cache_key_str.encode()).hexdigest()
+
+
+def _load_dimension_cache_if_valid(
+    cache_path: str, total_images: int
+) -> Optional[DimensionCacheData]:
+    """Load a dimension cache JSON file if present and matching ``total_images``."""
+    if not os.path.exists(cache_path):
+        return None
+
+    file_size_mb = os.path.getsize(cache_path) / (1024 * 1024)
+    print(f"Loading dimension cache from {cache_path} ({file_size_mb:.1f}MB)...")
+    try:
+        if HAS_ORJSON:
+            # orjson is 2-3x faster for large files
+            with open(cache_path, "rb") as f:
+                cache_data = orjson.loads(f.read())
+        else:
+            with open(cache_path, "r") as f:
+                cache_data = json.load(f)
+
+        if cache_data.get("total_images") == total_images:
+            print(
+                f"  Loaded {cache_data['statistics']['num_groups']} dimension groups "
+                f"({cache_data['total_images']:,} images)"
+            )
+            return cache_data
+        print(f"  Cache invalid (image count mismatch), rebuilding...")
+    except Exception as e:
+        print(f"  Error loading cache: {e}, rebuilding...")
+    return None
+
+
+def _save_dimension_cache_with_stats(cache_data: DimensionCacheData, cache_path: str) -> None:
+    """Persist a dimension cache to disk (indented JSON) and print a summary."""
+    with open(cache_path, "w") as f:
+        json.dump(cache_data, f, indent=2)
+
+    file_size_mb = os.path.getsize(cache_path) / (1024 * 1024)
+    print(f"Dimension cache saved to {cache_path} ({file_size_mb:.1f}MB)")
+
+    print(f"\nDimension Analysis:")
+    print(f"  Total images: {cache_data['total_images']}")
+    print(f"  Dimension groups: {cache_data['statistics']['num_groups']}")
+    print(
+        f"  Group size range: {cache_data['statistics']['min_group_size']} - {cache_data['statistics']['max_group_size']}"
+    )
+    print(f"  Average group size: {cache_data['statistics']['avg_group_size']}")
+
+    groups_sorted = sorted(
+        cache_data["size_groups"].items(), key=lambda x: x[1]["count"], reverse=True
+    )
+    print(f"\n  Top dimension groups:")
+    for size, info in groups_sorted[:10]:
+        print(f"    {size}: {info['count']} images")
+    if len(groups_sorted) > 10:
+        print(f"    ... and {len(groups_sorted) - 10} more groups")
+    print()
+
+
 def get_or_build_dimension_cache(
     dataset: TextImageDataset,
     cache_dir: str,
@@ -599,70 +737,53 @@ def get_or_build_dimension_cache(
         Dictionary with dimension groups and statistics
     """
     os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{_dimension_cache_key(dataset)}.dimensions.json")
 
-    # Generate cache key from dataset path and captions file
-    cache_key_str = f"{dataset.data_path}"
-    if hasattr(dataset, "captions_file") and dataset.captions_file:
-        cache_key_str += f"|{dataset.captions_file}"
-    cache_key = hashlib.md5(cache_key_str.encode()).hexdigest()
-    cache_path = os.path.join(cache_dir, f"{cache_key}.dimensions.json")
+    if not rebuild:
+        cached = _load_dimension_cache_if_valid(cache_path, len(dataset))
+        if cached is not None:
+            return cached
 
-    # Try to load existing cache
-    if not rebuild and os.path.exists(cache_path):
-        file_size_mb = os.path.getsize(cache_path) / (1024 * 1024)
-        print(f"Loading dimension cache from {cache_path} ({file_size_mb:.1f}MB)...")
-        try:
-            if HAS_ORJSON:
-                # orjson is 2-3x faster for large files
-                with open(cache_path, "rb") as f:
-                    cache_data = orjson.loads(f.read())
-            else:
-                with open(cache_path, "r") as f:
-                    cache_data = json.load(f)
-
-            # Verify cache is valid
-            if cache_data.get("total_images") == len(dataset):
-                print(
-                    f"  Loaded {cache_data['statistics']['num_groups']} dimension groups "
-                    f"({cache_data['total_images']:,} images)"
-                )
-                return cache_data
-            else:
-                print(f"  Cache invalid (image count mismatch), rebuilding...")
-        except Exception as e:
-            print(f"  Error loading cache: {e}, rebuilding...")
-
-    # Build cache
     print(f"Building dimension cache (multiple={multiple})...")
     cache_data = build_dimension_cache(dataset, multiple=multiple, show_progress=True)
+    _save_dimension_cache_with_stats(cache_data, cache_path)
+    return cache_data
 
-    # Save cache with indentation (loads 2-3x faster with orjson)
-    with open(cache_path, "w") as f:
-        json.dump(cache_data, f, indent=2)
 
-    file_size_mb = os.path.getsize(cache_path) / (1024 * 1024)
-    print(f"Dimension cache saved to {cache_path} ({file_size_mb:.1f}MB)")
+def get_or_build_shape_dimension_cache(
+    dataset: TextImageDataset,
+    cache_dir: str,
+    rebuild: bool = False,
+) -> DimensionCacheData:
+    """
+    Load shape-keyed dimension cache if exists, otherwise build and save it.
 
-    # Print statistics
-    print(f"\nDimension Analysis:")
-    print(f"  Total images: {cache_data['total_images']}")
-    print(f"  Dimension groups: {cache_data['statistics']['num_groups']}")
-    print(
-        f"  Group size range: {cache_data['statistics']['min_group_size']} - {cache_data['statistics']['max_group_size']}"
-    )
-    print(f"  Average group size: {cache_data['statistics']['avg_group_size']}")
+    Mirrors :func:`get_or_build_dimension_cache`, but groups use the exact
+    post-transform target shape (see :func:`build_shape_dimension_cache`) and
+    the cache persists to a ``.bucket_dimensions.json`` file — distinct from
+    the native-size ``.dimensions.json`` cache — so both can coexist for the
+    same dataset/output directory without colliding.
 
-    # Print top 10 groups
-    groups_sorted = sorted(
-        cache_data["size_groups"].items(), key=lambda x: x[1]["count"], reverse=True
-    )
-    print(f"\n  Top dimension groups:")
-    for size, info in groups_sorted[:10]:
-        print(f"    {size}: {info['count']} images")
-    if len(groups_sorted) > 10:
-        print(f"    ... and {len(groups_sorted) - 10} more groups")
-    print()
+    Args:
+        dataset: TextImageDataset instance
+        cache_dir: Directory to store cache files
+        rebuild: Force rebuild even if cache exists
 
+    Returns:
+        Dictionary with dimension groups and statistics, grouped by exact
+        target shape rather than rounded native size.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, f"{_dimension_cache_key(dataset)}.bucket_dimensions.json")
+
+    if not rebuild:
+        cached = _load_dimension_cache_if_valid(cache_path, len(dataset))
+        if cached is not None:
+            return cached
+
+    print("Building shape (aspect-ratio bucketing) dimension cache...")
+    cache_data = build_shape_dimension_cache(dataset, show_progress=True)
+    _save_dimension_cache_with_stats(cache_data, cache_path)
     return cache_data
 
 
@@ -683,6 +804,7 @@ class ResumableDimensionSampler(Sampler):
         batch_size: int,
         seed: Optional[int] = None,
         resume_state: Optional[SamplerState] = None,
+        group_contiguous: bool = False,
     ):
         """
         Args:
@@ -690,10 +812,19 @@ class ResumableDimensionSampler(Sampler):
             batch_size: Number of samples per batch
             seed: Random seed for reproducibility
             resume_state: State dict from previous run (for resume)
+            group_contiguous: If True, keep all batches of a size group contiguous
+                in the epoch ordering (only group visitation order is shuffled),
+                instead of shuffling batch order across groups. Used by
+                aspect_ratio_bucketing so consecutive batches share the same
+                shape, letting MIOpen reuse cached kernel-search results.
+                Not part of resume state: a resumed sampler must be
+                constructed with the same value used by the run that saved
+                the checkpoint (mirrors dimension_cache).
         """
         self.batch_size = batch_size
         self.base_seed = seed if seed is not None else random.randint(0, 2**32 - 1)
         self.dimension_cache = dimension_cache
+        self.group_contiguous = group_contiguous
 
         # Extract size groups
         self.size_groups: dict[Any, list[int]] = {
@@ -723,9 +854,17 @@ class ResumableDimensionSampler(Sampler):
         # Reset remainder pool for this epoch (use local variable)
         remainder_pool = []
 
+        # Group visitation order. When group_contiguous is enabled, shuffle
+        # which group is visited first each epoch (via the seeded rng) so
+        # bucket order still varies run-to-run; otherwise keep the fixed
+        # dict-iteration order (required for byte-identical default behavior).
+        size_classes = list(self.size_groups.keys())
+        if self.group_contiguous:
+            rng.shuffle(size_classes)
+
         # For each size group, create batches
-        for size_class, indices in self.size_groups.items():
-            group_indices = indices.copy()
+        for size_class in size_classes:
+            group_indices = self.size_groups[size_class].copy()
             rng.shuffle(group_indices)
 
             # Create full batches
@@ -737,7 +876,11 @@ class ResumableDimensionSampler(Sampler):
                     # Handle remainder: add to a mixed batch pool
                     remainder_pool.extend(batch)
 
-        # Create batches from remainder pool
+        # Create batches from remainder pool. In group_contiguous mode this
+        # mixed-shape block lands last (appended after every group's
+        # contiguous block above) rather than being shuffled in among the
+        # single-shape blocks below, so it can't land in the middle and
+        # split up two otherwise-contiguous same-shape runs.
         if remainder_pool:
             rng.shuffle(remainder_pool)
             for i in range(0, len(remainder_pool), self.batch_size):
@@ -746,8 +889,12 @@ class ResumableDimensionSampler(Sampler):
                     self.epoch_batches.append(batch)
                 # Note: very last incomplete batch is dropped
 
-        # Shuffle batch order
-        rng.shuffle(self.epoch_batches)
+        # Shuffle batch order across groups. Skipped when group_contiguous is
+        # enabled so all batches of one size group stay contiguous (the
+        # whole point of aspect-ratio bucketing: consecutive batches share a
+        # shape so MIOpen can reuse cached kernel-search results).
+        if not self.group_contiguous:
+            rng.shuffle(self.epoch_batches)
 
         # Flatten to create epoch ordering
         self.epoch_indices = []

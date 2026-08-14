@@ -805,7 +805,7 @@ class VAETrainer:
         self.expander.train()
 
         losses = {}
-        discriminator_was_stepped = False
+        discriminator_was_stepped: bool = False
 
         # Train discriminator first if using GAN
         if self.use_gan and self.discriminator is not None:
@@ -815,10 +815,12 @@ class VAETrainer:
                     "VAETrainer.use_gan=True but discriminator_optimizer is None. "
                     "This should have been caught in __init__. Please report this bug."
                 )
-            d_loss = self._train_discriminator(real_imgs, global_step)
-            losses["discriminator"] = d_loss
-            self.d_loss_buffer.add_item(d_loss)
-            discriminator_was_stepped = True
+            d_result = self._train_discriminator(real_imgs, global_step)
+            discriminator_was_stepped = bool(d_result["_optimizer_stepped"])
+            if discriminator_was_stepped:
+                d_loss = d_result["d_loss"]
+                losses["discriminator"] = d_loss
+                self.d_loss_buffer.add_item(d_loss)
 
         # Train VAE generator
         gen_losses = self._train_generator(real_imgs, global_step)
@@ -911,11 +913,20 @@ class VAETrainer:
         self,
         real_imgs: torch.Tensor,
         global_step: int,
-    ) -> float:
+    ) -> dict[str, float]:
         """Train discriminator on real and fake images.
 
         Note: VAE (encoder+decoder) is frozen during discriminator training.
         Only the discriminator learns to distinguish real from fake images.
+
+        Returns:
+            Dict with ``d_loss`` (float) and ``_optimizer_stepped`` (bool,
+            mirroring the convention used by ``_train_generator``'s NaN-skip
+            path). ``_optimizer_stepped`` is ``False`` when the backward pass
+            hit a ROCm/MIOpen kernel-compile failure (a known upstream
+            cold-start bug on some GPU targets, not a logic bug here) — in
+            that case ``discriminator_optimizer.step()`` is skipped and
+            ``d_loss`` is a meaningless placeholder that callers must ignore.
         """
         self.discriminator.train()
 
@@ -1032,10 +1043,23 @@ class VAETrainer:
         d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
         d_img_loss = d_img_loss + d_hinge
 
-        self.accelerator.backward(d_img_loss)
+        try:
+            self.accelerator.backward(d_img_loss)
+        except RuntimeError as exc:
+            if "miopen" in str(exc).lower():
+                print(
+                    "Skipped discriminator step: MIOpen kernel-compile failure in "
+                    f"backward() | global_step={global_step} | "
+                    f"real_imgs shape={tuple(real_imgs.shape)} | "
+                    f"real_imgs_noisy shape={tuple(real_imgs_noisy.shape)} | "
+                    f"error={exc}"
+                )
+                return {"d_loss": 0.0, "_optimizer_stepped": False}
+            raise
+
         self.discriminator_optimizer.step()
 
-        return float(d_img_loss.detach().item())
+        return {"d_loss": float(d_img_loss.detach().item()), "_optimizer_stepped": True}
 
     def _train_generator(
         self,

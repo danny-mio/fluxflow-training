@@ -618,6 +618,7 @@ class TrainingPipelineOrchestrator:
             TextImageDataset,
             collate_fn_variable,
             get_or_build_dimension_cache,
+            get_or_build_shape_dimension_cache,
         )
         from ..training.utils import worker_init_fn
 
@@ -626,7 +627,7 @@ class TrainingPipelineOrchestrator:
             collate_fn_variable,
             channels=args.channels,
             img_size=args.img_size,
-            reduced_min_sizes=args.reduced_min_sizes,
+            reduced_min_sizes=dataset_config.reduced_min_sizes or args.reduced_min_sizes,
         )
 
         # Get batch_size and workers (with fallback priority)
@@ -665,19 +666,33 @@ class TrainingPipelineOrchestrator:
                 fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
             )
 
-            # Build dimension cache
-            dimension_cache = get_or_build_dimension_cache(
-                dataset,
-                cache_dir=args.output_path,
-                multiple=32,
-                rebuild=False,
-            )
+            # Build dimension cache. When aspect_ratio_bucketing is enabled,
+            # group by the exact post-transform target shape instead of
+            # rounded native size, so every batch drawn from a group is
+            # shape-uniform batch-to-batch (see build_shape_dimension_cache).
+            if dataset_config.aspect_ratio_bucketing:
+                logger.info("  Aspect-ratio bucketing: enabled (exact-shape grouping)")
+                dimension_cache = get_or_build_shape_dimension_cache(
+                    dataset,
+                    cache_dir=args.output_path,
+                    rebuild=False,
+                )
+            else:
+                dimension_cache = get_or_build_dimension_cache(
+                    dataset,
+                    cache_dir=args.output_path,
+                    multiple=32,
+                    rebuild=False,
+                )
 
-            # Create sampler
+            # Create sampler. group_contiguous keeps same-shape batches
+            # together in the epoch ordering when bucketing is enabled, so
+            # MIOpen kernel-search caching is actually effective batch-to-batch.
             sampler = ResumableDimensionSampler(
                 dimension_cache=dimension_cache,
                 batch_size=batch_size,
                 seed=42,
+                group_contiguous=dataset_config.aspect_ratio_bucketing,
             )
             dataset_size = len(dataset)
         elif dataset_config.type == "noise":
@@ -1574,7 +1589,15 @@ class TrainingPipelineOrchestrator:
 
                         # VAE/GAN training (runs if trainer exists, even with train_vae=false)
                         if trainers.get("vae"):
-                            vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
+                            try:
+                                vae_losses = trainers["vae"].train_step(real_imgs, self.global_step)
+                            except Exception:
+                                print(
+                                    f"Crash in vae train_step | Step {step.name} | "
+                                    f"Batch {batch_idx} | global_step={self.global_step} | "
+                                    f"image shape={tuple(real_imgs.shape)}"
+                                )
+                                raise
                             vae_errors.add_item(vae_losses["vae"])
                             if step.train_kl:
                                 kl_errors.add_item(vae_losses["kl"])
@@ -1621,6 +1644,7 @@ class TrainingPipelineOrchestrator:
                         del real_imgs
 
                     # Delete batch tensors after processing all resolutions
+                    batch_shapes = [tuple(t.shape[-2:]) for t in imgs]
                     del imgs, input_ids, attention_mask
 
                     # Track batch time
@@ -1663,10 +1687,15 @@ class TrainingPipelineOrchestrator:
                         elapsed = time.time() - step_start_time
                         elapsed_str = format_duration(elapsed)
 
+                        shape_str = (
+                            str(batch_shapes[0]) if len(batch_shapes) == 1 else str(batch_shapes)
+                        )
+
                         log_msg = (
                             f"[{elapsed_str}] Step {step.name} ({step_idx+1}/{len(self.config.steps)}) | "
                             f"Epoch {epoch+1}/{step.n_epochs} | "
-                            f"Batch {batch_idx}/{epoch_total_batches}"
+                            f"Batch {batch_idx}/{epoch_total_batches} | "
+                            f"Shape: {shape_str}"
                         )
 
                         # Console logging (show metrics if VAE trainer ran)

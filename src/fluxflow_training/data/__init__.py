@@ -9,7 +9,9 @@ from .datasets import (
     StreamingWebDataset,
     TextImageDataset,
     build_dimension_cache,
+    build_shape_dimension_cache,
     get_or_build_dimension_cache,
+    get_or_build_shape_dimension_cache,
 )
 from .transforms import (
     collate_fn_generate,
@@ -28,7 +30,9 @@ __all__ = [
     "StreamingGroupedBatchSampler",
     "ResumableDimensionSampler",
     "build_dimension_cache",
+    "build_shape_dimension_cache",
     "get_or_build_dimension_cache",
+    "get_or_build_shape_dimension_cache",
     "resize_preserving_aspect_min_distortion",
     "upscale_image",
     "collate_fn_variable",
