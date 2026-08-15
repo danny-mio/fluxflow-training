@@ -178,7 +178,8 @@ class VAETrainer:
         # v0.10.0: ctx-features L2 shrinkage (design §5.5). Active only when
         # ``ctx_shrinkage_weight > 0`` AND the underlying compressor exposes the
         # ``ctx_zinject_norm`` submodule (FluxCompressor_v100). The hook captures
-        # the normalized pre-attention ctx tensor and feeds it to compute_ctx_shrinkage.
+        # the pre-norm ctx tensor (ctx_zinject_norm's input) and feeds it to
+        # compute_ctx_shrinkage.
         ctx_shrinkage_weight: float = 0.0,
         ctx_shrinkage_warmup_start_step: int = 5000,
         ctx_shrinkage_warmup_steps: int = 5000,
@@ -286,9 +287,9 @@ class VAETrainer:
         self.ctx_shrinkage_weight = ctx_shrinkage_weight
         self.ctx_shrinkage_warmup_start_step = ctx_shrinkage_warmup_start_step
         self.ctx_shrinkage_warmup_steps = ctx_shrinkage_warmup_steps
-        # Hook state: last captured ctx_features (post-norm, pre-attention).
+        # Hook state: last captured ctx_features (pre-norm, pre-attention).
         self._ctx_features_cache: Optional[torch.Tensor] = None
-        self._ctx_hook_handle = None
+        self._ctx_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
 
         # GAN settings
         self.use_gan = use_gan
@@ -440,14 +441,21 @@ class VAETrainer:
 
         self._prepare_context_components()
 
-        # Install forward hook on ctx_zinject_norm to capture the normalized
+        # Install forward pre-hook on ctx_zinject_norm to capture the pre-norm
         # ctx features (the input to compute_ctx_shrinkage) without forcing a
         # signature change on the compressor. Only the v0.10.0 compressor has
         # this submodule, so the hook is installed conditionally.
         self._install_ctx_shrinkage_hook()
 
     def _install_ctx_shrinkage_hook(self) -> None:
-        """Install a forward hook capturing the ctx_zinject_norm output.
+        """Install a forward pre-hook capturing the ctx_zinject_norm input.
+
+        ``ctx_zinject_norm`` is a ``GroupNorm(affine=False)``, so its *output*
+        is forced to ~unit variance by construction - a shrinkage loss on the
+        output would be a near-zero-gradient no-op. The pre-hook instead
+        captures the unconstrained pre-norm ``cx`` tensor (the real input to
+        ``ctx_zinject_norm`` inside ``FluxCompressor_v100.forward``), so the
+        shrinkage term has real gradient to act on.
 
         The hook stores the tensor on ``self._ctx_features_cache`` each forward
         pass. Subsequent ``_train_generator`` reads and clears the cache so the
@@ -465,10 +473,10 @@ class VAETrainer:
             )
             return
 
-        def _hook(_module, _inputs, output):
-            self._ctx_features_cache = output
+        def _hook(_module, args):
+            self._ctx_features_cache = args[0]
 
-        self._ctx_hook_handle = ctx_norm.register_forward_hook(_hook)
+        self._ctx_hook_handle = ctx_norm.register_forward_pre_hook(_hook)
 
     def remove_ctx_shrinkage_hook(self) -> None:
         """Detach the ctx shrinkage forward hook if installed."""
@@ -1533,6 +1541,23 @@ class VAETrainer:
             self.ctx_shrinkage_warmup_steps,
             self.ctx_shrinkage_weight,
         )
+        if ctx_shrinkage_alpha > 0 and self._ctx_hook_handle is not None:
+            # The pre-hook is installed and the schedule says the term should be
+            # active: a missing/malformed cache here means the pre-hook silently
+            # stopped firing (e.g. a future refactor of
+            # FluxCompressor_v100.forward's ctx_zinject_norm(cx) call convention)
+            # rather than an intentional no-op. Surface that loudly instead of
+            # silently reverting to a dead-gradient no-op.
+            assert (
+                isinstance(self._ctx_features_cache, torch.Tensor)
+                and self._ctx_features_cache.dim() == 4
+            ), (
+                "ctx_shrinkage hook is installed and alpha="
+                f"{ctx_shrinkage_alpha} > 0 but _ctx_features_cache is "
+                f"{self._ctx_features_cache!r} (expected a 4D pre-norm ctx "
+                "tensor). The ctx_zinject_norm pre-hook likely stopped firing - "
+                "check FluxCompressor_v100.forward's ctx_zinject_norm(cx) call."
+            )
         if self._ctx_features_cache is not None and ctx_shrinkage_alpha > 0:
             ctx_shrinkage_loss = compute_ctx_shrinkage(
                 self._ctx_features_cache, ctx_shrinkage_alpha

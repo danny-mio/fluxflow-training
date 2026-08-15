@@ -685,6 +685,55 @@ class TestKlZWeightAndCtxShrinkageWiring:
         content = orchestrator_path.read_text()
         assert 'ctx_shrinkage_weight=getattr(step, "ctx_shrinkage_weight", 0.0)' in content
 
+    def test_ctx_shrinkage_warmup_fields_reach_vae_trainer_instance(self):
+        """Non-default ``ctx_shrinkage_warmup_start_step``/``ctx_shrinkage_warmup_steps``
+        on PipelineStepConfig must reach the constructed VAETrainer instance, not
+        silently fall back to VAETrainer's own defaults (5000 / 5000)."""
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="vae",
+            n_epochs=1,
+            train_vae=True,
+            gan_training=False,
+            ctx_shrinkage_warmup_start_step=1234,
+            ctx_shrinkage_warmup_steps=4321,
+            optimization=OptimizationConfig(
+                optimizers={"vae": OptimizerConfig(lr=1e-4)},
+            ),
+        )
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+
+        compressor = MagicMock()
+        compressor.d_model = 8
+        compressor.get_context_dims.return_value = 8
+        compressor.use_gradient_checkpointing = False
+        compressor.parameters.side_effect = lambda: iter([nn.Parameter(torch.zeros(1))])
+
+        expander = MagicMock()
+        expander.parameters.return_value = iter([])
+
+        models = {"compressor": compressor, "expander": expander}
+        optimizers = {"vae": MagicMock()}
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+
+        trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
+
+        assert trainers["vae"].ctx_shrinkage_warmup_start_step == 1234
+        assert trainers["vae"].ctx_shrinkage_warmup_steps == 4321
+
 
 class TestLoggingOutput:
     """Test console and metrics logging for different config combinations."""

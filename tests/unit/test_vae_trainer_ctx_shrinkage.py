@@ -124,6 +124,124 @@ class TestCtxShrinkageHookLifecycle:
         assert trainer._ctx_features_cache.shape == (2, 8, 4, 4)
 
 
+class _CompressorWithLearnableCtx(nn.Module):
+    """Compressor stub whose pre-norm ctx tensor is a learnable parameter.
+
+    Used to prove the hook restores real gradient flow: optimizing
+    ``compute_ctx_shrinkage`` on the *pre-norm* cache should be able to shrink
+    even the post-norm (GroupNorm) output magnitude, which a post-hook capture
+    cannot do (GroupNorm output is ~scale-invariant to its input).
+    """
+
+    def __init__(self, d_model: int = 8, H: int = 4, W: int = 4, ctx_init: float = 1.0):
+        super().__init__()
+        self.ctx_zinject_norm = nn.GroupNorm(
+            num_groups=min(4, d_model), num_channels=d_model, affine=False
+        )
+        self.ctx_raw = nn.Parameter(
+            torch.full((d_model, H, W), ctx_init) + torch.randn(d_model, H, W) * 0.05
+        )
+        self.d_model = d_model
+        self.H = H
+        self.W = W
+        self.use_gradient_checkpointing = False
+
+    def forward(self, x, training=False):
+        B = x.size(0)
+        ctx = self.ctx_raw.unsqueeze(0).expand(B, -1, -1, -1)
+        _ = self.ctx_zinject_norm(ctx)
+        return torch.zeros(B, 1, 2 * self.d_model)
+
+    def get_context_dims(self):
+        return self.d_model
+
+
+class TestCtxShrinkageHookCapturesPreNormInput:
+    def test_cache_scales_with_prenorm_input_unlike_postnorm_output(self):
+        """The hook must capture the *pre*-norm ctx tensor.
+
+        GroupNorm(affine=False) output is (near) invariant to a uniform scale
+        of its input, so a post-hook capture would look identical whether the
+        upstream ctx branch is scaled by 1x or 5x. The pre-hook capture must
+        differ by exactly that scale factor.
+        """
+        comp = _CompressorWithCtxNorm(d_model=8, H=4, W=4)
+        trainer = _build_trainer(comp, ctx_shrinkage_weight=0.001)
+
+        torch.manual_seed(0)
+        base_ctx = torch.randn(2, comp.d_model, comp.H, comp.W) + 2.0  # nonzero variance
+
+        def make_forward(scale):
+            def _forward(x, training=False):
+                B = x.size(0)
+                _ = comp.ctx_zinject_norm(base_ctx * scale)
+                return torch.zeros(B, 1, 2 * comp.d_model)
+
+            return _forward
+
+        comp.forward = make_forward(1.0)
+        _ = comp(torch.randn(2, 3, 8, 8))
+        baseline_cache = trainer._ctx_features_cache.clone()
+
+        comp.forward = make_forward(5.0)
+        _ = comp(torch.randn(2, 3, 8, 8))
+        scaled_cache = trainer._ctx_features_cache.clone()
+
+        # Pre-norm cache scales linearly with the upstream scale factor.
+        assert torch.allclose(scaled_cache, baseline_cache * 5.0, atol=1e-4)
+
+        # The post-norm output itself is ~invariant to the same scale factor -
+        # a post-hook capture would NOT show the difference asserted above.
+        with torch.no_grad():
+            post_baseline = comp.ctx_zinject_norm(base_ctx * 1.0)
+            post_scaled = comp.ctx_zinject_norm(base_ctx * 5.0)
+        assert torch.allclose(post_baseline, post_scaled, atol=1e-4)
+
+
+class TestCtxShrinkageRestoresGradientFlow:
+    def test_optimizer_steps_under_shrinkage_loss_shrink_postnorm_output(self):
+        """N optimizer steps on compute_ctx_shrinkage(pre-norm cache) alone must
+        measurably shrink the *post-norm* (GroupNorm) output magnitude.
+
+        This is the test proving the fix restores real gradient flow: under the
+        old post-hook bug, optimizing mean(post_norm_output^2) barely moves the
+        post-norm output at all (it's already ~unit-variance by construction),
+        so this assertion fails against the buggy code.
+        """
+        torch.manual_seed(0)
+        comp = _CompressorWithLearnableCtx(d_model=8, H=4, W=4, ctx_init=1.0)
+        trainer = _build_trainer(
+            comp,
+            ctx_shrinkage_weight=1.0,
+            ctx_shrinkage_warmup_start_step=0,
+            ctx_shrinkage_warmup_steps=1,
+        )
+        assert trainer._ctx_hook_handle is not None
+
+        opt = torch.optim.SGD(comp.parameters(), lr=0.5)
+        alpha = 1.0
+        dummy_x = torch.zeros(2, 3, 8, 8)
+
+        with torch.no_grad():
+            initial_post_mag = comp.ctx_zinject_norm(comp.ctx_raw.unsqueeze(0)).pow(2).mean().item()
+
+        for _ in range(2000):
+            opt.zero_grad()
+            _ = comp(dummy_x)
+            loss = compute_ctx_shrinkage(trainer._ctx_features_cache, alpha)
+            loss.backward()
+            opt.step()
+
+        with torch.no_grad():
+            final_post_mag = comp.ctx_zinject_norm(comp.ctx_raw.unsqueeze(0)).pow(2).mean().item()
+
+        assert final_post_mag < initial_post_mag * 0.5, (
+            f"post-norm magnitude barely moved ({initial_post_mag:.6g} -> "
+            f"{final_post_mag:.6g}); shrinkage loss is not reaching the "
+            "pre-norm ctx tensor."
+        )
+
+
 class TestCtxShrinkageSchedule:
     def test_alpha_zero_before_start_step(self):
         # Mirrors trainer behavior; the wiring uses delayed_cosine_warmup_weight.
