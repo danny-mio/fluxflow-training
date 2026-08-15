@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 import torch.nn as nn
+from fluxflow.models.activations import TrainableBezier, WideTrainableBezier
 
 from fluxflow_training.training.utils import EMA
 from fluxflow_training.training.vae_trainer import VAETrainer
@@ -30,6 +31,8 @@ def _make_compressor(out_dim: int = 8):
             super().__init__()
             self.lin = nn.Linear(3, dim)
             self.dim = dim
+            self.mu_activation = TrainableBezier(shape=(dim, 1, 1))
+            self.logvar_activation = WideTrainableBezier(shape=(dim, 1, 1))
 
         def forward(self, x, training=False):
             B = x.shape[0]

@@ -150,6 +150,32 @@ def compute_ctx_shrinkage(ctx_features: torch.Tensor, alpha: float) -> torch.Ten
     return alpha * (ctx_features**2).mean()
 
 
+def compute_bezier_monotonicity_reg(module: torch.nn.Module, weight: float) -> torch.Tensor:
+    """Hinge penalty for p0<=p1<=p2<=p3 on a TrainableBezier module.
+
+    Structural sanity constraint keeping the encoder's mu/logvar Bezier
+    activations monotonic (v0.10.0 redesign, Fix 2). Default control-point
+    inits are already monotonic (penalty = 0), so this uses a small fixed
+    weight rather than a configurable knob.
+
+    Args:
+        module: A ``TrainableBezier``/``WideTrainableBezier`` instance exposing
+            ``p0``, ``p1``, ``p2``, ``p3`` parameters.
+        weight: Regularization weight. Non-positive values disable the term.
+
+    Returns:
+        Scalar penalty loss on the same device/dtype as ``module.p0``.
+    """
+    if weight <= 0:
+        return torch.zeros((), device=module.p0.device, dtype=module.p0.dtype)
+    penalty = (
+        F.relu(module.p0 - module.p1)
+        + F.relu(module.p1 - module.p2)
+        + F.relu(module.p2 - module.p3)
+    )
+    return weight * penalty.mean()
+
+
 def cosine_warmup_weight(step: int, warmup_steps: int, max_weight: float) -> float:
     """Cosine warmup from 0 to ``max_weight`` over ``warmup_steps`` steps.
 

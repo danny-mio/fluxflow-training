@@ -21,6 +21,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
 from .losses import (
+    compute_bezier_monotonicity_reg,
     compute_ctx_shrinkage,
     cosine_warmup_weight,
     d_hinge_loss,
@@ -31,6 +32,12 @@ from .losses import (
 )
 from .schedulers import cosine_anneal_beta
 from .utils import EMA, FloatBuffer
+
+# v0.10.0: fixed weight for the Bezier control-point monotonicity regularizer
+# (plan Fix 2). Structural sanity constraint, not a config knob -- matches the
+# magnitude of this file's other fixed regularizers (color_stats=0.05,
+# contrast=0.1, coarseness=0.02 below).
+_BEZIER_REG_WEIGHT = 0.05
 
 
 class ContextEncoder(nn.Module):
@@ -1517,6 +1524,18 @@ class VAETrainer:
             else torch.tensor(0.0, device=real_imgs.device)
         )
 
+        # v0.10.0: Bezier control-point monotonicity regularizer (plan Fix 2).
+        # Structural sanity constraint (not a config knob, see losses.py
+        # docstring) -- always on, quietly holds p0<=p1<=p2<=p3 for the
+        # encoder's mu/logvar Bezier activations. Default inits are already
+        # monotonic so this is ~0.0 in the common case.
+        unwrapped_compressor = self._get_unwrapped_model(self.compressor)
+        bezier_reg_loss = compute_bezier_monotonicity_reg(
+            unwrapped_compressor.mu_activation, _BEZIER_REG_WEIGHT
+        ) + compute_bezier_monotonicity_reg(
+            unwrapped_compressor.logvar_activation, _BEZIER_REG_WEIGHT
+        )
+
         # Total loss with adaptive weighting
         total_loss = w_kl * beta * kl
         if self.train_reconstruction:
@@ -1582,6 +1601,8 @@ class VAETrainer:
             total_loss = total_loss + 0.1 * contrast_loss  # Prevent over-saturation
         if self.train_coarseness:
             total_loss = total_loss + 0.02 * coarseness_loss  # Match texture coarseness
+        # Always on -- structural sanity constraint, not gated by a train_* flag.
+        total_loss = total_loss + bezier_reg_loss
 
         # Check for NaN/Inf in loss with detailed diagnostics
         if check_for_nan(total_loss, "vae_total_loss", logger):
@@ -1612,6 +1633,7 @@ class VAETrainer:
                 "lpips": 0.0,
                 "recon": 0.0,
                 "ctx_aux_loss": 0.0,
+                "bezier_reg": 0.0,
                 "_optimizer_stepped": False,  # Signal that optimizer was not stepped
             }
 
@@ -1649,6 +1671,7 @@ class VAETrainer:
                 "hist_loss": float(hist_loss.detach().item()),
                 "contrast_loss": float(contrast_loss.detach().item()),
                 "coarseness_loss": float(coarseness_loss.detach().item()),
+                "bezier_reg": float(bezier_reg_loss.detach().item()),
                 "_optimizer_stepped": False,
             }
 
@@ -1720,6 +1743,8 @@ class VAETrainer:
             "hist_loss": float(hist_loss.detach().item()),
             "contrast_loss": float(contrast_loss.detach().item()),
             "coarseness_loss": float(coarseness_loss.detach().item()),
+            # v0.10.0: Bezier control-point monotonicity regularizer (plan Fix 2)
+            "bezier_reg": float(bezier_reg_loss.detach().item()),
             "_optimizer_stepped": True,  # Signal that optimizer was stepped
         }
 

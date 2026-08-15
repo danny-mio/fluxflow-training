@@ -29,6 +29,7 @@ import torch
 import torch.nn as nn
 from accelerate import Accelerator
 from accelerate.state import AcceleratorState
+from fluxflow.models.activations import TrainableBezier, WideTrainableBezier
 
 from fluxflow_training.training.vae_trainer import VAETrainer
 
@@ -53,6 +54,8 @@ class _DtypeCapturingCompressor(nn.Module):
         self.proj = nn.Linear(in_channels, token_dim)
         self.use_gradient_checkpointing = False
         self.last_forward_dtype: torch.dtype | None = None
+        self.mu_activation = TrainableBezier(shape=(4, 2, 2))
+        self.logvar_activation = WideTrainableBezier(shape=(4, 2, 2))
 
     def forward(self, x, training=False):
         B = x.size(0)

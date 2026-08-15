@@ -22,6 +22,7 @@ import pathlib
 import pytest
 import torch
 import torch.nn as nn
+from fluxflow.models.activations import TrainableBezier, WideTrainableBezier
 
 from fluxflow_training.training.vae_trainer import VAETrainer
 
@@ -195,6 +196,8 @@ class _FakeCompressor(nn.Module):
         self.n_tokens = n_tokens
         self.dummy = nn.Linear(1, 1)
         self.use_gradient_checkpointing = False
+        self.mu_activation = TrainableBezier(shape=(4, 2, 2))
+        self.logvar_activation = WideTrainableBezier(shape=(4, 2, 2))
 
     def forward(self, x, training=False):
         B = x.size(0)
