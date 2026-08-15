@@ -5,6 +5,7 @@ loss-threshold transitions, and checkpoint management.
 """
 
 import gc
+import math
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -15,6 +16,45 @@ from .checkpoint_manager import CheckpointManager
 from .pipeline_config import PipelineConfig, PipelineStepConfig
 
 logger = get_logger(__name__)
+
+# Scheduler names managed by FlowTrainer, whose scheduler.step() is gated by
+# gradient_accumulation_steps (see FlowTrainer._accumulation_step / should_step
+# in flow_trainer.py -- it steps once every gradient_accumulation_steps
+# micro-batches). VAETrainer has no such gating: it calls scheduler.step()
+# once per micro-batch (train_step call) regardless of
+# gradient_accumulation_steps, so "vae" and "discriminator" schedulers must
+# NOT be divided by it when computing their total_steps budget.
+_ACCUMULATION_GATED_SCHEDULER_NAMES = frozenset(
+    {"flow", "text_encoder", "text_encoder_backbone", "text_encoder_projection"}
+)
+
+
+def resolve_dataset_batch_size(dataset_config, args) -> int:
+    """Resolve the effective batch_size: per-dataset override wins.
+
+    Mirrors the DataLoader-building resolution used by
+    ``_create_dataloader_for_dataset`` so callers computing batches_per_epoch
+    agree with what the DataLoader will actually yield.
+
+    Args:
+        dataset_config: DatasetConfig for the active dataset, or None.
+        args: Command-line/config args exposing a top-level ``batch_size``.
+
+    Returns:
+        The resolved batch_size (per-dataset override if set, else args.batch_size).
+    """
+    if dataset_config is not None and dataset_config.batch_size:
+        return int(dataset_config.batch_size)
+    return int(args.batch_size)
+
+
+def compute_batches_per_epoch(dataset_size: int, batch_size: int) -> int:
+    """Real number of batches a ``for batch in dataloader`` loop yields per epoch.
+
+    DataLoader defaults to ``drop_last=False``, so a trailing partial batch is
+    still yielded -- use ceil division, not floor.
+    """
+    return max(1, math.ceil(dataset_size / batch_size))
 
 
 class FastForwardDataLoader:
@@ -631,7 +671,7 @@ class TrainingPipelineOrchestrator:
         )
 
         # Get batch_size and workers (with fallback priority)
-        batch_size = dataset_config.batch_size or args.batch_size
+        batch_size = resolve_dataset_batch_size(dataset_config, args)
         workers = dataset_config.workers or args.workers
 
         logger.info(f"  Batch size: {batch_size}, Workers: {workers}")
@@ -896,7 +936,16 @@ class TrainingPipelineOrchestrator:
         return optimizers
 
     def _create_step_schedulers(self, step, optimizers, total_steps):
-        """Create schedulers for current step from inline config."""
+        """Create schedulers for current step from inline config.
+
+        ``total_steps`` is the real number of micro-batches (n_epochs *
+        batches_per_epoch) the step will process. For scheduler names managed
+        by FlowTrainer (see _ACCUMULATION_GATED_SCHEDULER_NAMES), the actual
+        number of scheduler.step() calls is gated by
+        gradient_accumulation_steps, so their step budget is divided
+        accordingly. VAETrainer-managed schedulers ("vae", "discriminator")
+        step once per micro-batch and are left undivided.
+        """
         from ..training.scheduler_factory import create_scheduler
 
         schedulers = {}
@@ -904,6 +953,8 @@ class TrainingPipelineOrchestrator:
         if not step.optimization or not step.optimization.schedulers:
             logger.info("No scheduler config found, skipping")
             return schedulers
+
+        grad_accum_steps = getattr(step, "gradient_accumulation_steps", None) or 1
 
         for name, sched_config_obj in step.optimization.schedulers.items():
             if name not in optimizers:
@@ -916,9 +967,16 @@ class TrainingPipelineOrchestrator:
             else:
                 sched_config = sched_config_obj
 
-            scheduler = create_scheduler(optimizers[name], sched_config, total_steps)
+            effective_total_steps = total_steps
+            if name in _ACCUMULATION_GATED_SCHEDULER_NAMES:
+                effective_total_steps = max(1, total_steps // grad_accum_steps)
+
+            scheduler = create_scheduler(optimizers[name], sched_config, effective_total_steps)
             schedulers[name] = scheduler
-            logger.info(f"Created scheduler '{name}': {sched_config['type']}")
+            logger.info(
+                f"Created scheduler '{name}': {sched_config['type']} "
+                f"(total_steps={effective_total_steps})"
+            )
 
         return schedulers
 
@@ -1407,7 +1465,7 @@ class TrainingPipelineOrchestrator:
         else:
             dataset_size = len(dataloader.dataset)
 
-        batches_per_epoch = max(1, dataset_size // args.batch_size)
+        batches_per_epoch = compute_batches_per_epoch(dataset_size, args.batch_size)
 
         # Generate initial samples (before training starts)
         if start_step == 0 and start_epoch == 0:
@@ -1447,7 +1505,9 @@ class TrainingPipelineOrchestrator:
                         dataloader, sampler, dataset_size = self._create_dataloader_for_dataset(
                             dataset_config, current_dataset_name, args, config
                         )
-                        batches_per_epoch = max(1, dataset_size // args.batch_size)
+                        batches_per_epoch = compute_batches_per_epoch(
+                            dataset_size, resolve_dataset_batch_size(dataset_config, args)
+                        )
                         logger.info(
                             f"Dataset size: {dataset_size:,} samples, {batches_per_epoch} batches/epoch"
                         )
@@ -1463,7 +1523,11 @@ class TrainingPipelineOrchestrator:
 
             # Create optimizers and schedulers for this step
             optimizers = self._create_step_optimizers(step, models, args)
-            total_steps = step.n_epochs * batches_per_epoch
+            # Real number of micro-batches this step will process. Division by
+            # gradient_accumulation_steps (where applicable) happens inside
+            # _create_step_schedulers, scoped per scheduler name -- see
+            # _ACCUMULATION_GATED_SCHEDULER_NAMES.
+            total_steps = max(1, step.n_epochs * batches_per_epoch)
             schedulers = self._create_step_schedulers(step, optimizers, total_steps)
 
             # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)

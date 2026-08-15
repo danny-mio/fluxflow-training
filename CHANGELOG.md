@@ -179,6 +179,32 @@ Both legacy keys still load via `_parse_step_config` and emit a
 - **Silently-swallowed `except Exception` around `ctx_aux_loss`**, which
   used to zero the loss with only a generic warning, now logs the real
   exception.
+- **LR scheduler paced against a massively-inflated step budget, pinning LR
+  near its initial max for the practical duration of a run**:
+  `batches_per_epoch` was computed from the top-level `training.batch_size`
+  instead of the per-dataset `batch_size` override (e.g. a step's dataset
+  sets `batch_size: 8` against a top-level `batch_size: 1`), and the
+  `total_steps` passed to `_create_step_schedulers` was never divided by
+  `gradient_accumulation_steps`. Combined, this could inflate a scheduler's
+  step budget (e.g. `CosineAnnealingLR`'s `T_max`) by roughly
+  `(dataset_batch_size / top_level_batch_size) × gradient_accumulation_steps`
+  — ~160x in the reported real-world case. Previously misdiagnosed as a
+  Lion-optimizer-specific "fixed point" issue; it isn't optimizer-specific,
+  since the scheduler code path is shared by AdamW and Lion alike. New
+  shared helpers `resolve_dataset_batch_size()` and
+  `compute_batches_per_epoch()` (ceil-based, replacing floor-division)
+  replace the duplicated/wrong inline math at all three call sites. The
+  `gradient_accumulation_steps` division is deliberately scoped to only the
+  flow/text-encoder schedulers inside `_create_step_schedulers` — `vae` and
+  `discriminator` are excluded, because `VAETrainer.scheduler.step()` fires
+  every micro-batch with no accumulation gating at all (`VAETrainer` doesn't
+  even accept a `gradient_accumulation_steps` param); dividing globally
+  would have introduced a new premature-LR-decay bug for any step with
+  `train_vae=True`. The same wrong `batches_per_epoch` also fed
+  `epoch_total_batches` (gates the batch loop's early-break and resume
+  fast-forward logic) — in the opposite imbalance case (top-level
+  `batch_size` larger than a dataset's per-dataset `batch_size`), this
+  would have truncated real epochs early.
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,
