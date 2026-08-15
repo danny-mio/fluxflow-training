@@ -628,6 +628,46 @@ def train_pipeline(args, config):
     print("=" * 80 + "\n")
 
 
+_FILM_SCALE_PARAM_NAMES = ("film_text_scale", "film_time_scale")
+
+
+def _warn_if_film_scales_missing(flow_state_dict: dict) -> bool:
+    """Warn if a loaded checkpoint predates the dual-FiLM identity-at-init fix.
+
+    ``FluxTransformerBlock_v100`` (fluxflow-core Plan02 Fix B) gained
+    per-block zero-init ``film_text_scale``/``film_time_scale`` params so
+    dual FiLM starts as an exact identity. A checkpoint saved before that
+    fix has no such keys; loading it with ``strict=False`` silently
+    defaults both scales to 0, which completely zeroes -- not merely
+    attenuates -- all timestep/text FiLM conditioning model-wide.
+
+    Args:
+        flow_state_dict: the *loaded checkpoint's* flow_processor state
+            dict, i.e. the dict passed into ``load_state_dict`` -- not the
+            model's state dict after loading (that always has the keys,
+            defaulted to 0 by ``nn.Parameter`` init, so it would never
+            trigger this check).
+
+    Returns:
+        True if the warning was emitted (at least one scale param is
+        absent from the checkpoint).
+    """
+    missing = [
+        name
+        for name in _FILM_SCALE_PARAM_NAMES
+        if not any(key.endswith(name) for key in flow_state_dict)
+    ]
+    if not missing:
+        return False
+    print(
+        f"⚠️  Checkpoint predates dual-FiLM identity-at-init fix (missing "
+        f"{' and '.join(missing)}): timestep/text FiLM conditioning was reset "
+        "to zero (not merely attenuated) on load. Brief fine-tuning is needed "
+        "to recover it."
+    )
+    return True
+
+
 def train_legacy(args):
     """Legacy single-mode training loop for FluxFlow (backward compatibility).
 
@@ -790,6 +830,7 @@ def train_legacy(args):
     if loaded_states.get("diffuser.flow_processor"):
         flow_processor.load_state_dict(loaded_states["diffuser.flow_processor"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded flow_processor checkpoint")
+        _warn_if_film_scales_missing(loaded_states["diffuser.flow_processor"])  # type: ignore[arg-type]
     if loaded_states.get("diffuser.expander"):
         expander.load_state_dict(loaded_states["diffuser.expander"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded expander checkpoint")

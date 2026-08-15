@@ -143,6 +143,19 @@ Both legacy keys still load via `_parse_step_config` and emit a
 `DeprecationWarning`. The new key wins when both are present.
 
 ### Fixed
+- **Mid-training resume can silently zero FiLM conditioning on a pre-Fix-B
+  checkpoint**: fluxflow-core's `FluxTransformerBlock_v100` gained zero-init
+  `film_text_scale`/`film_time_scale` params so dual FiLM starts as an exact
+  identity instead of a random Xavier perturbation (Plan02 Fix B). A
+  checkpoint saved before that fix has no such keys; `train_legacy`'s resume
+  path loads `flow_processor` with `strict=False`, so the missing keys
+  silently default to 0 — completely zeroing (not merely attenuating) all
+  timestep/text FiLM conditioning model-wide, with no error or log to flag
+  it. `train_legacy` now warns immediately after the `flow_processor`
+  checkpoint load whenever `film_text_scale`/`film_time_scale` are absent
+  from the loaded state dict. If you resume a pre-Fix-B v0.10.0-line flow
+  checkpoint, expect this warning once and plan for a brief fine-tuning
+  pass to recover the conditioning.
 - `CheckpointManager.save_models`'s embedded safetensors metadata
   (`model_version`/`model_type`/`vae_dim`) was silently never written when
   `model_config` was a pydantic `ModelConfig` object (the real-data call
