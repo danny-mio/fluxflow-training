@@ -3,6 +3,7 @@
 Handles flow-based diffusion model training with v-prediction.
 """
 
+from contextlib import nullcontext
 from typing import Optional
 
 import torch
@@ -94,6 +95,21 @@ def compute_lion_update_ratio(
     current_lr = float(optimizer.param_groups[0]["lr"])
     update_norm = current_lr * (n_trainable_params**0.5)
     return float(update_norm / (grad_norm + 1e-8))
+
+
+def _autocast_ctx(accelerator):
+    """Mixed-precision context for the expensive forward passes (compressor,
+    flow_processor). ``accelerator.autocast()`` is a documented standalone
+    Accelerate API -- it does not require ``accelerator.prepare()`` to have
+    been called on the wrapped models (see Accelerate's own
+    ``Accelerator.autocast`` docstring), which matters here because
+    FlowTrainer's models are never ``.prepare()``'d. No-op (fp32, matching
+    historical behavior) when mixed_precision is disabled or no accelerator
+    was provided.
+    """
+    if accelerator is None:
+        return nullcontext()
+    return accelerator.autocast()
 
 
 def _empty_cache(device: torch.device) -> None:
@@ -291,7 +307,7 @@ class FlowTrainer:
         # Temporarily disable gradient checkpointing to avoid issues with torch.no_grad()
         original_checkpoint = self.compressor.use_gradient_checkpointing
         self.compressor.use_gradient_checkpointing = False
-        with torch.no_grad():
+        with torch.no_grad(), self._autocast():
             latent_packet = self.compressor(real_imgs)
         if check_for_nan(latent_packet, "latent_packet", logger):
             logger.error("NaN detected in compressor output - skipping batch")
@@ -363,7 +379,8 @@ class FlowTrainer:
             and _flow_processor_takes_pertoken_text(self.flow_processor)
         )
         if per_token_dispatch and text_seq.dim() == 3:
-            pred = self.flow_processor(full_input, text_seq, text_mask, t_model)
+            with self._autocast():
+                pred = self.flow_processor(full_input, text_seq, text_mask, t_model)
         else:
             # Legacy path or already-pooled encoder output (2D). Pool only when
             # the encoder gave us per-token text.
@@ -374,7 +391,8 @@ class FlowTrainer:
                     text_embeddings = text_seq.mean(dim=1)
             else:
                 text_embeddings = text_seq
-            pred = self.flow_processor(full_input, text_embeddings, t_model)
+            with self._autocast():
+                pred = self.flow_processor(full_input, text_embeddings, t_model)
 
         # Extract predicted sequence (exclude HW vector)
         pred_seq = pred[:, : img_seq.size(1), :]
@@ -597,3 +615,7 @@ class FlowTrainer:
     def move_scheduler_to_device(self, device: torch.device):
         """Move scheduler's alphas_cumprod to the specified device."""
         self.alphas_cumprod = self.alphas_cumprod.to(device)
+
+    def _autocast(self):
+        """See module-level ``_autocast_ctx`` docstring."""
+        return _autocast_ctx(self.accelerator)

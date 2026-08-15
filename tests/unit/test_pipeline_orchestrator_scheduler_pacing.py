@@ -10,15 +10,21 @@ against a massively-inflated total-step count:
    loop actually yields (``ceil(dataset_size / batch_size)``), not a
    floor division.
 3. The scheduler step budget (``total_steps`` / CosineAnnealingLR's
-   ``T_max``) for FlowTrainer-managed schedulers ("flow",
-   "text_encoder", "text_encoder_backbone", "text_encoder_projection")
-   must divide by ``gradient_accumulation_steps``, because
-   ``FlowTrainer`` only calls ``scheduler.step()`` once every
-   ``gradient_accumulation_steps`` micro-batches (see
-   ``FlowTrainer._accumulation_step`` / ``should_step`` in
-   flow_trainer.py). VAETrainer has no such gating -- its scheduler
-   steps once per micro-batch regardless of gradient_accumulation_steps
-   -- so "vae" and "discriminator" schedulers must NOT be divided.
+   ``T_max``) for every gated scheduler name ("flow", "text_encoder",
+   "text_encoder_backbone", "text_encoder_projection", "vae",
+   "discriminator") must divide by ``gradient_accumulation_steps``,
+   because both ``FlowTrainer`` and ``VAETrainer`` only call
+   ``scheduler.step()`` once every ``gradient_accumulation_steps``
+   micro-batches (see ``FlowTrainer._accumulation_step`` / ``should_step``
+   in flow_trainer.py, and ``VAETrainer._accumulation_step`` in
+   vae_trainer.py). VAETrainer previously had no such gating -- it called
+   scheduler.step() every micro-batch regardless of
+   gradient_accumulation_steps -- which was the manifestation of the bug
+   that gradient accumulation was never actually happening for the VAE/GAN
+   trainer; "vae" and "discriminator" were carved out of the divided set
+   as a compensating workaround for that bug, not a correctness choice.
+   Now that VAETrainer really accumulates, they must be divided like
+   everything else.
 """
 
 from unittest.mock import MagicMock
@@ -91,7 +97,8 @@ class TestComputeBatchesPerEpoch:
 
 class TestCreateStepSchedulersGradientAccumulation:
     """total_steps (CosineAnnealingLR T_max) must divide by
-    gradient_accumulation_steps only for FlowTrainer-managed scheduler names.
+    gradient_accumulation_steps for every accumulation-gated scheduler name
+    (FlowTrainer's and, since VAETrainer now really accumulates, its own).
     """
 
     def _make_orch(self, step):
@@ -155,10 +162,12 @@ class TestCreateStepSchedulersGradientAccumulation:
         assert schedulers["text_encoder_backbone"].T_max == 25
         assert schedulers["text_encoder_projection"].T_max == 25
 
-    def test_vae_scheduler_not_divided_by_gradient_accumulation_steps(self):
-        # VAETrainer has no gradient-accumulation gating on scheduler.step() --
-        # it steps once per micro-batch. Dividing its total_steps would pace
-        # the VAE scheduler wrong (premature decay).
+    def test_vae_scheduler_divided_by_gradient_accumulation_steps(self):
+        # VAETrainer now gates scheduler.step() on the same accumulation
+        # boundary as its optimizer.step() (see VAETrainer._accumulation_step
+        # in vae_trainer.py) -- it steps once every gradient_accumulation_steps
+        # micro-batches, so its total_steps budget must be divided just like
+        # FlowTrainer's. 3200 / 20 = 160.
         step = PipelineStepConfig(
             name="vae_step",
             n_epochs=1,
@@ -174,9 +183,11 @@ class TestCreateStepSchedulersGradientAccumulation:
 
         schedulers = orch._create_step_schedulers(step, optimizers, total_steps=3200)
 
-        assert schedulers["vae"].T_max == 3200
+        assert schedulers["vae"].T_max == 160
 
-    def test_discriminator_scheduler_not_divided_by_gradient_accumulation_steps(self):
+    def test_discriminator_scheduler_divided_by_gradient_accumulation_steps(self):
+        # Discriminator steps on the same shared accumulation boundary as the
+        # generator (see VAETrainer._accumulation_step). 500 / 10 = 50.
         step = PipelineStepConfig(
             name="gan_step",
             n_epochs=1,
@@ -193,7 +204,7 @@ class TestCreateStepSchedulersGradientAccumulation:
 
         schedulers = orch._create_step_schedulers(step, optimizers, total_steps=500)
 
-        assert schedulers["discriminator"].T_max == 500
+        assert schedulers["discriminator"].T_max == 50
 
     def test_default_gradient_accumulation_steps_of_one_is_a_no_op(self):
         step = PipelineStepConfig(

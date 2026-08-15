@@ -4,6 +4,7 @@ Handles VAE (compressor + expander) training with optional GAN discriminator.
 """
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional, Union
 
@@ -199,6 +200,13 @@ class VAETrainer:
         # Additive opt-in efficiency knob: skip discriminator forward+backward on
         # off-cycle steps. 1 (default) reproduces the historical every-step behavior.
         discriminator_update_freq: int = 1,
+        # Gradient accumulation: generator (compressor+expander+context_predictor)
+        # and discriminator optimizers both zero_grad()/step() only once every
+        # gradient_accumulation_steps calls to train_step(), sharing one boundary
+        # counter so they stay in lockstep -- mirrors FlowTrainer's
+        # _accumulation_step / should_step pattern (flow_trainer.py). Default 1
+        # reproduces the historical every-micro-batch-steps behavior.
+        gradient_accumulation_steps: int = 1,
     ):
         """
         Initialize VAE trainer.
@@ -244,6 +252,12 @@ class VAETrainer:
                 global steps (default 1 = every step, current behavior). Values > 1
                 skip it on off-cycle steps as an opt-in efficiency knob; VAE/generator
                 training is unaffected.
+            gradient_accumulation_steps: Number of train_step() micro-batches to
+                accumulate gradients over before zero_grad()/optimizer.step() fire.
+                Generator (optimizer + context_predictor_optimizer) and discriminator
+                share one boundary counter so both step together once per real
+                accumulated batch. Default 1 preserves the historical
+                step-every-micro-batch behavior.
         """
         self.compressor = compressor
         self.expander = expander
@@ -311,6 +325,10 @@ class VAETrainer:
                 f"discriminator_update_freq must be >= 1, got {discriminator_update_freq}"
             )
         self.discriminator_update_freq = discriminator_update_freq
+        # Gradient accumulation: shared boundary counter for generator +
+        # discriminator (see FlowTrainer._accumulation_step in flow_trainer.py).
+        self.gradient_accumulation_steps = max(1, gradient_accumulation_steps)
+        self._accumulation_step = 0
 
         # Initialize LPIPS if needed
         if self.use_lpips:
@@ -457,6 +475,20 @@ class VAETrainer:
         if self._ctx_hook_handle is not None:
             self._ctx_hook_handle.remove()
             self._ctx_hook_handle = None
+
+    def _autocast(self):
+        """Mixed-precision context for the expensive forward passes (compressor,
+        expander, discriminator). ``accelerator.autocast()`` is a documented
+        standalone Accelerate API -- it does not require ``accelerator.prepare()``
+        to have been called on the wrapped models (see Accelerate's own
+        ``Accelerator.autocast`` docstring), which matters here because
+        VAETrainer's models are never ``.prepare()``'d. No-op (fp32, matching
+        historical behavior) when mixed_precision is disabled or no accelerator
+        was provided.
+        """
+        if self.accelerator is None:
+            return nullcontext()
+        return self.accelerator.autocast()
 
     def _should_train_discriminator(self, global_step: int) -> bool:
         """Whether discriminator forward+backward should run this step.
@@ -990,12 +1022,18 @@ class VAETrainer:
         """
         self.discriminator.train()
 
+        # Gradient accumulation: shared boundary counter with _train_generator
+        # (see __init__ / gradient_accumulation_steps). zero_grad only at the
+        # start of a fresh accumulation window; step only once the window is full.
+        is_accum_boundary_start = self._accumulation_step == 0
+        should_step = (self._accumulation_step + 1) % self.gradient_accumulation_steps == 0
+
         # Generate fake images using the stochastic (reparameterised) path so the
         # discriminator sees the same distribution of reconstructions as the generator.
         # torch.no_grad() prevents stale encoder gradients from accumulating here;
         # they would be zeroed at the start of _train_generator anyway, but being
         # explicit avoids any subtle interaction with gradient checkpointing.
-        with torch.no_grad():
+        with torch.no_grad(), self._autocast():
             packed, _, _ = self.compressor(real_imgs, training=True)
         img_seq = packed[:, :-1, :].contiguous()
         ctx_vec = img_seq.mean(dim=1)
@@ -1013,7 +1051,7 @@ class VAETrainer:
             ctx_vec = None
 
         # Generate conditional reconstructions (VAE doesn't receive gradients here)
-        with torch.no_grad():
+        with torch.no_grad(), self._autocast():
             out_imgs_for_D = self.expander(
                 packed, use_context=self._get_effective_spade_usage(global_step)
             )
@@ -1021,8 +1059,10 @@ class VAETrainer:
             # Also generate unconditional reconstructions for discriminator training
             out_imgs_uncond_for_D = self.expander(packed, use_context=False)
 
-        # Discriminator step
-        self.discriminator_optimizer.zero_grad(set_to_none=True)
+        # Discriminator step. zero_grad only at an accumulation-window boundary
+        # start so earlier micro-batches' accumulated gradients survive.
+        if is_accum_boundary_start:
+            self.discriminator_optimizer.zero_grad(set_to_none=True)
 
         # Add instance noise to inputs
         real_imgs_noisy = add_instance_noise(
@@ -1045,8 +1085,11 @@ class VAETrainer:
         B = real_imgs.shape[0]
         predicted_context = None
         if spade_active:
-            # Use ctx_vec as latent representation (already padded/truncated)
-            latent_repr = ctx_vec.detach()  # [B, expected_ctx_dim]
+            # Use ctx_vec as latent representation (already padded/truncated).
+            # context_predictor is deliberately never run under autocast (like
+            # LPIPS) -- .float() undoes the half dtype ctx_vec may carry when it
+            # was derived from the compressor's autocast'd forward pass above.
+            latent_repr = ctx_vec.detach().float()  # [B, expected_ctx_dim]
 
             context_input_dim = self._get_context_input_dim()
             # Ensure context_predictor matches ctx_vec dimension
@@ -1082,7 +1125,8 @@ class VAETrainer:
             real_noisy_base = real_noisy_base.detach().requires_grad_(True)
 
         # Real images
-        real_logits = self.discriminator(real_noisy_base, disc_ctx)
+        with self._autocast():
+            real_logits = self.discriminator(real_noisy_base, disc_ctx)
         self._maybe_save_disc_logit_snapshot(real_logits, global_step)
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
@@ -1093,15 +1137,20 @@ class VAETrainer:
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
 
         # Fake images - use same context logic as real images
-        fake_logits = self.discriminator(fake_imgs_noisy, disc_ctx)
-        # Unconditional fake images (should also be classified as fake)
-        fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, disc_ctx)
+        with self._autocast():
+            fake_logits = self.discriminator(fake_imgs_noisy, disc_ctx)
+            # Unconditional fake images (should also be classified as fake)
+            fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, disc_ctx)
 
         # Combine losses - weight unconditional fakes more since they're easier to classify
         d_hinge_cond = d_hinge_loss(real_logits, fake_logits)
         d_hinge_uncond = d_hinge_loss(real_logits, fake_uncond_logits)
         d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
         d_img_loss = d_img_loss + d_hinge
+
+        # Gradient accumulation: scale before backward (standard grad-accum),
+        # matching FlowTrainer's total_loss / gradient_accumulation_steps.
+        d_img_loss = d_img_loss / self.gradient_accumulation_steps
 
         try:
             self.accelerator.backward(d_img_loss)
@@ -1116,6 +1165,11 @@ class VAETrainer:
                 )
                 return {"d_loss": 0.0, "_optimizer_stepped": False}
             raise
+
+        if not should_step:
+            # Mid-accumulation-window: gradients stay accumulated in .grad,
+            # optimizer/scaler untouched until the boundary.
+            return {"d_loss": float(d_img_loss.detach().item()), "_optimizer_stepped": False}
 
         # Same fp16/GradScaler protocol as _train_generator: discriminator_optimizer
         # is a plain torch optimizer (never accelerator.prepare()'d), so it must be
@@ -1153,8 +1207,14 @@ class VAETrainer:
             ``lpips``, ``recon``, ``ctx_aux_loss``, ``ctx_probe_alignment``,
             ``color_stats``, ``hist_loss``, ``contrast_loss``, ``coarseness_loss``.
         """
-        self.optimizer.zero_grad(set_to_none=True)
-        self.context_predictor_optimizer.zero_grad(set_to_none=True)
+        # Gradient accumulation: shared boundary counter with _train_discriminator
+        # (see __init__ / gradient_accumulation_steps). zero_grad only at the
+        # start of a fresh accumulation window so earlier micro-batches'
+        # accumulated gradients survive.
+        is_accum_boundary_start = self._accumulation_step == 0
+        if is_accum_boundary_start:
+            self.optimizer.zero_grad(set_to_none=True)
+            self.context_predictor_optimizer.zero_grad(set_to_none=True)
 
         # Check input for NaN/Inf
         if check_for_nan(real_imgs, "input_images", logger):
@@ -1170,7 +1230,8 @@ class VAETrainer:
             }
 
         # Forward pass with reparameterization
-        packed_rec, mu, logvar = self.compressor(real_imgs, training=True)
+        with self._autocast():
+            packed_rec, mu, logvar = self.compressor(real_imgs, training=True)
 
         # Early NaN detection after compression
         if (
@@ -1192,9 +1253,10 @@ class VAETrainer:
                 "_optimizer_stepped": False,
             }
 
-        out_imgs_rec = self.expander(
-            packed_rec, use_context=self._get_effective_spade_usage(global_step)
-        )
+        with self._autocast():
+            out_imgs_rec = self.expander(
+                packed_rec, use_context=self._get_effective_spade_usage(global_step)
+            )
 
         # Early NaN detection after expansion
         if check_for_nan(out_imgs_rec, "out_imgs_rec", logger):
@@ -1240,9 +1302,18 @@ class VAETrainer:
             # Compute LPIPS WITH gradients so it actually trains the VAE
             # NOTE: Gradient checkpointing removed - causes recursive checkpointing
             # with VAE decoder, leading to OOM instead of saving memory
+            #
+            # Deliberately NOT wrapped in self._autocast(): LPIPS/VGG is numerically
+            # unstable in fp16 and its own weights are never cast to half (see
+            # lpips.LPIPS.forward, which does no internal dtype handling of its
+            # inputs). Under fp16, out_imgs_rec is a genuine half tensor by this
+            # point (produced inside the expander's autocast block above) even
+            # though we're outside that context now, so it must be explicitly
+            # cast back to float32 -- autocast does not retroactively "undo" a
+            # tensor's already-realized dtype once you leave the context.
             device = out_imgs_rec.device
             lpips_fn = self.lpips_fn.to(device)
-            perceptual_loss = lpips_fn(out_imgs_rec, real_imgs).mean()
+            perceptual_loss = lpips_fn(out_imgs_rec.float(), real_imgs.float()).mean()
             if self.train_reconstruction:
                 # Fold into recon_loss so the adaptive weight already covers it
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
@@ -1299,8 +1370,10 @@ class VAETrainer:
         # Context prediction from latents (Step 1 & 2: SiLU activation + KL-context alignment)
         B = real_imgs.shape[0]
         # Use packed_rec ctx_vec — identical to _train_discriminator so context_predictor
-        # dimensions stay consistent across both training methods.
-        latent_repr = packed_rec[:, :-1, :].contiguous().mean(dim=1)  # [B, 2*d_model]
+        # dimensions stay consistent across both training methods. context_predictor is
+        # deliberately never run under autocast (like LPIPS) -- .float() undoes the half
+        # dtype packed_rec may carry from the compressor's autocast'd forward pass above.
+        latent_repr = packed_rec[:, :-1, :].contiguous().mean(dim=1).float()  # [B, 2*d_model]
 
         context_input_dim = self._get_context_input_dim()
         # Ensure context_predictor matches actual latent dimension (may differ from init detection)
@@ -1374,7 +1447,8 @@ class VAETrainer:
                 gen_ctx = None if spade_active else ctx_vec_rec
                 # Discriminator is read-only during generator update
                 self.discriminator.eval()
-                g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
+                with self._autocast():
+                    g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
                 self.discriminator.train()
 
                 # Check discriminator output
@@ -1520,7 +1594,41 @@ class VAETrainer:
         # Gradient checkpointing in VAE causes memory spikes during backward pass
         _empty_cache(real_imgs.device)
 
+        # Gradient accumulation: scale before backward (standard grad-accum),
+        # matching FlowTrainer's total_loss / gradient_accumulation_steps.
+        total_loss = total_loss / self.gradient_accumulation_steps
         self.accelerator.backward(total_loss)
+
+        # Boundary check uses the SAME pre-increment counter value that
+        # _train_discriminator (if it ran earlier this train_step call) already
+        # used to compute its own should_step, so generator and discriminator
+        # step in lockstep. Increment now, mirroring FlowTrainer's
+        # self._accumulation_step += 1 / should_step ordering.
+        should_step = (self._accumulation_step + 1) % self.gradient_accumulation_steps == 0
+        self._accumulation_step += 1
+
+        if not should_step:
+            # Mid-accumulation-window: gradients stay accumulated in .grad,
+            # optimizer/scaler untouched until the boundary.
+            return {
+                "vae": float(recon_loss.detach().item()),
+                "kl": float(kl.detach().item()),
+                "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
+                "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
+                "recon": float(recon_loss.detach().item()),
+                "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
+                "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
+                "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
+                "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
+                "color_stats": float(color_stats_loss.detach().item()),
+                "hist_loss": float(hist_loss.detach().item()),
+                "contrast_loss": float(contrast_loss.detach().item()),
+                "coarseness_loss": float(coarseness_loss.detach().item()),
+                "_optimizer_stepped": False,
+            }
+
+        # Reset the boundary counter now that this window is complete.
+        self._accumulation_step = 0
 
         # Unscale once via Accelerate's public wrapper (no-op under bf16/no-AMP).
         # self.optimizer is never passed through accelerator.prepare() in the

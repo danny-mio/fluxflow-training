@@ -40,6 +40,7 @@ in production (never prepared), matching ``optimizer=None`` unscale calls being 
 no-op while an explicit ``unscale_gradients(optimizer)`` call still works.
 """
 
+import contextlib
 from unittest.mock import MagicMock
 
 import torch
@@ -116,12 +117,20 @@ class _FakeAccelerator:
     - No ``.step()`` attribute, matching the real ``Accelerator`` -- forces
       VAETrainer's ``accelerator_step`` fallback to call ``optimizer.step()``
       directly, exactly like production.
+    - ``autocast()`` is a real no-op context manager (``nullcontext``): these
+      tests exercise GradScaler unscale/step bookkeeping, not autocast dtype
+      behavior (that's covered by test_vae_trainer_autocast.py), but VAETrainer
+      now calls ``self.accelerator.autocast()`` around forward passes, so the
+      double must support it.
     """
 
     def __init__(self):
         self.scaler = torch.amp.GradScaler("cuda", enabled=True)
         self._optimizers: list = []
         self.unscale_calls: list = []
+
+    def autocast(self):
+        return contextlib.nullcontext()
 
     def backward(self, loss):
         self.scaler.scale(loss).backward()

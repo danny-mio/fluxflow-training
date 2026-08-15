@@ -229,6 +229,66 @@ Both legacy keys still load via `_parse_step_config` and emit a
     true` run under fp16 would have diverged almost instantly, with nothing
     pointing at a bug rather than bad hyperparameters. Fixed with the same
     unscale→step→update sequence as the generator fix.
+- **`VAETrainer` never actually accumulated gradients despite
+  `gradient_accumulation_steps` being configured on every VAE pipeline
+  step**: `_train_generator`/`_train_discriminator` called
+  `zero_grad()`/`optimizer.step()`/scheduler `.step()`/`ema.update()`
+  unconditionally on every micro-batch instead of once per real
+  accumulation boundary, so the actual effective batch size — the thing
+  the GAN-stability hyperparameters in the from-scratch training configs
+  were tuned around — was silently far smaller than configured. This is
+  what `pipeline_orchestrator.py`'s now-removed comment excluding
+  `"vae"`/`"discriminator"` from scheduler-budget division was
+  documenting as known behavior: a previous fix in this same effort built
+  a compensating workaround around this bug rather than catching it (see
+  the scheduler-pacing fix above). Fixed by mirroring `FlowTrainer`'s
+  `_accumulation_step`/`should_step` pattern: generator and discriminator
+  now share one boundary counter so both step in lockstep — since
+  `VAETrainer`'s dual-optimizer structure doesn't exist in `FlowTrainer`,
+  the discriminator reads the shared counter *before* the generator
+  increments it, computing the same boundary value the generator computes
+  *after* incrementing. Loss is now divided by
+  `gradient_accumulation_steps` before `backward()`, matching
+  `FlowTrainer`. `pipeline_orchestrator.py`'s
+  `_ACCUMULATION_GATED_SCHEDULER_NAMES` now includes `"vae"` and
+  `"discriminator"` so their scheduler budgets are divided like
+  `FlowTrainer`'s; the two scheduler-pacing regression tests that
+  asserted the old undivided behavior are renamed and updated to assert
+  the correct divided behavior (they were locking in the bug, not
+  weakening coverage). Known follow-up: `discriminator_update_freq > 1`
+  combined with `gradient_accumulation_steps > 1` can theoretically leave
+  discriminator gradients silently discarded mid-window; doesn't affect
+  any current config (all use the default `discriminator_update_freq=1`).
+- **`use_fp16`/`mixed_precision="fp16"` never actually engaged
+  mixed-precision compute anywhere**, on either trainer: no
+  `torch.autocast`/`accelerator.autocast()` context existed in
+  `vae_trainer.py` or `flow_trainer.py`, and `Accelerator(mixed_precision=
+  "fp16")` was constructed but models were never passed through
+  `accelerator.prepare()` (only dataloaders were) — so nothing ever
+  actually ran in fp16. Enabling the flag only activated `GradScaler`'s
+  unscale/inf-check bookkeeping overhead for a precision reduction that
+  never happened, fully explaining a user report that `use_fp16` measured
+  *slower* than fp32 on a real A6000/Ampere GPU: pure overhead, zero
+  benefit, on any hardware. Fixed by adding an `_autocast()` helper
+  (`nullcontext()` fallback without an accelerator) to both trainers and
+  wrapping the compressor/expander/discriminator forward passes in
+  `vae_trainer.py` and the compressor/flow_processor forward passes in
+  `flow_trainer.py`. LPIPS and the small `context_predictor` diagnostic
+  head are deliberately kept OUTSIDE autocast with an explicit `.float()`
+  cast on their inputs — a tensor produced inside an autocast context
+  keeps its realized fp16 dtype after leaving the context, and LPIPS's
+  VGG backbone has fp32 weights, so this would otherwise be a real crash
+  (confirmed via a real-GPU test during implementation, not theoretical).
+  `text_encoder`'s forward pass is not yet wrapped in autocast; flagged as
+  a natural follow-up, out of scope here. 20 new tests across
+  `test_vae_trainer_gradient_accumulation.py` (12: step/zero_grad call
+  counts, loss scaling, gradient survival mid-window, EMA/scheduler
+  gating, generator/discriminator lockstep), `test_vae_trainer_autocast.py`
+  (5), and `test_flow_trainer_autocast.py` (3, including real-GPU tests on
+  ROCm/HIP asserting actual `torch.float16` activation dtype). Full
+  `tests/unit/` suite passes (702 pre-existing + 20 new, 2 gpu/slow
+  deselected); black/isort/flake8 clean; mypy's 63 pre-existing errors are
+  unchanged (verified via git-stash A/B diff), zero new errors introduced.
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,

@@ -17,15 +17,25 @@ from .pipeline_config import PipelineConfig, PipelineStepConfig
 
 logger = get_logger(__name__)
 
-# Scheduler names managed by FlowTrainer, whose scheduler.step() is gated by
-# gradient_accumulation_steps (see FlowTrainer._accumulation_step / should_step
-# in flow_trainer.py -- it steps once every gradient_accumulation_steps
-# micro-batches). VAETrainer has no such gating: it calls scheduler.step()
-# once per micro-batch (train_step call) regardless of
-# gradient_accumulation_steps, so "vae" and "discriminator" schedulers must
-# NOT be divided by it when computing their total_steps budget.
+# Scheduler names whose scheduler.step() is gated by gradient_accumulation_steps
+# -- they step once every gradient_accumulation_steps micro-batches rather than
+# once per train_step() call, so their total_steps budget must be divided
+# accordingly. FlowTrainer has always gated "flow"/"text_encoder"* this way
+# (see FlowTrainer._accumulation_step / should_step in flow_trainer.py).
+# VAETrainer's "vae"/"discriminator" schedulers now do the same (see
+# VAETrainer._accumulation_step in vae_trainer.py, shared between the generator
+# and discriminator optimizers) -- previously they stepped every micro-batch
+# regardless of gradient_accumulation_steps, which was itself the bug (VAE
+# gradients were never actually accumulated; see vae_trainer.py train_step).
 _ACCUMULATION_GATED_SCHEDULER_NAMES = frozenset(
-    {"flow", "text_encoder", "text_encoder_backbone", "text_encoder_projection"}
+    {
+        "flow",
+        "text_encoder",
+        "text_encoder_backbone",
+        "text_encoder_projection",
+        "vae",
+        "discriminator",
+    }
 )
 
 
@@ -939,12 +949,11 @@ class TrainingPipelineOrchestrator:
         """Create schedulers for current step from inline config.
 
         ``total_steps`` is the real number of micro-batches (n_epochs *
-        batches_per_epoch) the step will process. For scheduler names managed
-        by FlowTrainer (see _ACCUMULATION_GATED_SCHEDULER_NAMES), the actual
-        number of scheduler.step() calls is gated by
-        gradient_accumulation_steps, so their step budget is divided
-        accordingly. VAETrainer-managed schedulers ("vae", "discriminator")
-        step once per micro-batch and are left undivided.
+        batches_per_epoch) the step will process. For scheduler names in
+        _ACCUMULATION_GATED_SCHEDULER_NAMES (all FlowTrainer- and
+        VAETrainer-managed schedulers), the actual number of scheduler.step()
+        calls is gated by gradient_accumulation_steps, so their step budget is
+        divided accordingly.
         """
         from ..training.scheduler_factory import create_scheduler
 
@@ -1154,6 +1163,10 @@ class TrainingPipelineOrchestrator:
                     and hasattr(args, "output_path")
                     else None
                 ),
+                # Generator (compressor+expander+context_predictor) and discriminator
+                # optimizers now share one accumulation-boundary counter -- see
+                # VAETrainer.gradient_accumulation_steps / _accumulation_step.
+                gradient_accumulation_steps=step.gradient_accumulation_steps,
             )
 
             # Build descriptive message about what's being trained
