@@ -205,6 +205,30 @@ Both legacy keys still load via `_parse_step_config` and emit a
   fast-forward logic) — in the opposite imbalance case (top-level
   `batch_size` larger than a dataset's per-dataset `batch_size`), this
   would have truncated real epochs early.
+- **`VAETrainer` fp16/GradScaler crash and silent gradient corruption**:
+  `training.use_fp16: true` had never been exercised by any prior run (every
+  config touching the VAE trainer kept it `false`), so two GradScaler bugs
+  went unnoticed until a real fp16 run hit them.
+  - `_train_generator` crashed on the first batch with `RuntimeError:
+    unscale_() has already been called on this optimizer since the last
+    update()`. `self.optimizer` is a plain `torch.optim` instance built
+    directly in `pipeline_orchestrator.py::_create_step_optimizers` (never
+    passed through `accelerator.prepare()`), and the method called
+    `self.accelerator.scaler.unscale_(self.optimizer)` manually and then
+    `self.accelerator.clip_grad_norm_(...)`, which unscales the same
+    optimizer again internally — with no `scaler.update()` anywhere to
+    close the unscale→update cycle. Fixed by unscaling once via
+    `accelerator.unscale_gradients(self.optimizer)`, clipping with plain
+    `torch.nn.utils.clip_grad_norm_()` instead of the accelerator wrapper
+    (which would re-unscale), and calling `scaler.update()` after the
+    optimizer step.
+  - `_train_discriminator` had the same missing-unscale pattern but with no
+    crash to flag it: `discriminator_optimizer.step()` ran with no unscale
+    at all under fp16, so gradients were silently applied still multiplied
+    by the GradScaler's growth factor (≥2^16) — the first `gan_training:
+    true` run under fp16 would have diverged almost instantly, with nothing
+    pointing at a bug rather than bad hyperparameters. Fixed with the same
+    unscale→step→update sequence as the generator fix.
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,

@@ -1117,7 +1117,16 @@ class VAETrainer:
                 return {"d_loss": 0.0, "_optimizer_stepped": False}
             raise
 
+        # Same fp16/GradScaler protocol as _train_generator: discriminator_optimizer
+        # is a plain torch optimizer (never accelerator.prepare()'d), so it must be
+        # unscaled explicitly before step() -- otherwise, under fp16, step() would
+        # silently apply gradients still multiplied by the GradScaler's growth
+        # factor (>= 2**16). update() resets the scaler's per-optimizer stage so a
+        # later unscale of this same optimizer doesn't raise "already been called".
+        self.accelerator.unscale_gradients(self.discriminator_optimizer)
         self.discriminator_optimizer.step()
+        if self.accelerator.scaler is not None:
+            self.accelerator.scaler.update()
 
         return {"d_loss": float(d_img_loss.detach().item()), "_optimizer_stepped": True}
 
@@ -1513,17 +1522,30 @@ class VAETrainer:
 
         self.accelerator.backward(total_loss)
 
-        # Check gradients for NaN/Inf after backward
+        # Unscale once via Accelerate's public wrapper (no-op under bf16/no-AMP).
+        # self.optimizer is never passed through accelerator.prepare() in the
+        # PipelineOrchestrator training path (see pipeline_orchestrator.py's
+        # _create_step_optimizers), so we must NOT rely on accelerator.clip_grad_norm_()
+        # to unscale it implicitly (its internal unscale_gradients() only covers
+        # accelerator-prepared optimizers). We also must NOT call scaler.unscale_()
+        # here *and* let clip_grad_norm_ unscale again below -- GradScaler raises
+        # "unscale_() has already been called on this optimizer since the last
+        # update()" on a second unscale_ of the same optimizer before update().
+        # So: unscale explicitly once, then clip with the plain torch function
+        # (not accelerator.clip_grad_norm_, which would try to unscale again).
         vae_params = list(self.compressor.parameters()) + list(self.expander.parameters())
-        if self.accelerator.scaler is not None:
-            self.accelerator.scaler.unscale_(self.optimizer)
-            for param in vae_params:
-                if param.grad is not None and check_for_nan(param.grad, "vae_grad", logger):
-                    logger.warning("NaN gradient in VAE, zeroing it")
-                    param.grad.zero_()
+        self.accelerator.unscale_gradients(self.optimizer)
 
-        # Clip gradients (only VAE parameters)
-        self.accelerator.clip_grad_norm_(vae_params, self.gradient_clip_norm)
+        # Check gradients for NaN/Inf after unscale, before clipping. self.optimizer.step()
+        # below is a plain (non-GradScaler) step, so unlike scaler.step() it will NOT
+        # auto-skip on overflow -- this guard replaces that safety net.
+        for param in vae_params:
+            if param.grad is not None and check_for_nan(param.grad, "vae_grad", logger):
+                logger.warning("NaN gradient in VAE, zeroing it")
+                param.grad.zero_()
+
+        # Clip gradients (only VAE parameters). Gradients are already unscaled above.
+        torch.nn.utils.clip_grad_norm_(vae_params, self.gradient_clip_norm)
 
         accelerator_step = (
             self.accelerator is not None
@@ -1536,6 +1558,14 @@ class VAETrainer:
         else:
             self.optimizer.step()
             self.context_predictor_optimizer.step()
+
+        # Reset the GradScaler's per-optimizer "unscaled" stage for the next call.
+        # self.optimizer/context_predictor_optimizer are plain torch optimizers (see
+        # above), so nothing else ever calls scaler.update() -- without this, the
+        # NEXT _train_generator call's unscale_gradients() would see the stale
+        # "already unscaled" stage and raise the same RuntimeError.
+        if self.accelerator.scaler is not None:
+            self.accelerator.scaler.update()
 
         # Return dict matching original tuple behavior:
         # vae = recon_loss (NOT total_loss which includes adaptive weighting and can be huge/negative)
