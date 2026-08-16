@@ -134,6 +134,7 @@ feature_maps_dim_disc: 8
 **6. Use FP16** (saves ~20-30% if GPU supports Tensor Cores):
 ```yaml
 use_fp16: true  # RTX 3090/4090 recommended
+precision: fp16  # or "bf16" — same range as fp32, avoids fp16 overflow-to-Inf on large activations at some cost to precision
 ```
 
 > SPADE is always-on in v0.10.0; the `train_spade` field is deprecated and ignored by the parser, so disabling it is no longer a memory lever.
@@ -448,7 +449,8 @@ If not set, prompts are used exactly as provided in the dataset.
 | `--preserve_lr` | flag | False | Load saved learning rates from checkpoint |
 | `--optim_sched_config` | str | - | Path to JSON file with optimizer/scheduler configurations |
 | `--training_steps` | int | 1 | Inner training steps per batch (gradient accumulation) |
-| `--use_fp16` | flag | False | Use mixed precision training (FP16) |
+| `--use_fp16` | flag | False | Use mixed precision training |
+| `--precision` | str | `fp16` | Mixed-precision dtype when `--use_fp16` is set: `fp16` or `bf16`. bf16 avoids fp16's overflow-to-Inf on large activations (same exponent range as fp32) at the cost of mantissa precision. |
 | `--initial_clipping_norm` | float | 1.0 | Gradient clipping norm for stability |
 
 **Learning Rate Guidelines:**
@@ -586,6 +588,12 @@ Using `--use_fp16` enables mixed precision:
 - **Pros**: ~40% faster, ~40% less VRAM, same quality
 - **Cons**: Requires NVIDIA GPU with Tensor Cores (RTX series)
 - **Recommendation**: Always use on RTX 3090/4090 for 2-4x speedup
+
+`--precision {fp16,bf16}` (default `fp16`) selects the dtype used when
+`--use_fp16` is set. fp16's ~65504 max can overflow to Inf as activations
+grow during training; bf16 shares fp32's exponent range (no overflow) at
+the cost of mantissa precision. Prefer `bf16` if a run hits NaN/Inf losses
+under fp16 and the hardware supports it.
 
 ### Gradient Accumulation
 

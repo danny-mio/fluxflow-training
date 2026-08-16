@@ -174,6 +174,61 @@ class TestTrainScriptArgumentParsing:
             args = train.parse_args()
             assert args.max_text_length == 64
 
+    def test_parse_args_precision_defaults_to_fp16(self):
+        """--precision defaults to 'fp16' when not passed (bf16 mitigation opt-in only)."""
+        train = import_script_module("train")
+        test_args = [
+            "--data_path",
+            "/tmp/images",
+            "--captions_file",
+            "/tmp/captions.tsv",
+            "--train_vae",
+            "--output_path",
+            "/tmp/output",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.precision == "fp16"
+            assert args.use_fp16 is False
+
+    def test_parse_args_precision_bf16_cli(self):
+        """--precision bf16 is accepted on the CLI alongside --use_fp16."""
+        train = import_script_module("train")
+        test_args = [
+            "--data_path",
+            "/tmp/images",
+            "--captions_file",
+            "/tmp/captions.tsv",
+            "--train_vae",
+            "--output_path",
+            "/tmp/output",
+            "--use_fp16",
+            "--precision",
+            "bf16",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.use_fp16 is True
+            assert args.precision == "bf16"
+
+    def test_parse_args_precision_rejects_invalid_choice(self):
+        """argparse ``choices`` rejects any value outside {fp16, bf16}."""
+        train = import_script_module("train")
+        test_args = [
+            "--data_path",
+            "/tmp/images",
+            "--captions_file",
+            "/tmp/captions.tsv",
+            "--train_vae",
+            "--output_path",
+            "/tmp/output",
+            "--precision",
+            "fp32",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            with pytest.raises(SystemExit):
+                train.parse_args()
+
 
 class TestTrainScriptConfigFileMerge:
     """Tests for YAML config merging into CLI args (train.parse_args)."""
@@ -216,6 +271,102 @@ class TestTrainScriptConfigFileMerge:
         with patch.object(sys, "argv", ["train.py"] + test_args):
             args = train.parse_args()
             assert args.max_text_length == 48
+
+    def test_config_use_fp16_only_still_defaults_precision_to_fp16(self, tmp_path):
+        """Backward compat: a config with only ``use_fp16: true`` (no ``precision``
+        key at all) must keep resolving to fp16, unchanged from pre-bf16 behavior."""
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "training:\n"
+            "  train_vae: true\n"
+            "  use_fp16: true\n"
+        )
+        test_args = ["--config", str(config_path), "--output_path", "/tmp/output"]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.use_fp16 is True
+            assert args.precision == "fp16"
+
+    def test_config_precision_bf16_applied_when_not_on_cli(self, tmp_path):
+        """``training.precision: bf16`` in YAML is picked up when not passed on the CLI."""
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "training:\n"
+            "  train_vae: true\n"
+            "  use_fp16: true\n"
+            "  precision: bf16\n"
+        )
+        test_args = ["--config", str(config_path), "--output_path", "/tmp/output"]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.use_fp16 is True
+            assert args.precision == "bf16"
+
+    def test_cli_precision_overrides_config(self, tmp_path):
+        """--precision on the CLI takes priority over ``training.precision`` in YAML."""
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "training:\n"
+            "  train_vae: true\n"
+            "  use_fp16: true\n"
+            "  precision: bf16\n"
+        )
+        test_args = [
+            "--config",
+            str(config_path),
+            "--output_path",
+            "/tmp/output",
+            "--precision",
+            "fp16",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.precision == "fp16"
+
+
+class TestResolveMixedPrecision:
+    """Tests for ``train._resolve_mixed_precision`` — the single choke point all four
+    ``Accelerator(...)`` construction call sites go through to pick ``mixed_precision``.
+
+    fp16's narrow dynamic range clips growing activations to Inf; bf16 shares fp32's
+    exponent range (no overflow-to-Inf) at the cost of mantissa precision, which is an
+    acceptable tradeoff for the fp16 NaN/Inf training crash this flag mitigates.
+    """
+
+    def test_use_fp16_false_ignores_precision(self):
+        """``use_fp16=False`` must always resolve to 'no', regardless of ``precision``."""
+        train = import_script_module("train")
+        assert train._resolve_mixed_precision(False, "bf16") == "no"
+        assert train._resolve_mixed_precision(False, "fp16") == "no"
+
+    def test_use_fp16_true_default_precision_is_fp16(self):
+        """Unchanged historical behavior: ``use_fp16=True`` + default precision -> fp16."""
+        train = import_script_module("train")
+        assert train._resolve_mixed_precision(True, "fp16") == "fp16"
+
+    def test_use_fp16_true_bf16_precision(self):
+        """``use_fp16=True`` + ``precision='bf16'`` -> bf16 (the new mitigation path)."""
+        train = import_script_module("train")
+        assert train._resolve_mixed_precision(True, "bf16") == "bf16"
+
+    def test_invalid_precision_raises(self):
+        """Any value outside {fp16, bf16} raises, even if it slipped in via YAML
+        (which bypasses argparse's ``choices`` validation)."""
+        train = import_script_module("train")
+        with pytest.raises(ValueError):
+            train._resolve_mixed_precision(True, "fp32")
 
 
 class TestTrainScriptOptimizerConfig:

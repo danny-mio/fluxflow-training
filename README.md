@@ -139,7 +139,7 @@ Tested on NVIDIA A6000 (48GB VRAM); A100 (40GB/80GB) also supported.
 - Reduce batch size: `batch_size: 2` or `1`
 - Disable LPIPS: `use_lpips: false` (saves ~6-8GB)
 - Reduce image size: `img_size: 512` (saves ~10-15GB)
-- Use FP16 (if supported): `use_fp16: true` (saves ~20-30%)
+- Use FP16 (if supported): `use_fp16: true` (saves ~20-30%); add `precision: bf16` if fp16 hits NaN/Inf from activation overflow
 - See [TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) "Limited VRAM Strategy"
 
 **Experimental: AMD ROCm** — gfx1151 (Strix Halo APU) support is

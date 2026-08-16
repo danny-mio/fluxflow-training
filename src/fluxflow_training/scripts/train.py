@@ -542,6 +542,38 @@ def initialize_dataloader(args, accelerator):
     return dataloader, sampler, dataset_size
 
 
+_VALID_MIXED_PRECISIONS = {"fp16", "bf16"}
+
+
+def _resolve_mixed_precision(use_fp16: bool, precision: str) -> str:
+    """Resolve the ``Accelerator(mixed_precision=...)`` kwarg from CLI/config flags.
+
+    ``precision`` is only consulted when ``use_fp16`` is true, so any existing config
+    that only sets ``use_fp16: true`` (no ``precision`` key) keeps resolving to fp16,
+    unchanged. bf16 shares fp32's exponent range (no overflow-to-Inf on large
+    activations, unlike fp16's ~65504 max) at the cost of mantissa precision -- an
+    acceptable tradeoff when the failure mode is range, not precision.
+
+    Args:
+        use_fp16: Whether mixed-precision training is enabled at all.
+        precision: Requested dtype, one of ``{"fp16", "bf16"}``.
+
+    Returns:
+        ``"no"`` if ``use_fp16`` is false, else the validated ``precision`` string.
+
+    Raises:
+        ValueError: If ``use_fp16`` is true and ``precision`` isn't fp16/bf16.
+    """
+    if not use_fp16:
+        return "no"
+    if precision not in _VALID_MIXED_PRECISIONS:
+        raise ValueError(
+            f"Invalid precision '{precision}'; must be one of "
+            f"{sorted(_VALID_MIXED_PRECISIONS)}."
+        )
+    return precision
+
+
 def train_pipeline(args, config):
     """
     Pipeline-based training loop for FluxFlow.
@@ -574,11 +606,13 @@ def train_pipeline(args, config):
         accelerator = Accelerator(
             cpu=False,
             device_placement=True,
-            mixed_precision="fp16" if args.use_fp16 else "no",
+            mixed_precision=_resolve_mixed_precision(args.use_fp16, args.precision),
         )
     else:
         print("Using CPU")
-        accelerator = Accelerator(cpu=True, mixed_precision="fp16" if args.use_fp16 else "no")
+        accelerator = Accelerator(
+            cpu=True, mixed_precision=_resolve_mixed_precision(args.use_fp16, args.precision)
+        )
 
     device = accelerator.device
 
@@ -740,11 +774,13 @@ def train_legacy(args):
         accelerator = Accelerator(
             cpu=False,
             device_placement=True,
-            mixed_precision="fp16" if args.use_fp16 else "no",
+            mixed_precision=_resolve_mixed_precision(args.use_fp16, args.precision),
         )
     else:
         print("Using CPU")
-        accelerator = Accelerator(cpu=True, mixed_precision="fp16" if args.use_fp16 else "no")
+        accelerator = Accelerator(
+            cpu=True, mixed_precision=_resolve_mixed_precision(args.use_fp16, args.precision)
+        )
 
     from fluxflow.utils.device import is_rocm
 
@@ -1725,6 +1761,15 @@ def parse_args():
     )
     parser.add_argument("--use_fp16", action="store_true", help="Use mixed precision")
     parser.add_argument(
+        "--precision",
+        type=str,
+        choices=["fp16", "bf16"],
+        default="fp16",
+        help="Mixed-precision dtype used when --use_fp16 is set. bf16 shares fp32's "
+        "exponent range (avoids fp16 overflow-to-Inf on large activations) at the "
+        "cost of mantissa precision. Ignored when --use_fp16 is not set.",
+    )
+    parser.add_argument(
         "--initial_clipping_norm",
         type=float,
         default=1.0,
@@ -2030,6 +2075,8 @@ def parse_args():
                 args.training_steps = config["training"]["training_steps"]
             if "use_fp16" in config["training"] and "use_fp16" not in cli_provided:
                 args.use_fp16 = config["training"]["use_fp16"]
+            if "precision" in config["training"] and "precision" not in cli_provided:
+                args.precision = config["training"]["precision"]
             if (
                 "initial_clipping_norm" in config["training"]
                 and "initial_clipping_norm" not in cli_provided

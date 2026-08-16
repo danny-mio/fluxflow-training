@@ -35,6 +35,23 @@ Not yet released — work in progress toward v0.10.0.
   existing `batch_size`/`workers` per-dataset override convention.
 
 ### Added
+- **`--precision {fp16,bf16}` / `training.precision` config key** (default
+  `fp16`, only consulted when `use_fp16`/`--use_fp16` is true): opt-in bf16
+  mixed precision, an immediate mitigation for the fp16 NaN/Inf crash the VAE
+  expander hits mid-run as activations grow (fp16's ~65504 max clips to Inf;
+  bf16 shares fp32's exponent range, so no overflow, at the cost of mantissa
+  precision — an acceptable tradeoff for a range problem, not a precision
+  one; the root-cause activation-growth fix lands separately in
+  `fluxflow-core`). New `_resolve_mixed_precision(use_fp16, precision)`
+  helper in `scripts/train.py` is the single choke point all four
+  `Accelerator(mixed_precision=...)` construction call sites (both the
+  legacy and pipeline training paths, CUDA/ROCm and CPU branches) now go
+  through, replacing the hardcoded `"fp16" if args.use_fp16 else "no"`
+  ternary at each site. Threaded through the same CLI-overrides-config
+  fallback mechanism as `--use_fp16`. Fully backward compatible: any
+  existing config with only `use_fp16: true` (no `precision` key) keeps
+  resolving to fp16, unchanged. Set `training: {use_fp16: true, precision:
+  bf16}` in YAML, or `--use_fp16 --precision bf16` on the CLI, to opt in.
 - **Per-token text conditioning helpers**: `apply_cfg_null_substitution` in
   `training/cfg_utils.py` replaces zero-vector dropout with an encoded
   empty-prompt pair `(null_seq, null_mask)`. The pair is built once via
