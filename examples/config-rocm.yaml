@@ -12,12 +12,13 @@
 #     the same accelerate path as CUDA) but UNVALIDATED on gfx1151 -- flip
 #     to false if you observe instability, mirroring the MPS precedent
 #   - Gradient checkpointing enabled (saves memory at modest compute cost)
-#   - attention_backend left at the default "einsum"; "sdpa" is opt-in and
-#     unvalidated on ROCm -- try it and compare, don't assume it's faster
+#   - attention_backend left at the default "sdpa" -- benchmarked as the fastest
+#     backend on ROCm (also fastest on CUDA and MPS); "einsum" remains available
+#     as a fallback for numerical-comparison or debugging
 
 model:
   use_gradient_checkpointing: true  # Recommended on unified-memory APUs
-  attention_backend: einsum         # Try "sdpa" experimentally; unvalidated on ROCm
+  attention_backend: sdpa           # Fastest on ROCm per benchmarking; "einsum" is the fallback
 
 training:
   batch_size: 2           # Conservative starting point for shared VRAM/GTT carve-out

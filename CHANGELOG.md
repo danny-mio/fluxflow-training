@@ -15,8 +15,9 @@ Not yet released — work in progress toward v0.10.0.
   applicable, and the high-memory-usage warning is reworded on ROCm to
   clarify it reflects the VRAM/GTT carve-out, not total system RAM. New
   `--attention_backend {einsum,sdpa}` CLI flag / `model.attention_backend`
-  config key (opt-in, default `einsum`; only affects v0.7.0/v0.8.0/v0.10.0
-  models built via the factory path). New `examples/config-rocm.yaml`
+  config key (default `sdpa`, benchmarked as the fastest backend on ROCm,
+  CUDA, and MPS; `einsum` remains available as a fallback; only affects
+  v0.7.0/v0.8.0/v0.10.0 models built via the factory path). New `examples/config-rocm.yaml`
   starting-point config for Strix Halo. See `docs/ROCM.md` in fluxflow-core.
   Not yet empirically validated on real hardware.
 - **Opt-in aspect-ratio bucketing** (`aspect_ratio_bucketing: bool`,

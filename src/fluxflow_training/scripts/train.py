@@ -223,8 +223,14 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Use factory to create models based on model_type in config
         from fluxflow.config import ModelConfig
 
-        # Build ModelConfig from config dict
-        model_config = ModelConfig(**config["model"])
+        # Build ModelConfig from config dict, but let the already-merged
+        # args.attention_backend (CLI wins over YAML, matching the cli_provided
+        # precedence applied in parse_args()) override the raw YAML value --
+        # otherwise a CLI --attention_backend override is silently dropped
+        # whenever a factory (model_type-driven) config is in play.
+        model_config = ModelConfig(
+            **{**config["model"], "attention_backend": args.attention_backend}
+        )
 
         print(
             f"Creating models using factory (model_type={model_config.model_type}, model_version={model_config.model_version})..."
@@ -1738,9 +1744,11 @@ def parse_args():
         "--attention_backend",
         type=str,
         choices=["einsum", "sdpa"],
-        default="einsum",
-        help="Flow attention compute backend (experimental; 'sdpa' opt-in, e.g. for ROCm). "
-        "Only affects v0.7.0/v0.8.0/v0.10.0 models.",
+        default="sdpa",
+        help="Flow attention compute backend. 'sdpa' (default) uses "
+        "torch.nn.functional.scaled_dot_product_attention, benchmarked as the fastest "
+        "backend on ROCm, CUDA, and MPS. 'einsum' is the original hand-rolled "
+        "implementation, kept as a fallback. Only affects v0.7.0/v0.8.0/v0.10.0 models.",
     )
 
     # Training

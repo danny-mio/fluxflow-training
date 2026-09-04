@@ -543,3 +543,83 @@ class TestTrainScriptMain:
 
         captured = capsys.readouterr()
         assert "Warning:" in captured.out or "warning" in captured.out.lower()
+
+
+class _FakeToModule:
+    """Minimal stand-in for an nn.Module: supports the handful of calls
+    initialize_models() makes on compressor/expander/flow_processor/text_encoder/D_img
+    in the factory (use_factory=True) path."""
+
+    def to(self, device):
+        return self
+
+    def named_parameters(self):
+        return []
+
+    def float(self):
+        return self
+
+
+class _FakeCompressor(_FakeToModule):
+    def get_context_dims(self):
+        return 5
+
+
+class TestInitializeModelsAttentionBackendPrecedence:
+    """initialize_models() builds ModelConfig for the factory (model_type-driven)
+    path directly from the raw YAML config['model'] dict, bypassing the
+    already-merged, CLI-precedence-correct `args.attention_backend`. This means a
+    user passing both --config some.yaml and --attention_backend sdpa has their CLI
+    choice silently discarded whenever --config selects the factory path (any
+    config['model'] with a model_type key) -- see train.parse_args()'s cli_provided
+    merge (~line 1995) which computes the correct value into args, but
+    initialize_models() (~line 227) never reads it.
+    """
+
+    def _call_initialize_models(self, train, *, cli_attention_backend, yaml_attention_backend):
+        config = {"model": {"model_type": "bezier"}}
+        if yaml_attention_backend is not None:
+            config["model"]["attention_backend"] = yaml_attention_backend
+
+        args = MagicMock()
+        args.channels = 3
+        args.use_gradient_checkpointing = False
+        args.text_embedding_dim = 1024
+        args.feature_maps_dim_disc = 8
+        args.vae_dim = 128
+        args.model_checkpoint = None
+        args.output_path = None
+        args.attention_backend = cli_attention_backend
+
+        fake_models = (_FakeCompressor(), _FakeToModule(), _FakeToModule(), _FakeToModule())
+        captured = {}
+
+        def fake_create_models_from_config(model_config):
+            captured["model_config"] = model_config
+            return fake_models
+
+        with patch.object(
+            train, "create_models_from_config", side_effect=fake_create_models_from_config
+        ):
+            with patch.object(train, "PatchDiscriminator", return_value=_FakeToModule()):
+                train.initialize_models(args, config, device="cpu", checkpoint_manager=MagicMock())
+
+        return captured["model_config"]
+
+    def test_cli_attention_backend_overrides_yaml_value(self):
+        """CLI --attention_backend sdpa must win even though the YAML config
+        explicitly sets attention_backend: einsum (bug: it was silently ignored)."""
+        train = import_script_module("train")
+        model_config = self._call_initialize_models(
+            train, cli_attention_backend="sdpa", yaml_attention_backend="einsum"
+        )
+        assert model_config.attention_backend == "sdpa"
+
+    def test_cli_attention_backend_used_when_yaml_omits_it(self):
+        """No attention_backend key in YAML -> the (merged) args value is used,
+        not ModelConfig's own default."""
+        train = import_script_module("train")
+        model_config = self._call_initialize_models(
+            train, cli_attention_backend="einsum", yaml_attention_backend=None
+        )
+        assert model_config.attention_backend == "einsum"
