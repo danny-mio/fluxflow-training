@@ -957,6 +957,33 @@ class TestLoggingOutput:
         # (appears twice: once for console, once for metrics dict)
         assert content.count("if len(vae_errors._items) > 0:") >= 2
 
+    def test_random_latent_loss_wiring(self):
+        """random_latent_loss should flow from vae_losses into console log and metrics dict."""
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+
+        # Buffer declared
+        assert "random_latent_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
+
+        # Verify random_latent_loss is tracked from correct key
+        assert '"random_latent_loss" in vae_losses' in content
+        assert 'random_latent_errors.add_item(vae_losses["random_latent_loss"])' in content
+
+        # Verify logged to console
+        assert "if len(random_latent_errors._items) > 0:" in content
+        assert 'f" | RandomLatent: {random_latent_errors.average:.4f}"' in content
+
+        # Verify logged to metrics
+        assert 'metrics["random_latent_loss"] = random_latent_errors.average' in content
+
 
 class TestCreateStepOptimizersTextEncoderSplit:
     """_create_step_optimizers correctly routes sub-component keys."""
