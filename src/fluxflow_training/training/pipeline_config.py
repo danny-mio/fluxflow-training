@@ -141,6 +141,10 @@ class PipelineStepConfig:
     train_coarseness: bool = True
     train_diff: bool = False
     train_diff_full: bool = False
+    # v0.10.0: random-latent compressor training (independently gated VAE loss).
+    # Trains the compressor to re-encode an expander-decoded random latent back
+    # into that same latent. Runs standalone or alongside the other VAE losses.
+    train_random_latent: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
 
     # Classifier-Free Guidance (CFG) for text-conditioned flow training
@@ -204,6 +208,9 @@ class PipelineStepConfig:
     # v0.10.0: auxiliary context reconstruction loss weight (stop-grad MSE vs z_tokens).
     # Applied only during VAE training. Default 0.01 per plan §4.1 / DP-1 decision.
     lambda_ctx_aux: float = 0.01
+    # v0.10.0: random-latent compressor training loss weight. Only active when
+    # train_random_latent=True. Default 1.0.
+    lambda_random_latent: float = 1.0
     # v0.10.0: relative weight of context-dim v-prediction loss vs VAE-dim loss in FlowTrainer.
     # Default 0.5 per plan §3.8.11 DP-1 decision from user.
     ctx_loss_weight: float = 0.5
@@ -735,6 +742,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         train_coarseness=step_dict.get("train_coarseness", True),
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
+        train_random_latent=step_dict.get("train_random_latent", False),
         use_ema=step_dict.get("use_ema", True),
         cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
         num_train_timesteps=step_dict.get("num_train_timesteps", 1000),
@@ -768,6 +776,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         adaptive_weights=step_dict.get("adaptive_weights", True),
         discriminator_update_freq=step_dict.get("discriminator_update_freq", 1),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
+        lambda_random_latent=step_dict.get("lambda_random_latent", 1.0),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),
         disc_logit_diagnostic_interval=step_dict.get("disc_logit_diagnostic_interval", 0),

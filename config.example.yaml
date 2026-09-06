@@ -150,6 +150,14 @@ training:
   # Active only during VAE training steps. Default 0.01.
   lambda_ctx_aux: 0.01
 
+  # v0.10.0: random-latent compressor training (independently gated VAE loss).
+  # Samples a random packed latent, decodes it via the frozen (no-grad) expander,
+  # and trains the compressor to re-encode the synthetic image back into that
+  # same latent. Assumes the expander is already well-trained. Runs standalone
+  # (all other train_* flags off) or alongside the other VAE losses. Default off.
+  train_random_latent: false
+  lambda_random_latent: 1.0
+
   # v0.10.0: relative weight of context-dim v-prediction loss in FlowTrainer.
   # Context dims are now 50% of packed width (128/256 vs ~4% in v0.8.0).
   # Default 0.5 prevents context denoising from dominating VAE-dim denoising.

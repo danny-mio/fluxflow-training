@@ -735,6 +735,83 @@ class TestKlZWeightAndCtxShrinkageWiring:
         assert trainers["vae"].ctx_shrinkage_warmup_steps == 4321
 
 
+class TestRandomLatentWiring:
+    """train_random_latent / lambda_random_latent must flow from
+    PipelineStepConfig into the VAETrainer(...) construction call."""
+
+    def test_train_random_latent_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert 'train_random_latent=getattr(step, "train_random_latent", False)' in content
+
+    def test_lambda_random_latent_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert 'lambda_random_latent=getattr(step, "lambda_random_latent", 1.0)' in content
+
+    def test_random_latent_fields_reach_vae_trainer_instance(self):
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="vae",
+            n_epochs=1,
+            train_vae=True,
+            gan_training=False,
+            train_random_latent=True,
+            lambda_random_latent=2.5,
+            optimization=OptimizationConfig(
+                optimizers={"vae": OptimizerConfig(lr=1e-4)},
+            ),
+        )
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+
+        compressor = MagicMock()
+        compressor.d_model = 8
+        compressor.get_context_dims.return_value = 8
+        compressor.use_gradient_checkpointing = False
+        compressor.parameters.side_effect = lambda: iter([nn.Parameter(torch.zeros(1))])
+
+        expander = MagicMock()
+        expander.parameters.return_value = iter([])
+
+        models = {"compressor": compressor, "expander": expander}
+        optimizers = {"vae": MagicMock()}
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+
+        trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
+
+        assert trainers["vae"].train_random_latent is True
+        assert trainers["vae"].lambda_random_latent == 2.5
+
+
 class TestLoggingOutput:
     """Test console and metrics logging for different config combinations."""
 

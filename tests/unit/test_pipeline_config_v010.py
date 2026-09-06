@@ -189,3 +189,46 @@ class TestDirectConstructionAcceptsNewKeys:
         assert step.ctx_shrinkage_warmup_steps == 6000
         assert step.t_txt == 48
         assert step.null_prompt == "nothing"
+
+
+class TestRandomLatentConfigDefaults:
+    """Random-latent compressor training (independently gated VAE loss)."""
+
+    def test_train_random_latent_default(self):
+        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
+        assert step.train_random_latent is False
+
+    def test_lambda_random_latent_default(self):
+        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
+        assert step.lambda_random_latent == 1.0
+
+    def test_random_latent_keys_load_from_yaml(self):
+        cfg_dict = _wrap_step(
+            {
+                "name": "vae",
+                "n_epochs": 1,
+                "train_vae": True,
+                "train_random_latent": True,
+                "lambda_random_latent": 2.5,
+            }
+        )
+        cfg = parse_pipeline_config(cfg_dict)
+        assert cfg.steps[0].train_random_latent is True
+        assert cfg.steps[0].lambda_random_latent == 2.5
+
+    def test_random_latent_keys_load_from_yaml_default_when_absent(self):
+        cfg_dict = _wrap_step({"name": "vae", "n_epochs": 1, "train_vae": True})
+        cfg = parse_pipeline_config(cfg_dict)
+        assert cfg.steps[0].train_random_latent is False
+        assert cfg.steps[0].lambda_random_latent == 1.0
+
+    def test_direct_construction_with_random_latent_keys(self):
+        step = PipelineStepConfig(
+            name="s",
+            n_epochs=1,
+            train_vae=True,
+            train_random_latent=True,
+            lambda_random_latent=3.0,
+        )
+        assert step.train_random_latent is True
+        assert step.lambda_random_latent == 3.0

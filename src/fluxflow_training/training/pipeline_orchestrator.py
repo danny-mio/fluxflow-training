@@ -1145,6 +1145,9 @@ class TrainingPipelineOrchestrator:
                 ),
                 mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
                 lambda_ctx_aux=step.lambda_ctx_aux if hasattr(step, "lambda_ctx_aux") else 0.01,
+                # v0.10.0: random-latent compressor training (independent VAE loss).
+                train_random_latent=getattr(step, "train_random_latent", False),
+                lambda_random_latent=getattr(step, "lambda_random_latent", 1.0),
                 ctx_input_dim=_ctx_input_dim,
                 # Additive opt-in efficiency knob; default 1 preserves current behavior.
                 discriminator_update_freq=getattr(step, "discriminator_update_freq", 1),
