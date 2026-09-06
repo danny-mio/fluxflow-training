@@ -1662,6 +1662,7 @@ class TrainingPipelineOrchestrator:
                 #   (active only when their respective weights are > 0).
                 ctx_shrinkage_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 ctx_aux_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                random_latent_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 # SPADE gamma/beta drift from init (0 at init) — first real signal of
                 # whether SPADE conditioning is learning anything.
                 spade_gamma_drift_errors = FloatBuffer(max(args.log_interval * 2, 10))
@@ -1743,6 +1744,8 @@ class TrainingPipelineOrchestrator:
                                 ctx_shrinkage_errors.add_item(vae_losses["ctx_shrinkage_loss"])
                             if "ctx_aux_loss" in vae_losses:
                                 ctx_aux_errors.add_item(vae_losses["ctx_aux_loss"])
+                            if "random_latent_loss" in vae_losses:
+                                random_latent_errors.add_item(vae_losses["random_latent_loss"])
                             if "spade_gamma_drift" in vae_losses:
                                 spade_gamma_drift_errors.add_item(vae_losses["spade_gamma_drift"])
                             if "spade_beta_drift" in vae_losses:
@@ -1859,6 +1862,8 @@ class TrainingPipelineOrchestrator:
                                 log_msg += f" | CtxShrink: {ctx_shrinkage_errors.average:.4f}"
                             if len(ctx_aux_errors._items) > 0:
                                 log_msg += f" | CtxAux: {ctx_aux_errors.average:.4f}"
+                            if len(random_latent_errors._items) > 0:
+                                log_msg += f" | RandomLatent: {random_latent_errors.average:.4f}"
                             # First real signal of whether SPADE conditioning is learning.
                             if len(spade_gamma_drift_errors._items) > 0:
                                 log_msg += (
@@ -1909,6 +1914,8 @@ class TrainingPipelineOrchestrator:
                                 metrics["ctx_shrinkage_loss"] = ctx_shrinkage_errors.average
                             if len(ctx_aux_errors._items) > 0:
                                 metrics["ctx_aux_loss"] = ctx_aux_errors.average
+                            if len(random_latent_errors._items) > 0:
+                                metrics["random_latent_loss"] = random_latent_errors.average
                             if len(spade_gamma_drift_errors._items) > 0:
                                 metrics["spade_gamma_drift"] = spade_gamma_drift_errors.average
                                 metrics["spade_beta_drift"] = spade_beta_drift_errors.average

@@ -175,6 +175,11 @@ def plot_losses(
             "linestyle": "--",
         },
         "generator_loss": {"label": "Generator Loss", "color": "#9467bd", "linestyle": "--"},
+        "random_latent_loss": {
+            "label": "Random-Latent Loss",
+            "color": "#e377c2",
+            "linestyle": "--",
+        },
     }
 
     plotted_any = False
