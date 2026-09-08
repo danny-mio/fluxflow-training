@@ -15,6 +15,7 @@ double.
 
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -125,7 +126,8 @@ def _build_trainer(
     compressor: nn.Module,
     expander: nn.Module,
     train_random_latent: bool,
-    lambda_random_latent: float = 1.0,
+    lambda_random_latent_z: float = 1.0,
+    lambda_random_latent_ctx: float = 1.0,
 ) -> VAETrainer:
     """Minimally-configured VAETrainer with every other train_*/use_* flag off."""
     opt = torch.optim.SGD(list(compressor.parameters()) + list(expander.parameters()), lr=1e-3)
@@ -156,7 +158,8 @@ def _build_trainer(
         accelerator=_PlainAccelerator(),
         gradient_accumulation_steps=1,
         train_random_latent=train_random_latent,
-        lambda_random_latent=lambda_random_latent,
+        lambda_random_latent_z=lambda_random_latent_z,
+        lambda_random_latent_ctx=lambda_random_latent_ctx,
     )
 
 
@@ -168,7 +171,8 @@ class TestRandomLatentDisabled:
 
         result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
 
-        assert result["random_latent_loss"] == 0.0
+        assert result["random_latent_z_loss"] == 0.0
+        assert result["random_latent_ctx_loss"] == 0.0
         # Only the main encode/decode pass -- no extra forward passes when off.
         assert compressor.forward_calls == 1
         assert expander.forward_calls == 1
@@ -210,7 +214,8 @@ class TestRandomLatentDisabled:
         result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
 
         assert result["_optimizer_stepped"] is False
-        assert result["random_latent_loss"] == 0.0
+        assert result["random_latent_z_loss"] == 0.0
+        assert result["random_latent_ctx_loss"] == 0.0
 
 
 class TestRandomLatentEnabled:
@@ -222,8 +227,10 @@ class TestRandomLatentEnabled:
 
         result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
 
-        assert "random_latent_loss" in result
-        assert result["random_latent_loss"] > 0.0
+        assert "random_latent_z_loss" in result
+        assert "random_latent_ctx_loss" in result
+        assert result["random_latent_z_loss"] > 0.0
+        assert result["random_latent_ctx_loss"] > 0.0
         # Main encode + random-latent re-encode.
         assert compressor.forward_calls == 2
         # Main decode + random-latent synth decode.
@@ -253,7 +260,8 @@ class TestRandomLatentEnabled:
         result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
 
         assert result["_optimizer_stepped"] is True
-        assert torch.isfinite(torch.tensor(result["random_latent_loss"]))
+        assert torch.isfinite(torch.tensor(result["random_latent_z_loss"]))
+        assert torch.isfinite(torch.tensor(result["random_latent_ctx_loss"]))
 
     def test_final_return_includes_detached_float_value(self):
         torch.manual_seed(0)
@@ -263,4 +271,85 @@ class TestRandomLatentEnabled:
 
         result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
 
-        assert isinstance(result["random_latent_loss"], float)
+        assert isinstance(result["random_latent_z_loss"], float)
+        assert isinstance(result["random_latent_ctx_loss"], float)
+
+
+class TestRandomLatentLossShapes:
+    """Behavioral proof the z branch is MSE-shaped and the ctx branch is
+    cosine-shaped -- the property motivating the split (ctx is actively
+    shrunk toward zero magnitude by ctx_shrinkage_weight, so a magnitude-
+    sensitive loss there would fight that regularizer)."""
+
+    def test_z_loss_scales_with_squared_distance(self):
+        z_target = torch.zeros(2, 3, _D_MODEL)
+        z_rec_near = z_target + 0.1
+        z_rec_far = z_target + 1.0
+
+        near = F.mse_loss(z_rec_near, z_target).item()
+        far = F.mse_loss(z_rec_far, z_target).item()
+
+        assert far == pytest.approx(100 * near, rel=1e-4)
+
+    def test_ctx_loss_zero_when_same_direction_any_magnitude(self):
+        ctx_target = torch.randn(2, 3, _D_MODEL)
+        for scale in (0.01, 1.0, 50.0):
+            ctx_rec = ctx_target * scale
+            loss = 1 - F.cosine_similarity(ctx_rec, ctx_target, dim=-1).mean()
+            assert loss.item() == pytest.approx(0.0, abs=1e-5)
+
+    def test_ctx_loss_insensitive_to_pure_magnitude_rescale(self):
+        torch.manual_seed(2)
+        ctx_target = torch.randn(2, 3, _D_MODEL)
+        ctx_rec = torch.randn(2, 3, _D_MODEL)
+
+        base = 1 - F.cosine_similarity(ctx_rec, ctx_target, dim=-1).mean()
+        rescaled = 1 - F.cosine_similarity(ctx_rec * 7.0, ctx_target, dim=-1).mean()
+
+        assert rescaled.item() == pytest.approx(base.item(), abs=1e-5)
+
+
+class TestRandomLatentIndependentLambdas:
+    """proj.weight's first d_model output channels feed the z half of the
+    packed latent, the next d_model feed the ctx half (see
+    _FakeCompressorV100.forward) -- so each lambda's isolated effect on
+    total_loss shows up as gradient on its own channel slice only, with
+    every other train_*/use_* flag off."""
+
+    def test_zeroing_ctx_lambda_zeroes_ctx_channel_gradient_only(self):
+        torch.manual_seed(0)
+        compressor = _FakeCompressorV100()
+        expander = _FakeExpanderV100()
+        trainer = _build_trainer(
+            compressor,
+            expander,
+            train_random_latent=True,
+            lambda_random_latent_z=1.0,
+            lambda_random_latent_ctx=0.0,
+        )
+
+        trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
+
+        grad = compressor.proj.weight.grad
+        assert grad is not None
+        assert grad[:_D_MODEL].abs().sum().item() > 0  # z channels
+        assert grad[_D_MODEL:].abs().sum().item() == 0  # ctx channels
+
+    def test_zeroing_z_lambda_zeroes_z_channel_gradient_only(self):
+        torch.manual_seed(0)
+        compressor = _FakeCompressorV100()
+        expander = _FakeExpanderV100()
+        trainer = _build_trainer(
+            compressor,
+            expander,
+            train_random_latent=True,
+            lambda_random_latent_z=0.0,
+            lambda_random_latent_ctx=1.0,
+        )
+
+        trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
+
+        grad = compressor.proj.weight.grad
+        assert grad is not None
+        assert grad[:_D_MODEL].abs().sum().item() == 0  # z channels
+        assert grad[_D_MODEL:].abs().sum().item() > 0  # ctx channels

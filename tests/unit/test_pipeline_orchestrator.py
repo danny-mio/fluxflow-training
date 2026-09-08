@@ -736,8 +736,8 @@ class TestKlZWeightAndCtxShrinkageWiring:
 
 
 class TestRandomLatentWiring:
-    """train_random_latent / lambda_random_latent must flow from
-    PipelineStepConfig into the VAETrainer(...) construction call."""
+    """train_random_latent / lambda_random_latent_z / lambda_random_latent_ctx
+    must flow from PipelineStepConfig into the VAETrainer(...) construction call."""
 
     def test_train_random_latent_passed_to_vae_trainer(self):
         from pathlib import Path
@@ -752,7 +752,7 @@ class TestRandomLatentWiring:
         content = orchestrator_path.read_text()
         assert 'train_random_latent=getattr(step, "train_random_latent", False)' in content
 
-    def test_lambda_random_latent_passed_to_vae_trainer(self):
+    def test_lambda_random_latent_z_passed_to_vae_trainer(self):
         from pathlib import Path
 
         orchestrator_path = (
@@ -763,7 +763,20 @@ class TestRandomLatentWiring:
             / "pipeline_orchestrator.py"
         )
         content = orchestrator_path.read_text()
-        assert 'lambda_random_latent=getattr(step, "lambda_random_latent", 1.0)' in content
+        assert 'lambda_random_latent_z=getattr(step, "lambda_random_latent_z", 1.0)' in content
+
+    def test_lambda_random_latent_ctx_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert 'lambda_random_latent_ctx=getattr(step, "lambda_random_latent_ctx", 1.0)' in content
 
     def test_random_latent_fields_reach_vae_trainer_instance(self):
         from unittest.mock import MagicMock
@@ -781,7 +794,8 @@ class TestRandomLatentWiring:
             train_vae=True,
             gan_training=False,
             train_random_latent=True,
-            lambda_random_latent=2.5,
+            lambda_random_latent_z=2.5,
+            lambda_random_latent_ctx=0.75,
             optimization=OptimizationConfig(
                 optimizers={"vae": OptimizerConfig(lr=1e-4)},
             ),
@@ -809,7 +823,8 @@ class TestRandomLatentWiring:
         trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
 
         assert trainers["vae"].train_random_latent is True
-        assert trainers["vae"].lambda_random_latent == 2.5
+        assert trainers["vae"].lambda_random_latent_z == 2.5
+        assert trainers["vae"].lambda_random_latent_ctx == 0.75
 
 
 class TestLoggingOutput:
@@ -958,7 +973,8 @@ class TestLoggingOutput:
         assert content.count("if len(vae_errors._items) > 0:") >= 2
 
     def test_random_latent_loss_wiring(self):
-        """random_latent_loss should flow from vae_losses into console log and metrics dict."""
+        """random_latent_z_loss / random_latent_ctx_loss should flow from
+        vae_losses into console log and metrics dict."""
         from pathlib import Path
 
         orchestrator_path = (
@@ -970,19 +986,25 @@ class TestLoggingOutput:
         )
         content = orchestrator_path.read_text()
 
-        # Buffer declared
-        assert "random_latent_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
+        # Buffers declared
+        assert "random_latent_z_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
+        assert "random_latent_ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
 
-        # Verify random_latent_loss is tracked from correct key
-        assert '"random_latent_loss" in vae_losses' in content
-        assert 'random_latent_errors.add_item(vae_losses["random_latent_loss"])' in content
+        # Verify random_latent_z_loss / random_latent_ctx_loss are tracked from correct keys
+        assert '"random_latent_z_loss" in vae_losses' in content
+        assert 'random_latent_z_errors.add_item(vae_losses["random_latent_z_loss"])' in content
+        assert '"random_latent_ctx_loss" in vae_losses' in content
+        assert 'random_latent_ctx_errors.add_item(vae_losses["random_latent_ctx_loss"])' in content
 
         # Verify logged to console
-        assert "if len(random_latent_errors._items) > 0:" in content
-        assert 'f" | RandomLatent: {random_latent_errors.average:.4f}"' in content
+        assert "if len(random_latent_z_errors._items) > 0:" in content
+        assert 'f" | RandomLatentZ: {random_latent_z_errors.average:.4f}"' in content
+        assert "if len(random_latent_ctx_errors._items) > 0:" in content
+        assert 'f" | RandomLatentCtx: {random_latent_ctx_errors.average:.4f}"' in content
 
         # Verify logged to metrics
-        assert 'metrics["random_latent_loss"] = random_latent_errors.average' in content
+        assert 'metrics["random_latent_z_loss"] = random_latent_z_errors.average' in content
+        assert 'metrics["random_latent_ctx_loss"] = random_latent_ctx_errors.average' in content
 
 
 class TestCreateStepOptimizersTextEncoderSplit:
