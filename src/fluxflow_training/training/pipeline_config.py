@@ -208,9 +208,12 @@ class PipelineStepConfig:
     # v0.10.0: auxiliary context reconstruction loss weight (stop-grad MSE vs z_tokens).
     # Applied only during VAE training. Default 0.01 per plan §4.1 / DP-1 decision.
     lambda_ctx_aux: float = 0.01
-    # v0.10.0: random-latent compressor training loss weight. Only active when
-    # train_random_latent=True. Default 1.0.
-    lambda_random_latent: float = 1.0
+    # v0.10.0: random-latent compressor training loss weights. Only active when
+    # train_random_latent=True. z uses MSE against the random z target;
+    # ctx uses cosine similarity (direction-only, since ctx magnitude is
+    # separately suppressed by ctx_shrinkage_weight). Default 1.0 each.
+    lambda_random_latent_z: float = 1.0
+    lambda_random_latent_ctx: float = 1.0
     # v0.10.0: relative weight of context-dim v-prediction loss vs VAE-dim loss in FlowTrainer.
     # Default 0.5 per plan §3.8.11 DP-1 decision from user.
     ctx_loss_weight: float = 0.5
@@ -776,7 +779,8 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         adaptive_weights=step_dict.get("adaptive_weights", True),
         discriminator_update_freq=step_dict.get("discriminator_update_freq", 1),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
-        lambda_random_latent=step_dict.get("lambda_random_latent", 1.0),
+        lambda_random_latent_z=step_dict.get("lambda_random_latent_z", 1.0),
+        lambda_random_latent_ctx=step_dict.get("lambda_random_latent_ctx", 1.0),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),
         disc_logit_diagnostic_interval=step_dict.get("disc_logit_diagnostic_interval", 0),

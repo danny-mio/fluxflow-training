@@ -188,7 +188,8 @@ class VAETrainer:
         # synthetic image back into the same random latent. Independently gated
         # -- runs standalone or alongside the other VAE losses.
         train_random_latent: bool = False,
-        lambda_random_latent: float = 1.0,
+        lambda_random_latent_z: float = 1.0,
+        lambda_random_latent_ctx: float = 1.0,
         # v0.10.0: ctx-features L2 shrinkage (design §5.5). Active only when
         # ``ctx_shrinkage_weight > 0`` AND the underlying compressor exposes the
         # ``ctx_zinject_norm`` submodule (FluxCompressor_v100). The hook captures
@@ -265,8 +266,12 @@ class VAETrainer:
             train_random_latent: Compute random-latent compressor training loss (default: False).
                 Samples a random packed latent, decodes it with the frozen (no-grad) expander,
                 and trains the compressor to re-encode the synthetic image back to that latent.
-            lambda_random_latent: Weight for the random-latent compressor training loss.
-                Default 1.0. Only active when train_random_latent=True.
+            lambda_random_latent_z: Weight for the z-half loss (MSE against the random z
+                target). Default 1.0. Only active when train_random_latent=True.
+            lambda_random_latent_ctx: Weight for the ctx-half loss (cosine similarity against
+                the random ctx target -- direction-only, since ctx magnitude is separately
+                suppressed by ctx_shrinkage_weight). Default 1.0. Only active when
+                train_random_latent=True.
             accelerator: Accelerate accelerator instance
             discriminator_update_freq: Run discriminator forward+backward every N
                 global steps (default 1 = every step, current behavior). Values > 1
@@ -393,7 +398,8 @@ class VAETrainer:
         self.train_ctx_aux = train_ctx_aux
         # v0.10.0: random-latent compressor training (independent VAE loss).
         self.train_random_latent = train_random_latent
-        self.lambda_random_latent = lambda_random_latent
+        self.lambda_random_latent_z = lambda_random_latent_z
+        self.lambda_random_latent_ctx = lambda_random_latent_ctx
 
         # Initialize context predictor with SiLU activation.
         # ctx_input_dim is the dim of ctx_vec = img_seq.mean(dim=1), i.e. the full packed
@@ -960,7 +966,8 @@ class VAETrainer:
         # v0.10.0: auxiliary context reconstruction loss
         losses["ctx_aux_loss"] = gen_losses.get("ctx_aux_loss", 0.0)
         # v0.10.0: random-latent compressor training (independent VAE loss)
-        losses["random_latent_loss"] = gen_losses.get("random_latent_loss", 0.0)
+        losses["random_latent_z_loss"] = gen_losses.get("random_latent_z_loss", 0.0)
+        losses["random_latent_ctx_loss"] = gen_losses.get("random_latent_ctx_loss", 0.0)
         # v0.10.0: gradient-carrying ctx-shrinkage term (see ctx_shrinkage_weight).
         # Reads 0.0 unless the caller explicitly wires a nonzero weight in.
         losses["ctx_shrinkage_loss"] = gen_losses.get("ctx_shrinkage_loss", 0.0)
@@ -1229,7 +1236,8 @@ class VAETrainer:
         - kl: gated on ``train_kl``
         - G_img_loss: gated on ``use_gan``
         - ctx_aux_loss: gated on ``train_ctx_aux``
-        - random_latent_loss: gated on ``train_random_latent``
+        - random_latent_z_loss (MSE): gated on ``train_random_latent``
+        - random_latent_ctx_loss (cosine similarity): gated on ``train_random_latent``
         - color_stats_loss: gated on ``train_colorstats``
         - hist_loss: gated on ``train_histogram``
         - contrast_loss: gated on ``train_contrast``
@@ -1237,9 +1245,9 @@ class VAETrainer:
 
         Returns:
             Dictionary with loss values keyed by ``vae``, ``kl``, ``generator``,
-            ``lpips``, ``recon``, ``ctx_aux_loss``, ``random_latent_loss``,
-            ``ctx_probe_alignment``, ``color_stats``, ``hist_loss``,
-            ``contrast_loss``, ``coarseness_loss``.
+            ``lpips``, ``recon``, ``ctx_aux_loss``, ``random_latent_z_loss``,
+            ``random_latent_ctx_loss``, ``ctx_probe_alignment``, ``color_stats``,
+            ``hist_loss``, ``contrast_loss``, ``coarseness_loss``.
         """
         # Gradient accumulation: shared boundary counter with _train_discriminator
         # (see __init__ / gradient_accumulation_steps). zero_grad only at the
@@ -1260,7 +1268,8 @@ class VAETrainer:
                 "lpips": 0.0,
                 "recon": 0.0,
                 "ctx_aux_loss": 0.0,
-                "random_latent_loss": 0.0,
+                "random_latent_z_loss": 0.0,
+                "random_latent_ctx_loss": 0.0,
                 "_optimizer_stepped": False,
             }
 
@@ -1285,7 +1294,8 @@ class VAETrainer:
                 "lpips": 0.0,
                 "recon": 0.0,
                 "ctx_aux_loss": 0.0,
-                "random_latent_loss": 0.0,
+                "random_latent_z_loss": 0.0,
+                "random_latent_ctx_loss": 0.0,
                 "_optimizer_stepped": False,
             }
 
@@ -1307,7 +1317,8 @@ class VAETrainer:
                 "lpips": 0.0,
                 "recon": 0.0,
                 "ctx_aux_loss": 0.0,
-                "random_latent_loss": 0.0,
+                "random_latent_z_loss": 0.0,
+                "random_latent_ctx_loss": 0.0,
                 "_optimizer_stepped": False,
             }
 
@@ -1415,7 +1426,15 @@ class VAETrainer:
         # passes when off, so it can run standalone (all other train_* flags
         # off) or alongside the other VAE losses. Only reads real_imgs.shape,
         # never its pixel content, so it works even with dummy input images.
-        random_latent_loss = torch.tensor(0.0, device=real_imgs.device)
+        #
+        # Split into two separately-shaped losses (mirrors ctx_aux_loss's split):
+        # ctx has different statistical properties than z -- it's actively shrunk
+        # toward zero magnitude by the separate ctx_shrinkage_weight regularizer,
+        # so MSE against a full-magnitude random target would fight that
+        # regularizer. Cosine similarity supervises direction only, sidestepping
+        # the conflict.
+        random_latent_z_loss = torch.tensor(0.0, device=real_imgs.device)
+        random_latent_ctx_loss = torch.tensor(0.0, device=real_imgs.device)
         if self.train_random_latent:
             try:
                 B_rl, _, H_rl, W_rl = real_imgs.shape
@@ -1446,13 +1465,23 @@ class VAETrainer:
                         synth_img = self.expander(packed_synth, use_context=True)
 
                     packed_rec_synth, _, _ = self.compressor(synth_img, training=True)
-                    random_latent_loss = F.mse_loss(packed_rec_synth[:, :-1, :], img_seq_target)
+                    total_dim_rec = packed_rec_synth.size(-1)
+                    half = total_dim_rec // 2
+                    if total_dim_rec % 2 == 0 and half > 0:
+                        img_seq_rec = packed_rec_synth[:, :-1, :]  # [B, T, 2D]
+                        z_rec = img_seq_rec[:, :, :half]
+                        ctx_rec = img_seq_rec[:, :, half:]
+                        random_latent_z_loss = F.mse_loss(z_rec, z_target)
+                        random_latent_ctx_loss = (
+                            1 - F.cosine_similarity(ctx_rec, ctx_target, dim=-1).mean()
+                        )
             except Exception as exc:
                 # Non-fatal by design (training must continue), but loud -- see
                 # the ctx_aux_loss comment above for the rationale.
                 logger.error(
-                    f"random_latent_loss computation failed ({type(exc).__name__}): {exc} "
-                    "— forcing random_latent_loss to 0.0 for this step.",
+                    f"random_latent_z_loss/random_latent_ctx_loss computation failed "
+                    f"({type(exc).__name__}): {exc} "
+                    "— forcing both to 0.0 for this step.",
                     exc_info=True,
                 )
 
@@ -1627,7 +1656,11 @@ class VAETrainer:
 
         # v0.10.0: random-latent compressor training (independent VAE loss).
         if self.train_random_latent:
-            total_loss = total_loss + self.lambda_random_latent * random_latent_loss
+            total_loss = (
+                total_loss
+                + self.lambda_random_latent_z * random_latent_z_loss
+                + self.lambda_random_latent_ctx * random_latent_ctx_loss
+            )
 
         # v0.10.0: ctx-features L2 shrinkage (design §5.5). The forward hook on
         # ctx_zinject_norm populates _ctx_features_cache; if no v0.10.0 compressor
@@ -1711,7 +1744,8 @@ class VAETrainer:
                 "lpips": 0.0,
                 "recon": 0.0,
                 "ctx_aux_loss": 0.0,
-                "random_latent_loss": 0.0,
+                "random_latent_z_loss": 0.0,
+                "random_latent_ctx_loss": 0.0,
                 "bezier_reg": 0.0,
                 "_optimizer_stepped": False,  # Signal that optimizer was not stepped
             }
@@ -1743,7 +1777,8 @@ class VAETrainer:
                 "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
                 "recon": float(recon_loss.detach().item()),
                 "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
-                "random_latent_loss": float(random_latent_loss.detach().item()),
+                "random_latent_z_loss": float(random_latent_z_loss.detach().item()),
+                "random_latent_ctx_loss": float(random_latent_ctx_loss.detach().item()),
                 "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
                 "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
                 "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
@@ -1814,7 +1849,8 @@ class VAETrainer:
             # v0.10.0: auxiliary context reconstruction loss (plan §4.1)
             "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
             # v0.10.0: random-latent compressor training (independent VAE loss)
-            "random_latent_loss": float(random_latent_loss.detach().item()),
+            "random_latent_z_loss": float(random_latent_z_loss.detach().item()),
+            "random_latent_ctx_loss": float(random_latent_ctx_loss.detach().item()),
             # v0.10.0: ctx-features L2 shrinkage (design §5.5)
             "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
             "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),

@@ -994,7 +994,8 @@ class TestLoggingOutput:
         assert '"random_latent_z_loss" in vae_losses' in content
         assert 'random_latent_z_errors.add_item(vae_losses["random_latent_z_loss"])' in content
         assert '"random_latent_ctx_loss" in vae_losses' in content
-        assert 'random_latent_ctx_errors.add_item(vae_losses["random_latent_ctx_loss"])' in content
+        assert "random_latent_ctx_errors.add_item(" in content
+        assert 'vae_losses["random_latent_ctx_loss"]' in content
 
         # Verify logged to console
         assert "if len(random_latent_z_errors._items) > 0:" in content

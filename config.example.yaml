@@ -156,7 +156,10 @@ training:
   # same latent. Assumes the expander is already well-trained. Runs standalone
   # (all other train_* flags off) or alongside the other VAE losses. Default off.
   train_random_latent: false
-  lambda_random_latent: 1.0
+  # z uses MSE against the random z target; ctx uses cosine similarity
+  # (direction-only, avoids fighting ctx_shrinkage_weight's magnitude suppression).
+  lambda_random_latent_z: 1.0
+  lambda_random_latent_ctx: 1.0
 
   # v0.10.0: relative weight of context-dim v-prediction loss in FlowTrainer.
   # Context dims are now 50% of packed width (128/256 vs ~4% in v0.8.0).
