@@ -145,6 +145,10 @@ class PipelineStepConfig:
     # Trains the compressor to re-encode an expander-decoded random latent back
     # into that same latent. Runs standalone or alongside the other VAE losses.
     train_random_latent: bool = False
+    # v0.10.0: gate for the ctx_aux_loss term (MSE(ctx_tokens_half, stop_grad(z_tokens_half))).
+    # Was previously hardcoded True in VAETrainer with no config exposure. Default
+    # unchanged (True) so existing configs keep current behavior.
+    train_ctx_aux: bool = True
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
 
     # Classifier-Free Guidance (CFG) for text-conditioned flow training
@@ -750,6 +754,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
         train_random_latent=step_dict.get("train_random_latent", False),
+        train_ctx_aux=step_dict.get("train_ctx_aux", True),
         use_ema=step_dict.get("use_ema", True),
         cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
         num_train_timesteps=step_dict.get("num_train_timesteps", 1000),
