@@ -127,27 +127,50 @@ def kl_standard_normal(
     return kl
 
 
-def compute_ctx_shrinkage(ctx_features: torch.Tensor, alpha: float) -> torch.Tensor:
+def compute_ctx_shrinkage(
+    ctx_features: torch.Tensor, alpha: float, max_mean_sq: float = 1000.0
+) -> torch.Tensor:
     """β-VAE-style shrinkage on deterministic ctx features.
 
-    Computes ``L = alpha * mean(||ctx_features||^2)``. When ``alpha <= 0``
-    the term vanishes and returns a zero scalar on the same device/dtype.
+    Computes ``L = alpha * clamp(mean(||ctx_features||^2), max=max_mean_sq)``.
+    When ``alpha <= 0`` the term vanishes and returns a zero scalar on the
+    same device/dtype, unchanged by ``max_mean_sq``.
 
     Used as a regularizer on the pre-attention context features at the
     bottleneck (v0.10.0 redesign §5). Discourages the deterministic ctx
     branch from carrying information that is already representable by z,
     so SPADE residual coupling stays clean.
 
+    The mean-square is clamped *before* scaling by ``alpha`` so the cap is
+    independent of the (warmup-scheduled) alpha. ``torch.clamp`` has exactly
+    zero gradient above the cap, so once ``mean(ctx_features**2)`` exceeds
+    ``max_mean_sq`` this term stops injecting further gradient into
+    ``ctx_features`` (and the shared compressor upstream of it) — normal
+    gradient below the cap, zero additional amplification above it.
+
+    Rationale for the ``max_mean_sq=1000.0`` default: cross-platform log
+    analysis of a v0.10.0 training run (ROCm + a 79,785-step Paperspace/CUDA
+    run) found ``mean(ctx_features**2)`` occasionally spikes during transient
+    discriminator/generator adversarial imbalance (a real GAN-stability issue,
+    not specific to this loss formula or platform). Percentiles from that
+    run's distribution: median 0.0016, p99 = 293.7, p999 = 115,623, max =
+    393,768,249 (step 22240). 1000.0 sits above p99 (preserving legitimate
+    gradient signal during normal operation) but far below p999 and the
+    observed max, cutting off only the destabilizing tail.
+
     Args:
         ctx_features: Deterministic context features tensor of any shape.
         alpha: Shrinkage weight. Non-positive values disable the term.
+        max_mean_sq: Upper bound on the mean-square value before scaling by
+            alpha. Default 1000.0 (see rationale above).
 
     Returns:
         Scalar shrinkage loss on the same device/dtype as ``ctx_features``.
     """
     if alpha <= 0:
         return torch.zeros((), device=ctx_features.device, dtype=ctx_features.dtype)
-    return alpha * (ctx_features**2).mean()
+    mean_sq = torch.clamp((ctx_features**2).mean(), max=max_mean_sq)
+    return alpha * mean_sq
 
 
 def compute_bezier_monotonicity_reg(module: torch.nn.Module, weight: float) -> torch.Tensor:

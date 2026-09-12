@@ -1162,6 +1162,7 @@ class TrainingPipelineOrchestrator:
                     step, "ctx_shrinkage_warmup_start_step", 5000
                 ),
                 ctx_shrinkage_warmup_steps=getattr(step, "ctx_shrinkage_warmup_steps", 5000),
+                ctx_shrinkage_max_mean_sq=getattr(step, "ctx_shrinkage_max_mean_sq", 1000.0),
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
                 disc_logit_diagnostic_interval=getattr(step, "disc_logit_diagnostic_interval", 0),

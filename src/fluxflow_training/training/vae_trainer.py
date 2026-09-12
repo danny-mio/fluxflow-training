@@ -198,6 +198,7 @@ class VAETrainer:
         ctx_shrinkage_weight: float = 0.0,
         ctx_shrinkage_warmup_start_step: int = 5000,
         ctx_shrinkage_warmup_steps: int = 5000,
+        ctx_shrinkage_max_mean_sq: float = 1000.0,
         # v0.10.0: KL_z asymptotic weight and cosine warmup length. Default 0.0
         # so legacy callers using kl_beta / kl_warmup_steps stay on the old path.
         # When > 0 the trainer uses the wide-range schedule per design §5.5.
@@ -272,6 +273,8 @@ class VAETrainer:
                 the random ctx target -- direction-only, since ctx magnitude is separately
                 suppressed by ctx_shrinkage_weight). Default 1.0. Only active when
                 train_random_latent=True.
+            ctx_shrinkage_max_mean_sq: Clamp on mean(ctx_features**2) before scaling by
+                the shrinkage alpha (see losses.compute_ctx_shrinkage). Default 1000.0.
             accelerator: Accelerate accelerator instance
             discriminator_update_freq: Run discriminator forward+backward every N
                 global steps (default 1 = every step, current behavior). Values > 1
@@ -311,6 +314,7 @@ class VAETrainer:
         self.ctx_shrinkage_weight = ctx_shrinkage_weight
         self.ctx_shrinkage_warmup_start_step = ctx_shrinkage_warmup_start_step
         self.ctx_shrinkage_warmup_steps = ctx_shrinkage_warmup_steps
+        self.ctx_shrinkage_max_mean_sq = ctx_shrinkage_max_mean_sq
         # Hook state: last captured ctx_features (pre-norm, pre-attention).
         self._ctx_features_cache: Optional[torch.Tensor] = None
         self._ctx_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
@@ -1690,7 +1694,9 @@ class VAETrainer:
             )
         if self._ctx_features_cache is not None and ctx_shrinkage_alpha > 0:
             ctx_shrinkage_loss = compute_ctx_shrinkage(
-                self._ctx_features_cache, ctx_shrinkage_alpha
+                self._ctx_features_cache,
+                ctx_shrinkage_alpha,
+                max_mean_sq=self.ctx_shrinkage_max_mean_sq,
             )
             total_loss = total_loss + ctx_shrinkage_loss
         else:

@@ -197,6 +197,10 @@ class PipelineStepConfig:
     ctx_shrinkage_weight: float = 0.001
     ctx_shrinkage_warmup_start_step: int = 5000
     ctx_shrinkage_warmup_steps: int = 5000
+    # Clamp on mean(ctx_features**2) before scaling by alpha; caps runaway
+    # gradient shock during adversarial spikes. Full rationale in
+    # losses.compute_ctx_shrinkage's docstring.
+    ctx_shrinkage_max_mean_sq: float = 1000.0
     lambda_adv: float = 0.5
     lambda_lpips: float = 0.1
     mse_weight: float = 0.1
@@ -766,6 +770,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         ctx_shrinkage_weight=step_dict.get("ctx_shrinkage_weight", 0.001),
         ctx_shrinkage_warmup_start_step=step_dict.get("ctx_shrinkage_warmup_start_step", 5000),
         ctx_shrinkage_warmup_steps=step_dict.get("ctx_shrinkage_warmup_steps", 5000),
+        ctx_shrinkage_max_mean_sq=step_dict.get("ctx_shrinkage_max_mean_sq", 1000.0),
         t_txt=step_dict.get("t_txt", 32),
         null_prompt=step_dict.get("null_prompt", ""),
         kl_free_bits=step_dict.get("kl_free_bits", 0.0),

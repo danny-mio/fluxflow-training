@@ -124,6 +124,13 @@ training:
   # it explicitly (as here) to opt out and keep it inactive.
   ctx_shrinkage_weight: 0.0
 
+  # v0.10.0: clamp on mean(ctx_features**2) before scaling by the shrinkage
+  # alpha, capping the gradient shock from transient adversarial spikes in
+  # the ctx branch (see losses.compute_ctx_shrinkage docstring for the
+  # percentile analysis behind this default). PipelineStepConfig's own
+  # default is 1000.0; omitting this key uses that.
+  ctx_shrinkage_max_mean_sq: 1000.0
+
   # Discriminator update-frequency knob (opt-in efficiency tuning, additive only).
   # Runs discriminator forward+backward every N global steps. 1 (default) = every
   # step, exactly matching current behavior. Increase to reduce discriminator
