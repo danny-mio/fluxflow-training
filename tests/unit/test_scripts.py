@@ -576,10 +576,20 @@ class TestInitializeModelsAttentionBackendPrecedence:
     initialize_models() (~line 227) never reads it.
     """
 
-    def _call_initialize_models(self, train, *, cli_attention_backend, yaml_attention_backend):
+    def _call_initialize_models(
+        self,
+        train,
+        *,
+        cli_attention_backend,
+        yaml_attention_backend,
+        cli_activation_type="bezier",
+        yaml_activation_type=None,
+    ):
         config = {"model": {"model_type": "bezier"}}
         if yaml_attention_backend is not None:
             config["model"]["attention_backend"] = yaml_attention_backend
+        if yaml_activation_type is not None:
+            config["model"]["activation_type"] = yaml_activation_type
 
         args = MagicMock()
         args.channels = 3
@@ -590,6 +600,7 @@ class TestInitializeModelsAttentionBackendPrecedence:
         args.model_checkpoint = None
         args.output_path = None
         args.attention_backend = cli_attention_backend
+        args.activation_type = cli_activation_type
 
         fake_models = (_FakeCompressor(), _FakeToModule(), _FakeToModule(), _FakeToModule())
         captured = {}
@@ -623,3 +634,33 @@ class TestInitializeModelsAttentionBackendPrecedence:
             train, cli_attention_backend="einsum", yaml_attention_backend=None
         )
         assert model_config.attention_backend == "einsum"
+
+    def test_cli_activation_type_overrides_yaml_value(self):
+        """CLI --activation_type pade must win even though YAML sets bezier."""
+        train = import_script_module("train")
+        model_config = self._call_initialize_models(
+            train,
+            cli_attention_backend="sdpa",
+            yaml_attention_backend=None,
+            cli_activation_type="pade",
+            yaml_activation_type="bezier",
+        )
+        assert model_config.activation_type == "pade"
+
+    def test_yaml_activation_type_used_when_cli_matches_default(self):
+        """activation_type: pade in YAML (with no CLI override) must reach ModelConfig.
+
+        parse_args()'s cli_provided merge (mirroring attention_backend) is what
+        makes this work: it copies the YAML value into args.activation_type
+        before initialize_models() runs, since args.activation_type otherwise
+        defaults to 'bezier' regardless of YAML.
+        """
+        train = import_script_module("train")
+        model_config = self._call_initialize_models(
+            train,
+            cli_attention_backend="sdpa",
+            yaml_attention_backend=None,
+            cli_activation_type="pade",  # simulates parse_args() having merged YAML -> args
+            yaml_activation_type="pade",
+        )
+        assert model_config.activation_type == "pade"

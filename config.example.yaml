@@ -7,6 +7,19 @@ model:
   # Model version: automatically discovered versions (default: "0.7.0")
   model_version: "0.7.0"  # Available: dynamically discovered (0.7.0=context-enhanced, 0.6.0, 0.3.0, ...)
 
+  # Activation family for v0.10.0 models only (ignored on older versions and
+  # for model_type: "baseline"). "bezier" (default) is the original learnable
+  # Bezier-curve activation; "pade" is a rational-function generalization --
+  # see fluxflow-core's docs/PADE-ACTIVATION-ANALYSIS.md. Can also be set/
+  # overridden via --activation_type on the CLI.
+  activation_type: "bezier"  # Options: "bezier", "pade"
+  # Optional per-component overrides (compressor/expander/flow), each null by
+  # default meaning "use activation_type above". Only set these if you want a
+  # mixed model, e.g. Padé in the VAE but Bezier in the flow processor.
+  compressor_activation_type: null  # Options: null, "bezier", "pade"
+  expander_activation_type: null    # Options: null, "bezier", "pade"
+  flow_activation_type: null        # Options: null, "bezier", "pade"
+
   # Core dimensions
   vae_dim: 128  # VAE latent dimension (32 for limited GPU, 128/256 for better quality)
   feature_maps_dim: 128  # Flow processor feature dimension

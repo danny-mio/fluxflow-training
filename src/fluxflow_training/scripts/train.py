@@ -224,12 +224,17 @@ def initialize_models(args, config, device, checkpoint_manager):
         from fluxflow.config import ModelConfig
 
         # Build ModelConfig from config dict, but let the already-merged
-        # args.attention_backend (CLI wins over YAML, matching the cli_provided
-        # precedence applied in parse_args()) override the raw YAML value --
-        # otherwise a CLI --attention_backend override is silently dropped
-        # whenever a factory (model_type-driven) config is in play.
+        # args.attention_backend / args.activation_type (CLI wins over YAML,
+        # matching the cli_provided precedence applied in parse_args())
+        # override the raw YAML values -- otherwise a CLI override is
+        # silently dropped whenever a factory (model_type-driven) config is
+        # in play.
         model_config = ModelConfig(
-            **{**config["model"], "attention_backend": args.attention_backend}
+            **{
+                **config["model"],
+                "attention_backend": args.attention_backend,
+                "activation_type": args.activation_type,
+            }
         )
 
         print(
@@ -297,6 +302,24 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Log loaded model metadata if available
         if model_metadata:
             print(f"✓ Loaded model metadata: {model_metadata}")
+
+        # Guard against silently resuming a Padé-trained checkpoint under a
+        # Bezier config (or vice versa): the two families use different
+        # parameter names (p0..p3 vs a0..a5/b1..b4), so strict=False loading
+        # below would silently DROP every activation parameter instead of
+        # restoring them, discarding trained weights without any error.
+        if model_metadata and model_config is not None:
+            checkpoint_activation_type = model_metadata.get("activation_type", "bezier")
+            configured_activation_type = getattr(model_config, "activation_type", "bezier")
+            if checkpoint_activation_type != configured_activation_type:
+                print(
+                    f"⚠️  WARNING: checkpoint was trained with "
+                    f"activation_type='{checkpoint_activation_type}' but this run is "
+                    f"configured with activation_type='{configured_activation_type}'. "
+                    "Resuming will silently drop the mismatched activation weights "
+                    "(strict=False load). Set activation_type to match the checkpoint "
+                    "in your config unless this mismatch is intentional."
+                )
 
         # Ensure loaded_states is the state dict dict, not the tuple
         assert isinstance(loaded_states, dict), "loaded_states should be a dict"
@@ -1750,6 +1773,16 @@ def parse_args():
         "backend on ROCm, CUDA, and MPS. 'einsum' is the original hand-rolled "
         "implementation, kept as a fallback. Only affects v0.7.0/v0.8.0/v0.10.0 models.",
     )
+    parser.add_argument(
+        "--activation_type",
+        type=str,
+        choices=["bezier", "pade"],
+        default="bezier",
+        help="Activation family for the VAE/flow model. 'bezier' (default) is the "
+        "original learnable Bezier-curve activation. 'pade' is a rational-function "
+        "(Padé) generalization -- see fluxflow-core's docs/PADE-ACTIVATION-ANALYSIS.md. "
+        "Only affects v0.10.0 models; ignored otherwise.",
+    )
 
     # Training
     parser.add_argument("--n_epochs", type=int, default=1, help="Number of epochs")
@@ -2002,6 +2035,8 @@ def parse_args():
                 args.pretrained_bert_model = config["model"]["pretrained_bert_model"]
             if "attention_backend" in config["model"] and "attention_backend" not in cli_provided:
                 args.attention_backend = config["model"]["attention_backend"]
+            if "activation_type" in config["model"] and "activation_type" not in cli_provided:
+                args.activation_type = config["model"]["activation_type"]
 
         if "data" in config:
             if "data_path" in config["data"] and "data_path" not in cli_provided:

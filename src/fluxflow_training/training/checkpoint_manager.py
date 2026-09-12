@@ -114,6 +114,20 @@ class CheckpointManager:
                 metadata["model_version"] = mc["model_version"]
             if "vae_dim" in mc:
                 metadata["vae_dim"] = str(mc["vae_dim"])
+            # activation_type (Bezier vs Padé) and its optional per-component
+            # overrides -- lets other tools (fluxflow-ui, fluxflow-comfyui,
+            # a future training resume) know which activation family this
+            # checkpoint's weights were trained with, without re-deriving it
+            # from state-dict key/param-name heuristics.
+            if "activation_type" in mc:
+                metadata["activation_type"] = mc["activation_type"]
+            for component_key in (
+                "compressor_activation_type",
+                "expander_activation_type",
+                "flow_activation_type",
+            ):
+                if mc.get(component_key) is not None:
+                    metadata[component_key] = mc[component_key]
 
         # Save text encoder state (used both bundled into the main checkpoint
         # and as the standalone sibling file below).
