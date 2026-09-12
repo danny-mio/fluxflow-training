@@ -261,3 +261,37 @@ class TestRandomLatentConfigDefaults:
         assert step.train_random_latent is True
         assert step.lambda_random_latent_z == 3.0
         assert step.lambda_random_latent_ctx == 4.0
+
+
+class TestCtxAuxTrainingGateConfig:
+    """train_ctx_aux gate for the ctx_aux_loss term (was hardcoded True)."""
+
+    def test_train_ctx_aux_default(self):
+        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
+        assert step.train_ctx_aux is True
+
+    def test_train_ctx_aux_keys_load_from_yaml(self):
+        cfg_dict = _wrap_step(
+            {
+                "name": "vae",
+                "n_epochs": 1,
+                "train_vae": True,
+                "train_ctx_aux": False,
+            }
+        )
+        cfg = parse_pipeline_config(cfg_dict)
+        assert cfg.steps[0].train_ctx_aux is False
+
+    def test_train_ctx_aux_keys_load_from_yaml_default_when_absent(self):
+        cfg_dict = _wrap_step({"name": "vae", "n_epochs": 1, "train_vae": True})
+        cfg = parse_pipeline_config(cfg_dict)
+        assert cfg.steps[0].train_ctx_aux is True
+
+    def test_direct_construction_with_train_ctx_aux_key(self):
+        step = PipelineStepConfig(
+            name="s",
+            n_epochs=1,
+            train_vae=True,
+            train_ctx_aux=False,
+        )
+        assert step.train_ctx_aux is False

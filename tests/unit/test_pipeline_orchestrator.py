@@ -845,6 +845,113 @@ class TestRandomLatentWiring:
         assert trainers["vae"].lambda_random_latent_ctx == 0.75
 
 
+class TestCtxAuxWiring:
+    """train_ctx_aux must flow from PipelineStepConfig into the VAETrainer(...)
+    construction call, defaulting to True when unset (regression: existing configs
+    keep working unchanged)."""
+
+    def test_train_ctx_aux_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert 'train_ctx_aux=getattr(step, "train_ctx_aux", True)' in content
+
+    def test_train_ctx_aux_false_reaches_vae_trainer_instance(self):
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="vae",
+            n_epochs=1,
+            train_vae=True,
+            gan_training=False,
+            train_ctx_aux=False,
+            optimization=OptimizationConfig(
+                optimizers={"vae": OptimizerConfig(lr=1e-4)},
+            ),
+        )
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+
+        compressor = MagicMock()
+        compressor.d_model = 8
+        compressor.get_context_dims.return_value = 8
+        compressor.use_gradient_checkpointing = False
+        compressor.parameters.side_effect = lambda: iter([nn.Parameter(torch.zeros(1))])
+
+        expander = MagicMock()
+        expander.parameters.return_value = iter([])
+
+        models = {"compressor": compressor, "expander": expander}
+        optimizers = {"vae": MagicMock()}
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+
+        trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
+
+        assert trainers["vae"].train_ctx_aux is False
+
+    def test_train_ctx_aux_omitted_defaults_to_true_on_vae_trainer_instance(self):
+        """Regression: existing configs without train_ctx_aux keep getting True."""
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="vae",
+            n_epochs=1,
+            train_vae=True,
+            gan_training=False,
+            optimization=OptimizationConfig(
+                optimizers={"vae": OptimizerConfig(lr=1e-4)},
+            ),
+        )
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+
+        compressor = MagicMock()
+        compressor.d_model = 8
+        compressor.get_context_dims.return_value = 8
+        compressor.use_gradient_checkpointing = False
+        compressor.parameters.side_effect = lambda: iter([nn.Parameter(torch.zeros(1))])
+
+        expander = MagicMock()
+        expander.parameters.return_value = iter([])
+
+        models = {"compressor": compressor, "expander": expander}
+        optimizers = {"vae": MagicMock()}
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+
+        trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
+
+        assert trainers["vae"].train_ctx_aux is True
+
+
 class TestLoggingOutput:
     """Test console and metrics logging for different config combinations."""
 
