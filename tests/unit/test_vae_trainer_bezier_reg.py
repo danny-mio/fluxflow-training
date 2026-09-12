@@ -60,6 +60,49 @@ class _FakeCompressorWithBezier(nn.Module):
         return self.token_dim
 
 
+class _FakePadeActivation(nn.Module):
+    """Minimal Pade-shaped activation stub (a0-a5/b1-b4), no p0-p3.
+
+    Mirrors the attribute shape of a real ``TrainablePade``/``WideTrainablePade``
+    instance (fluxflow-core v0.10.0, ``activation_type="pade"``) closely enough
+    to prove the gating in ``_train_generator``: ``compute_bezier_monotonicity_reg``
+    accessing ``module.p0`` would raise ``AttributeError`` on this stub, so simply
+    not raising already proves the pade branch is skipped.
+    """
+
+    def __init__(self):
+        super().__init__()
+        for name in ("a0", "a1", "a2", "a3", "a4", "a5", "b1", "b2", "b3", "b4"):
+            setattr(self, name, nn.Parameter(torch.tensor(0.1)))
+
+
+class _FakeCompressorWithPade(nn.Module):
+    """Same shape as ``_FakeCompressorWithBezier`` but ``activation_type="pade"``
+    with Pade-shaped (not Bezier-shaped) mu/logvar activations."""
+
+    def __init__(self, in_channels: int, token_dim: int = 8, n_tokens: int = 3):
+        super().__init__()
+        self.token_dim = token_dim
+        self.n_tokens = n_tokens
+        self.proj = nn.Linear(in_channels, token_dim)
+        self.use_gradient_checkpointing = False
+        self.activation_type = "pade"
+        self.mu_activation = _FakePadeActivation()
+        self.logvar_activation = _FakePadeActivation()
+
+    def forward(self, x, training=False):
+        B = x.size(0)
+        feat = x.mean(dim=(2, 3))  # [B, C]
+        pooled = self.proj(feat)  # [B, token_dim]
+        packed = pooled.unsqueeze(1).expand(B, self.n_tokens + 1, self.token_dim).contiguous()
+        mu = torch.zeros(B, 4, 2, 2)
+        logvar = torch.zeros(B, 4, 2, 2)
+        return packed, mu, logvar
+
+    def get_context_dims(self):
+        return self.token_dim
+
+
 class _FakeExpander(nn.Module):
     """Minimal expander stub with a real trainable param feeding the output."""
 
@@ -209,4 +252,52 @@ class TestBezierRegGradientFlow:
 
         assert result["_optimizer_stepped"] is False
         assert "bezier_reg" in result
+        assert result["bezier_reg"] > 0.0
+
+
+class TestBezierRegGatedByActivationType:
+    """Gating on ``activation_type`` (fix for the Pade AttributeError crash).
+
+    ``compute_bezier_monotonicity_reg`` accesses ``p0``-``p3``, which only
+    Bezier-shaped activations have. The call site in ``_train_generator``
+    must only invoke it when ``activation_type == "bezier"`` (or the
+    attribute is absent, for backward compat with pre-v100 compressors).
+    """
+
+    def test_bezier_activation_type_computes_reg_as_before(self):
+        """(a) Regression: explicit activation_type='bezier' still computes
+        a nonzero reg for non-monotonic control points."""
+        compressor = _FakeCompressorWithBezier(in_channels=_IMG_SHAPE[0], token_dim=_TOKEN_DIM)
+        compressor.activation_type = "bezier"
+        with torch.no_grad():
+            compressor.mu_activation.p0.fill_(0.9)
+            compressor.mu_activation.p1.fill_(0.1)
+        trainer = _build_trainer(compressor)
+
+        result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
+
+        assert result["bezier_reg"] > 0.0
+
+    def test_pade_activation_type_skips_reg_without_attributeerror(self):
+        """(b) Fix: activation_type='pade' with Pade-shaped (a0/b1-style)
+        activations must not raise AttributeError and must report 0.0."""
+        compressor = _FakeCompressorWithPade(in_channels=_IMG_SHAPE[0], token_dim=_TOKEN_DIM)
+        trainer = _build_trainer(compressor)
+
+        result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
+
+        assert result["bezier_reg"] == 0.0
+
+    def test_missing_activation_type_defaults_to_bezier(self):
+        """(c) Backward compat: no activation_type attribute at all -> still
+        treated as bezier and the reg is computed (not silently skipped)."""
+        compressor = _FakeCompressorWithBezier(in_channels=_IMG_SHAPE[0], token_dim=_TOKEN_DIM)
+        assert not hasattr(compressor, "activation_type")
+        with torch.no_grad():
+            compressor.mu_activation.p0.fill_(0.9)
+            compressor.mu_activation.p1.fill_(0.1)
+        trainer = _build_trainer(compressor)
+
+        result = trainer._train_generator(torch.randn(2, *_IMG_SHAPE), global_step=0)
+
         assert result["bezier_reg"] > 0.0

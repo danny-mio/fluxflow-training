@@ -1633,15 +1633,23 @@ class VAETrainer:
 
         # v0.10.0: Bezier control-point monotonicity regularizer (plan Fix 2).
         # Structural sanity constraint (not a config knob, see losses.py
-        # docstring) -- always on, quietly holds p0<=p1<=p2<=p3 for the
-        # encoder's mu/logvar Bezier activations. Default inits are already
-        # monotonic so this is ~0.0 in the common case.
+        # docstring) -- gated on activation family, since it only applies to
+        # Bezier-shaped mu/logvar activations (p0<=p1<=p2<=p3). Pade
+        # activations (activation_type="pade") have no p0-p3 control points
+        # and no equivalent monotonicity constraint implemented, so the term
+        # is a no-op there. Missing activation_type (pre-v100 compressors)
+        # defaults to bezier, since those classes are Bezier-only by
+        # construction. Default inits are already monotonic so this is ~0.0
+        # in the common bezier case.
         unwrapped_compressor = self._get_unwrapped_model(self.compressor)
-        bezier_reg_loss = compute_bezier_monotonicity_reg(
-            unwrapped_compressor.mu_activation, _BEZIER_REG_WEIGHT
-        ) + compute_bezier_monotonicity_reg(
-            unwrapped_compressor.logvar_activation, _BEZIER_REG_WEIGHT
-        )
+        if getattr(unwrapped_compressor, "activation_type", "bezier") == "bezier":
+            bezier_reg_loss = compute_bezier_monotonicity_reg(
+                unwrapped_compressor.mu_activation, _BEZIER_REG_WEIGHT
+            ) + compute_bezier_monotonicity_reg(
+                unwrapped_compressor.logvar_activation, _BEZIER_REG_WEIGHT
+            )
+        else:
+            bezier_reg_loss = torch.tensor(0.0, device=real_imgs.device)
 
         # Total loss with adaptive weighting
         total_loss = w_kl * beta * kl
