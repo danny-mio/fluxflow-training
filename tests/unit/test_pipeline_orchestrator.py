@@ -685,6 +685,22 @@ class TestKlZWeightAndCtxShrinkageWiring:
         content = orchestrator_path.read_text()
         assert 'ctx_shrinkage_weight=getattr(step, "ctx_shrinkage_weight", 0.0)' in content
 
+    def test_ctx_shrinkage_max_mean_sq_passed_to_vae_trainer(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert (
+            'ctx_shrinkage_max_mean_sq=getattr(step, "ctx_shrinkage_max_mean_sq", 1000.0)'
+            in content
+        )
+
     def test_ctx_shrinkage_warmup_fields_reach_vae_trainer_instance(self):
         """Non-default ``ctx_shrinkage_warmup_start_step``/``ctx_shrinkage_warmup_steps``
         on PipelineStepConfig must reach the constructed VAETrainer instance, not
@@ -705,6 +721,7 @@ class TestKlZWeightAndCtxShrinkageWiring:
             gan_training=False,
             ctx_shrinkage_warmup_start_step=1234,
             ctx_shrinkage_warmup_steps=4321,
+            ctx_shrinkage_max_mean_sq=777.0,
             optimization=OptimizationConfig(
                 optimizers={"vae": OptimizerConfig(lr=1e-4)},
             ),
@@ -733,6 +750,7 @@ class TestKlZWeightAndCtxShrinkageWiring:
 
         assert trainers["vae"].ctx_shrinkage_warmup_start_step == 1234
         assert trainers["vae"].ctx_shrinkage_warmup_steps == 4321
+        assert trainers["vae"].ctx_shrinkage_max_mean_sq == 777.0
 
 
 class TestRandomLatentWiring:

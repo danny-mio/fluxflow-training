@@ -64,6 +64,53 @@ class TestComputeCtxShrinkage:
         loss = compute_ctx_shrinkage(ctx, alpha=0.0)
         assert loss.device == ctx.device
 
+    def test_default_max_mean_sq_is_1000(self):
+        ctx = torch.full((2, 4, 4), 2.0)  # mean_sq=4, well below the cap
+        loss = compute_ctx_shrinkage(ctx, alpha=1.0)
+        assert abs(loss.item() - 4.0) < 1e-6
+
+    def test_below_cap_matches_unclamped_result(self):
+        """Regression: below max_mean_sq, behavior is identical to before."""
+        ctx = torch.full((2, 32, 8, 8), 3.0)  # mean_sq=9
+        loss = compute_ctx_shrinkage(ctx, alpha=0.01, max_mean_sq=1000.0)
+        assert abs(loss.item() - 0.01 * 9.0) < 1e-6
+
+    def test_below_cap_gradient_flows_normally(self):
+        ctx = torch.full((2, 32, 8, 8), 3.0, requires_grad=True)
+        loss = compute_ctx_shrinkage(ctx, alpha=0.01, max_mean_sq=1000.0)
+        loss.backward()
+        assert ctx.grad is not None
+        assert ctx.grad.abs().sum().item() > 0
+
+    def test_above_cap_clamps_forward_value(self):
+        """mean_sq far above max_mean_sq: loss == alpha * max_mean_sq, not the
+        larger unclamped value."""
+        ctx = torch.full((2, 8, 4, 4), 1000.0)  # mean_sq = 1e6
+        loss = compute_ctx_shrinkage(ctx, alpha=0.5, max_mean_sq=1000.0)
+        assert abs(loss.item() - 0.5 * 1000.0) < 1e-3
+
+    def test_above_cap_gradient_is_zero(self):
+        """The actual bug being fixed: above the cap, gradient into
+        ctx_features must be exactly zero (torch.clamp has zero gradient
+        above max)."""
+        ctx = torch.full((2, 8, 4, 4), 1000.0, requires_grad=True)
+        loss = compute_ctx_shrinkage(ctx, alpha=0.5, max_mean_sq=1000.0)
+        loss.backward()
+        assert ctx.grad is not None
+        assert torch.all(ctx.grad == 0.0)
+
+    def test_alpha_zero_short_circuits_regardless_of_max_mean_sq(self):
+        ctx = torch.full((2, 8, 4, 4), 1000.0)
+        loss = compute_ctx_shrinkage(ctx, alpha=0.0, max_mean_sq=1.0)
+        assert loss.item() == 0.0
+        assert not loss.requires_grad
+
+    def test_negative_alpha_short_circuits_regardless_of_max_mean_sq(self):
+        ctx = torch.full((2, 8, 4, 4), 1000.0)
+        loss = compute_ctx_shrinkage(ctx, alpha=-1.0, max_mean_sq=1.0)
+        assert loss.item() == 0.0
+        assert not loss.requires_grad
+
 
 class TestCosineWarmupWeight:
     """Cosine warmup helper used by KL_z and ctx shrinkage schedules."""

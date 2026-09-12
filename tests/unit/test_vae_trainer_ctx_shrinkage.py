@@ -54,6 +54,7 @@ def _build_trainer(
     ctx_shrinkage_weight=0.001,
     ctx_shrinkage_warmup_start_step=0,
     ctx_shrinkage_warmup_steps=100,
+    ctx_shrinkage_max_mean_sq=1000.0,
 ):
     """Build a minimally-configured VAETrainer for hook lifecycle tests.
 
@@ -85,6 +86,7 @@ def _build_trainer(
         ctx_shrinkage_weight=ctx_shrinkage_weight,
         ctx_shrinkage_warmup_start_step=ctx_shrinkage_warmup_start_step,
         ctx_shrinkage_warmup_steps=ctx_shrinkage_warmup_steps,
+        ctx_shrinkage_max_mean_sq=ctx_shrinkage_max_mean_sq,
         accelerator=None,
     )
 
@@ -154,6 +156,33 @@ class _CompressorWithLearnableCtx(nn.Module):
 
     def get_context_dims(self):
         return self.d_model
+
+
+class TestCtxShrinkageMaxMeanSq:
+    def test_default_stored_on_trainer(self):
+        comp = _CompressorWithCtxNorm()
+        trainer = _build_trainer(comp)
+        assert trainer.ctx_shrinkage_max_mean_sq == 1000.0
+
+    def test_custom_value_stored_on_trainer(self):
+        comp = _CompressorWithCtxNorm()
+        trainer = _build_trainer(comp, ctx_shrinkage_max_mean_sq=250.0)
+        assert trainer.ctx_shrinkage_max_mean_sq == 250.0
+
+    def test_train_step_call_site_threads_configured_cap(self):
+        """The compute_ctx_shrinkage(...) call site in vae_trainer.py must pass
+        self.ctx_shrinkage_max_mean_sq, not rely on the function's own default."""
+        from pathlib import Path
+
+        vae_trainer_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "vae_trainer.py"
+        )
+        content = vae_trainer_path.read_text()
+        assert "max_mean_sq=self.ctx_shrinkage_max_mean_sq" in content
 
 
 class TestCtxShrinkageHookCapturesPreNormInput:
