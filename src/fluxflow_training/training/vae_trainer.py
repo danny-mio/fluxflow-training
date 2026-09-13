@@ -1493,6 +1493,18 @@ class VAETrainer:
                     # training the expander this same step.
                     with torch.no_grad():
                         synth_img = self.expander(packed_synth, use_context=True)
+                        # A random (z, ctx) pair is off-manifold for the expander
+                        # (no encoder ever produces this exact combination, and
+                        # early in training -- before KL warmup pulls the encoder
+                        # posterior toward N(0,1) -- it's off-manifold by a wide
+                        # margin). Observed to decode into wildly out-of-range
+                        # pixels (min=-81.78, max=19.07 vs. real_imgs' [-1,1]),
+                        # unlike every other compressor input in this file, which
+                        # always comes from the encoder's own [-1,1]-normalized
+                        # pipeline. Clamp to that same domain before re-encoding
+                        # instead of letting extreme values overflow into NaN
+                        # inside the compressor's conv/norm stack.
+                        synth_img = synth_img.clamp(-1.0, 1.0)
 
                     packed_rec_synth, _, _ = self.compressor(synth_img, training=True)
                     total_dim_rec = packed_rec_synth.size(-1)
