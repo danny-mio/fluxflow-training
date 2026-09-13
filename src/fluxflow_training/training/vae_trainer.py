@@ -1195,6 +1195,32 @@ class VAETrainer:
         # matching FlowTrainer's total_loss / gradient_accumulation_steps.
         d_img_loss = d_img_loss / self.gradient_accumulation_steps
 
+        # Check for NaN/Inf in loss with detailed diagnostics (mirrors
+        # _train_generator's NaN guard below). r1_penalty (double-backward)
+        # and d_hinge_loss (unbounded above) can both blow up; without this
+        # guard the discriminator weights go permanently NaN with no
+        # diagnostic ever logged.
+        if check_for_nan(d_img_loss, "d_img_loss", logger):
+            logger.error("Skipping discriminator batch due to NaN/Inf in d_img_loss")
+            if do_r1:
+                logger.error(f"  r1: {r1.item() if not check_for_nan(r1, 'r1', logger) else 'NaN'}")
+            logger.error(
+                f"  d_hinge_cond: {d_hinge_cond.item() if not check_for_nan(d_hinge_cond, 'd_hinge_cond', logger) else 'NaN'}"
+            )
+            logger.error(
+                f"  d_hinge_uncond: {d_hinge_uncond.item() if not check_for_nan(d_hinge_uncond, 'd_hinge_uncond', logger) else 'NaN'}"
+            )
+            logger.error(
+                f"  real_logits stats: min={real_logits.min().item():.4f}, max={real_logits.max().item():.4f}"
+            )
+            logger.error(
+                f"  fake_logits stats: min={fake_logits.min().item():.4f}, max={fake_logits.max().item():.4f}"
+            )
+            logger.error(
+                f"  fake_uncond_logits stats: min={fake_uncond_logits.min().item():.4f}, max={fake_uncond_logits.max().item():.4f}"
+            )
+            return {"d_loss": 0.0, "_optimizer_stepped": False}
+
         try:
             self.accelerator.backward(d_img_loss)
         except RuntimeError as exc:
