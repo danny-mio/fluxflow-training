@@ -336,6 +336,98 @@ class TestTrainScriptConfigFileMerge:
             assert args.precision == "fp16"
 
 
+class TestDiscriminatorUseSpectralNormArg:
+    """``--discriminator_use_spectral_norm`` gates PatchDiscriminator's spectral
+    normalization (Miyato et al. 2018). Defaults to True (safer setting) --
+    a deliberate behavior change for all existing configs."""
+
+    def test_default_is_true(self):
+        train = import_script_module("train")
+        test_args = [
+            "--data_path",
+            "/tmp/images",
+            "--captions_file",
+            "/tmp/captions.tsv",
+            "--train_vae",
+            "--output_path",
+            "/tmp/output",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.discriminator_use_spectral_norm is True
+
+    def test_cli_flag_disables_it(self):
+        train = import_script_module("train")
+        test_args = [
+            "--data_path",
+            "/tmp/images",
+            "--captions_file",
+            "/tmp/captions.tsv",
+            "--train_vae",
+            "--output_path",
+            "/tmp/output",
+            "--no-discriminator_use_spectral_norm",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.discriminator_use_spectral_norm is False
+
+    def test_config_false_applied_when_not_on_cli(self, tmp_path):
+        """``training.discriminator_use_spectral_norm: false`` in YAML is picked up
+        when not passed on the CLI (mirrors activation_type's cli_provided precedence)."""
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "training:\n"
+            "  train_vae: true\n"
+            "  discriminator_use_spectral_norm: false\n"
+        )
+        test_args = ["--config", str(config_path), "--output_path", "/tmp/output"]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.discriminator_use_spectral_norm is False
+
+    def test_cli_flag_overrides_config(self, tmp_path):
+        """An explicit CLI flag wins even though YAML sets the opposite value."""
+        train = import_script_module("train")
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "data:\n"
+            "  data_path: /tmp/images\n"
+            "  captions_file: /tmp/captions.tsv\n"
+            "training:\n"
+            "  train_vae: true\n"
+            "  discriminator_use_spectral_norm: false\n"
+        )
+        test_args = [
+            "--config",
+            str(config_path),
+            "--output_path",
+            "/tmp/output",
+            "--discriminator_use_spectral_norm",
+        ]
+        with patch.object(sys, "argv", ["train.py"] + test_args):
+            args = train.parse_args()
+            assert args.discriminator_use_spectral_norm is True
+
+    def test_all_patch_discriminator_call_sites_thread_the_flag(self):
+        """Every ``PatchDiscriminator(...)`` construction in train.py must pass
+        ``use_spectral_norm=args.discriminator_use_spectral_norm`` -- no call site
+        may keep the hardcoded ``use_spectral_norm=False``."""
+        scripts_path = Path(__file__).parent.parent.parent / "src" / "fluxflow_training" / "scripts"
+        content = (scripts_path / "train.py").read_text()
+
+        assert "use_spectral_norm=False" not in content
+
+        call_count = content.count("PatchDiscriminator(")
+        flag_count = content.count("use_spectral_norm=args.discriminator_use_spectral_norm")
+        assert call_count == 4
+        assert flag_count == call_count
+
+
 class TestResolveMixedPrecision:
     """Tests for ``train._resolve_mixed_precision`` — the single choke point all four
     ``Accelerator(...)`` construction call sites go through to pick ``mixed_precision``.

@@ -952,6 +952,95 @@ class TestCtxAuxWiring:
         assert trainers["vae"].train_ctx_aux is True
 
 
+class TestDiscriminatorSpectralNormWiring:
+    """discriminator_use_spectral_norm must flow from PipelineStepConfig into the
+    D_img fallback-construction PatchDiscriminator(...) call, defaulting to True
+    (safer setting; deliberate behavior change for all existing configs)."""
+
+    def test_discriminator_use_spectral_norm_passed_to_patch_discriminator(self):
+        from pathlib import Path
+
+        orchestrator_path = (
+            Path(__file__).parent.parent.parent
+            / "src"
+            / "fluxflow_training"
+            / "training"
+            / "pipeline_orchestrator.py"
+        )
+        content = orchestrator_path.read_text()
+        assert (
+            'use_spectral_norm=getattr(step, "discriminator_use_spectral_norm", True)' in content
+        )
+
+    def _make_gan_step_and_models(self, discriminator_use_spectral_norm):
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        kwargs = {}
+        if discriminator_use_spectral_norm is not None:
+            kwargs["discriminator_use_spectral_norm"] = discriminator_use_spectral_norm
+
+        step = PipelineStepConfig(
+            name="gan",
+            n_epochs=1,
+            train_vae=True,
+            gan_training=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "vae": OptimizerConfig(lr=1e-4),
+                    "discriminator": OptimizerConfig(lr=4e-4),
+                },
+            ),
+            **kwargs,
+        )
+        config = PipelineConfig(steps=[step])
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = config
+        orch.device = "cpu"
+        orch.accelerator = MagicMock()
+
+        compressor = MagicMock()
+        compressor.d_model = 8
+        compressor.get_context_dims.return_value = 4
+        compressor.use_gradient_checkpointing = False
+        compressor.parameters.side_effect = lambda: iter([nn.Parameter(torch.zeros(1))])
+
+        expander = MagicMock()
+        expander.parameters.return_value = iter([])
+
+        models = {"compressor": compressor, "expander": expander}
+        optimizers = {"vae": MagicMock(), "discriminator": MagicMock()}
+        schedulers = {"discriminator": MagicMock()}
+        args = MagicMock()
+        args.initial_clipping_norm = 1.0
+        args.feature_maps_dim_disc = 4
+        args.channels = 3
+
+        return orch, step, models, optimizers, schedulers, args
+
+    def test_default_discriminator_use_spectral_norm_reaches_patch_discriminator(self):
+        orch, step, models, optimizers, schedulers, args = self._make_gan_step_and_models(None)
+
+        trainers = orch._create_step_trainers(step, models, optimizers, schedulers, None, args)
+
+        d_img = trainers["vae"].discriminator
+        assert hasattr(d_img.backbone[0], "weight_orig")
+
+    def test_explicit_false_discriminator_use_spectral_norm_reaches_patch_discriminator(self):
+        orch, step, models, optimizers, schedulers, args = self._make_gan_step_and_models(False)
+
+        trainers = orch._create_step_trainers(step, models, optimizers, schedulers, None, args)
+
+        d_img = trainers["vae"].discriminator
+        assert not hasattr(d_img.backbone[0], "weight_orig")
+
+
 class TestLoggingOutput:
     """Test console and metrics logging for different config combinations."""
 

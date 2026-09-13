@@ -295,3 +295,38 @@ class TestCtxAuxTrainingGateConfig:
             train_ctx_aux=False,
         )
         assert step.train_ctx_aux is False
+
+
+class TestDiscriminatorUseSpectralNormConfig:
+    """Discriminator spectral norm (Miyato et al. 2018) toggle. Defaults to True
+    (safer setting) -- deliberate behavior change for all existing configs."""
+
+    def test_discriminator_use_spectral_norm_default(self):
+        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
+        assert step.discriminator_use_spectral_norm is True
+
+    def test_discriminator_use_spectral_norm_keys_load_from_yaml(self):
+        cfg_dict = _wrap_step(
+            {
+                "name": "vae",
+                "n_epochs": 1,
+                "train_vae": True,
+                "discriminator_use_spectral_norm": False,
+            }
+        )
+        cfg = parse_pipeline_config(cfg_dict)
+        assert cfg.steps[0].discriminator_use_spectral_norm is False
+
+    def test_discriminator_use_spectral_norm_keys_load_from_yaml_default_when_absent(self):
+        cfg_dict = _wrap_step({"name": "vae", "n_epochs": 1, "train_vae": True})
+        cfg = parse_pipeline_config(cfg_dict)
+        assert cfg.steps[0].discriminator_use_spectral_norm is True
+
+    def test_direct_construction_with_discriminator_use_spectral_norm_key(self):
+        step = PipelineStepConfig(
+            name="s",
+            n_epochs=1,
+            train_vae=True,
+            discriminator_use_spectral_norm=False,
+        )
+        assert step.discriminator_use_spectral_norm is False
