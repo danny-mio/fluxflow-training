@@ -200,6 +200,20 @@ def load_optimizer_scheduler_config(args, lr):
     return optimizer_configs, scheduler_configs
 
 
+def _sd_weight(state_dict: dict, prefix: str):
+    """Return the weight tensor for a submodule, whether or not it's spectral-norm
+    wrapped. torch.nn.utils.spectral_norm renames the parameter to
+    ``{prefix}.weight_orig`` and the plain ``{prefix}.weight`` key never appears in
+    the state dict (it's computed dynamically on each forward). Discriminator
+    checkpoints saved with ``use_spectral_norm=True`` (the default) only have the
+    ``weight_orig`` key -- looking up ``.weight`` directly always raises KeyError,
+    which was previously misread as "incompatible" and forced a full reinit on
+    every resume.
+    """
+    orig_key = f"{prefix}.weight_orig"
+    return state_dict[orig_key] if orig_key in state_dict else state_dict[f"{prefix}.weight"]
+
+
 def initialize_models(args, config, device, checkpoint_manager):
     """
     Initialize FluxFlow models from configuration.
@@ -331,7 +345,7 @@ def initialize_models(args, config, device, checkpoint_manager):
     ctx_dim = None
     if loaded_states and loaded_states.get("D_img"):
         try:
-            ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]  # in_features
+            ctx_dim = _sd_weight(loaded_states["D_img"], "ctx_proj").shape[1]  # in_features
             print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
         except (KeyError, AttributeError):
             ctx_dim = None
@@ -379,8 +393,8 @@ def initialize_models(args, config, device, checkpoint_manager):
             # Both ctx_proj (ctx_dim) and backbone.0 (base_ch) must match; a size
             # mismatch raises RuntimeError even with strict=False.
             try:
-                saved_ctx_dim = loaded_states["D_img"]["ctx_proj.weight"].shape[1]
-                saved_base_ch = loaded_states["D_img"]["backbone.0.weight"].shape[0]
+                saved_ctx_dim = _sd_weight(loaded_states["D_img"], "ctx_proj").shape[1]
+                saved_base_ch = _sd_weight(loaded_states["D_img"], "backbone.0").shape[0]
                 current_ctx_dim = D_img.ctx_proj.in_features
                 current_base_ch = D_img.backbone[0].out_channels
                 if saved_ctx_dim == current_ctx_dim and saved_base_ch == current_base_ch:
