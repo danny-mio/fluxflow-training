@@ -351,7 +351,7 @@ def initialize_models(args, config, device, checkpoint_manager):
         base_ch=args.feature_maps_dim_disc,
         depth=3,
         ctx_dim=ctx_dim,
-        use_spectral_norm=False,
+        use_spectral_norm=args.discriminator_use_spectral_norm,
     )
 
     # Create diffuser pipeline
@@ -409,7 +409,7 @@ def initialize_models(args, config, device, checkpoint_manager):
                     base_ch=args.feature_maps_dim_disc,
                     depth=3,
                     ctx_dim=ctx_dim,  # reuse the same ctx_dim computed above
-                    use_spectral_norm=False,
+                    use_spectral_norm=args.discriminator_use_spectral_norm,
                 )
 
     # Move to device
@@ -871,7 +871,10 @@ def train_legacy(args):
         print(f"Creating discriminator with ctx_dim={ctx_dim} (legacy v070/v080 fallback)")
 
     D_img = PatchDiscriminator(
-        in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
+        in_channels=args.channels,
+        base_ch=args.feature_maps_dim_disc,
+        ctx_dim=ctx_dim,
+        use_spectral_norm=args.discriminator_use_spectral_norm,
     )
 
     # Initialize checkpoint manager for easier model management
@@ -918,7 +921,10 @@ def train_legacy(args):
         if nan_found:
             print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
             D_img = PatchDiscriminator(
-                in_channels=args.channels, base_ch=args.feature_maps_dim_disc, ctx_dim=ctx_dim
+                in_channels=args.channels,
+                base_ch=args.feature_maps_dim_disc,
+                ctx_dim=ctx_dim,
+                use_spectral_norm=args.discriminator_use_spectral_norm,
             )
 
     diffuser.to(device)
@@ -1974,6 +1980,16 @@ def parse_args():
         "(default 1 = every step, current behavior; opt-in efficiency knob)",
     )
     parser.add_argument(
+        "--discriminator_use_spectral_norm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply spectral normalization (Miyato et al. 2018) to PatchDiscriminator's "
+        "conv layers, bounding its Lipschitz constant. Default True (safer setting) -- "
+        "guards against the discriminator's unbounded hinge loss driving its weights to "
+        "NaN. Pass --no-discriminator_use_spectral_norm to restore the old unnormalized "
+        "behavior.",
+    )
+    parser.add_argument(
         "--lambda_lpips",
         type=float,
         default=0.1,
@@ -2169,6 +2185,13 @@ def parse_args():
                 and "discriminator_update_freq" not in cli_provided
             ):
                 args.discriminator_update_freq = config["training"]["discriminator_update_freq"]
+            if (
+                "discriminator_use_spectral_norm" in config["training"]
+                and "discriminator_use_spectral_norm" not in cli_provided
+            ):
+                args.discriminator_use_spectral_norm = config["training"][
+                    "discriminator_use_spectral_norm"
+                ]
             if "kl_z_weight" in config["training"] and "kl_z_weight" not in cli_provided:
                 args.kl_z_weight = config["training"]["kl_z_weight"]
             if (

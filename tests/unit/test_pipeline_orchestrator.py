@@ -968,9 +968,7 @@ class TestDiscriminatorSpectralNormWiring:
             / "pipeline_orchestrator.py"
         )
         content = orchestrator_path.read_text()
-        assert (
-            'use_spectral_norm=getattr(step, "discriminator_use_spectral_norm", True)' in content
-        )
+        assert 'use_spectral_norm=getattr(step, "discriminator_use_spectral_norm", True)' in content
 
     def _make_gan_step_and_models(self, discriminator_use_spectral_norm):
         from unittest.mock import MagicMock

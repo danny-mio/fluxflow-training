@@ -246,6 +246,11 @@ class PipelineStepConfig:
     # Additive opt-in efficiency knob: run discriminator forward+backward every N
     # global steps. 1 (default) reproduces the historical every-step behavior.
     discriminator_update_freq: int = 1
+    # Spectral normalization (Miyato et al. 2018) on PatchDiscriminator's conv layers.
+    # Bounds the discriminator's Lipschitz constant, preventing the unbounded weight/
+    # gradient growth that can drive it to NaN under the (unbounded) hinge loss.
+    # Defaults to True (safer setting) -- deliberate behavior change for all configs.
+    discriminator_use_spectral_norm: bool = True
 
     # Optimization configuration (inline YAML)
     optimization: Optional[OptimizationConfig] = None
@@ -788,6 +793,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         instance_noise_decay=step_dict.get("instance_noise_decay", 0.9999),
         adaptive_weights=step_dict.get("adaptive_weights", True),
         discriminator_update_freq=step_dict.get("discriminator_update_freq", 1),
+        discriminator_use_spectral_norm=step_dict.get("discriminator_use_spectral_norm", True),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
         lambda_random_latent_z=step_dict.get("lambda_random_latent_z", 1.0),
         lambda_random_latent_ctx=step_dict.get("lambda_random_latent_ctx", 1.0),

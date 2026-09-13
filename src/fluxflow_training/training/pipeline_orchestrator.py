@@ -1061,7 +1061,10 @@ class TrainingPipelineOrchestrator:
                         f"Creating new PatchDiscriminator with base_ch={base_ch}, ctx_dim={expected_ctx_dim}"
                     )
                     models["D_img"] = PatchDiscriminator(
-                        in_channels=channels, base_ch=base_ch, ctx_dim=expected_ctx_dim
+                        in_channels=channels,
+                        base_ch=base_ch,
+                        ctx_dim=expected_ctx_dim,
+                        use_spectral_norm=getattr(step, "discriminator_use_spectral_norm", True),
                     ).to(self.device)
                 else:
                     actual_ctx_dim = getattr(models["D_img"], "ctx_dim", 0)
