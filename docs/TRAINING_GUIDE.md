@@ -452,6 +452,7 @@ If not set, prompts are used exactly as provided in the dataset.
 | `--use_fp16` | flag | False | Use mixed precision training |
 | `--precision` | str | `fp16` | Mixed-precision dtype when `--use_fp16` is set: `fp16` or `bf16`. bf16 avoids fp16's overflow-to-Inf on large activations (same exponent range as fp32) at the cost of mantissa precision. |
 | `--initial_clipping_norm` | float | 1.0 | Gradient clipping norm for stability |
+| `--compile_activations` | flag | False | `torch.compile` the Padé activation math (`activation_type: pade`), fusing its elementwise ops into one kernel. YAML: `training.compile_activations`. One-time compile cost at startup. |
 
 **Learning Rate Guidelines:**
 - **VAE Training**: `1e-5` to `5e-5`

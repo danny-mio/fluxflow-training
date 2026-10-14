@@ -56,6 +56,7 @@ from fluxflow_training.training.optimizer_factory import (
     create_optimizer,
     get_default_optimizer_config,
 )
+from fluxflow_training.training.rocm_compat import disable_broken_rocm_sdpa
 from fluxflow_training.training.scheduler_factory import (
     create_scheduler,
     get_default_scheduler_config,
@@ -87,6 +88,15 @@ warnings.filterwarnings(
     category=FutureWarning,
 )
 warnings.filterwarnings("error", category=UserWarning)
+# torch.compile tracing (--compile_activations) probes `.grad` on non-leaf
+# tensors, which warns. Dynamo hides that exact message itself
+# (torch._logging._internal.safe_grad_filter) by patching showwarning, which
+# only works if warnings are shown rather than raised -- so exempt it here.
+warnings.filterwarnings(
+    "ignore",
+    message="The .grad attribute of a Tensor that is not a leaf Tensor",
+    category=UserWarning,
+)
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -248,6 +258,7 @@ def initialize_models(args, config, device, checkpoint_manager):
                 **config["model"],
                 "attention_backend": args.attention_backend,
                 "activation_type": args.activation_type,
+                "use_gradient_checkpointing": bool(args.use_gradient_checkpointing),
             }
         )
 
@@ -256,12 +267,12 @@ def initialize_models(args, config, device, checkpoint_manager):
         )
         compressor, expander, flow_processor, text_encoder = create_models_from_config(model_config)
 
-        # Apply gradient checkpointing if requested
-        if args.use_gradient_checkpointing:
-            if hasattr(compressor, "use_gradient_checkpointing"):
-                compressor.use_gradient_checkpointing = True
-            if hasattr(expander, "use_gradient_checkpointing"):
-                expander.use_gradient_checkpointing = True
+        # Re-apply the merged (CLI over YAML) checkpointing setting to every
+        # model that exposes it, covering versions whose factory path does not
+        # take the flag.
+        for model in (compressor, expander, flow_processor):
+            if hasattr(model, "use_gradient_checkpointing"):
+                model.use_gradient_checkpointing = bool(args.use_gradient_checkpointing)
 
         # Create image encoder separately (not part of factory)
         image_encoder = ImageEncoder(
@@ -617,6 +628,22 @@ def _resolve_mixed_precision(use_fp16: bool, precision: str) -> str:
     return precision
 
 
+def _apply_rocm_workarounds(device):
+    """Disable fused SDPA backends that are broken on the installed ROCm build."""
+    disabled = disable_broken_rocm_sdpa(device)
+    if disabled:
+        print(f"ROCm: disabled broken SDPA backends {disabled}; using MATH fallback")
+
+
+def _maybe_compile_activations(args):
+    """Compile the Padé activation math when ``compile_activations`` is set."""
+    if getattr(args, "compile_activations", False):
+        from fluxflow.models.pade_activation import compile_pade_activations
+
+        compile_pade_activations()
+        print("Compiling Padé activations with torch.compile (first steps are slower)")
+
+
 def train_pipeline(args, config):
     """
     Pipeline-based training loop for FluxFlow.
@@ -658,6 +685,8 @@ def train_pipeline(args, config):
         )
 
     device = accelerator.device
+    _apply_rocm_workarounds(device)
+    _maybe_compile_activations(args)
 
     # Initialize checkpoint manager
     checkpoint_manager = CheckpointManager(
@@ -836,6 +865,8 @@ def train_legacy(args):
     torch.manual_seed(manualSeed)
 
     device = accelerator.device
+    _apply_rocm_workarounds(device)
+    _maybe_compile_activations(args)
     channels = args.channels
 
     # Load tokenizer (uses cache if present, otherwise downloads)
@@ -1784,6 +1815,13 @@ def parse_args():
         help="Use gradient checkpointing in VAE (saves VRAM during forward, costs VRAM during backward)",
     )
     parser.add_argument(
+        "--compile_activations",
+        action="store_true",
+        default=False,
+        help="torch.compile the Padé activation math (fuses ~10 elementwise ops per call; "
+        "one-time compile cost at startup)",
+    )
+    parser.add_argument(
         "--attention_backend",
         type=str,
         choices=["einsum", "sdpa"],
@@ -2132,6 +2170,11 @@ def parse_args():
                 args.dataloader_retry_delay = config["data"]["dataloader_retry_delay"]
 
         if "training" in config:
+            if (
+                "compile_activations" in config["training"]
+                and "compile_activations" not in cli_provided
+            ):
+                args.compile_activations = config["training"]["compile_activations"]
             if "n_epochs" in config["training"] and "n_epochs" not in cli_provided:
                 args.n_epochs = config["training"]["n_epochs"]
             if "batch_size" in config["training"] and "batch_size" not in cli_provided:

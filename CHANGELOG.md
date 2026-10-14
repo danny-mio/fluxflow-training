@@ -36,6 +36,12 @@ Not yet released — work in progress toward v0.10.0.
   existing `batch_size`/`workers` per-dataset override convention.
 
 ### Added
+- **`--compile_activations` / `training.compile_activations`** (default
+  `false`): calls `fluxflow.models.pade_activation.compile_pade_activations()`
+  at startup. ~17% faster VAE training measured on gfx1151 with
+  `activation_type: pade`; no effect on Bezier models. Dynamo's internal
+  "`.grad` of a non-leaf Tensor" warning is exempted from the
+  UserWarning-as-error filter so compilation can trace.
 - **`--precision {fp16,bf16}` / `training.precision` config key** (default
   `fp16`, only consulted when `use_fp16`/`--use_fp16` is true): opt-in bf16
   mixed precision, an immediate mitigation for the fp16 NaN/Inf crash the VAE
@@ -120,6 +126,11 @@ Not yet released — work in progress toward v0.10.0.
   override); default unchanged.
 
 ### Changed
+- Random-latent loss now runs its extra decode/re-encode under the same
+  autocast as the main reconstruction path (was fp32; ~15% faster VAE steps).
+- The per-step `empty_cache()` before the generator backward now only runs
+  when free device memory is below 15%; unconditional release forced the
+  backward to re-allocate every block from the driver.
 - **Flow trainer text contract**: pooled `[B, D]` text vectors are replaced
   by `(text_seq [B, T_txt, D], text_mask [B, T_txt])`. The trainer detects
   the active model version and dispatches to the legacy code path for v060
@@ -161,6 +172,17 @@ Both legacy keys still load via `_parse_step_config` and emit a
 `DeprecationWarning`. The new key wins when both are present.
 
 ### Fixed
+- `use_gradient_checkpointing: false` was silently ignored on the factory
+  path (the core factory defaulted it to `True` and `train.py` only ever set
+  `True`); it now applies to the compressor, expander, and flow processor.
+- ROCm 7.16 nightly / gfx1151: AOTriton flash/mem-efficient SDPA kernels
+  raise `hipErrorInvalidValue` (surfacing at `MultiheadAttention.out_proj`).
+  Startup now probes each fused backend and disables broken ones, falling
+  back to MATH (`training/rocm_compat.py`).
+- ROCm 7.16 nightly / gfx1151: MIOpen's GEMM im2col kernel fails HIPRTC
+  compilation, so every R1 step's discriminator update was skipped in FAST
+  find mode. R1 steps now run the discriminator on native conv kernels
+  (`r1_conv_context`); other steps keep MIOpen.
 - **Mid-training resume can silently zero FiLM conditioning on a pre-Fix-B
   checkpoint**: fluxflow-core's `FluxTransformerBlock_v100` gained zero-init
   `film_text_scale`/`film_time_scale` params so dual FiLM starts as an exact

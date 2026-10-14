@@ -30,6 +30,7 @@ from .losses import (
     kl_standard_normal,
     r1_penalty,
 )
+from .rocm_compat import r1_conv_context
 from .schedulers import cosine_anneal_beta
 from .utils import EMA, FloatBuffer
 
@@ -99,10 +100,22 @@ def compute_grad_norm(parameters):
     return total_norm**0.5
 
 
-def _empty_cache(device: torch.device) -> None:
-    """Free cached memory for the current device."""
+# Free-memory fraction below which _empty_cache_if_low_memory releases the
+# CUDA/ROCm allocator cache. Above it, releasing only forces the next backward
+# to re-hipMalloc/cudaMalloc every block (~60% of step CPU time on Strix Halo).
+_LOW_MEMORY_FREE_FRACTION = 0.15
+
+
+def _empty_cache_if_low_memory(device: torch.device) -> None:
+    """Free cached memory for the current device when it is running low.
+
+    MPS always releases (no cheap free-memory query). CUDA/ROCm only release
+    when free device memory drops below ``_LOW_MEMORY_FREE_FRACTION``.
+    """
     if device.type == "cuda":
-        torch.cuda.empty_cache()
+        free, total = torch.cuda.mem_get_info(device)
+        if free < _LOW_MEMORY_FREE_FRACTION * total:
+            torch.cuda.empty_cache()
     elif device.type == "mps":
         torch.mps.empty_cache()
 
@@ -1167,8 +1180,9 @@ class VAETrainer:
         if do_r1:
             real_noisy_base = real_noisy_base.detach().requires_grad_(True)
 
-        # Real images
-        with self._autocast():
+        # Real images. On ROCm R1 steps the real forward, R1 term and backward
+        # run on native conv kernels (see r1_conv_context).
+        with r1_conv_context(do_r1), self._autocast():
             real_logits = self.discriminator(real_noisy_base, disc_ctx)
         self._maybe_save_disc_logit_snapshot(real_logits, global_step)
 
@@ -1176,7 +1190,8 @@ class VAETrainer:
 
         # R1 gradient penalty (periodic) - only on real images
         if do_r1:
-            r1 = r1_penalty(real_noisy_base, real_logits)
+            with r1_conv_context(do_r1):
+                r1 = r1_penalty(real_noisy_base, real_logits)
             d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
 
         # Fake images - use same context logic as real images
@@ -1222,7 +1237,8 @@ class VAETrainer:
             return {"d_loss": 0.0, "_optimizer_stepped": False}
 
         try:
-            self.accelerator.backward(d_img_loss)
+            with r1_conv_context(do_r1):
+                self.accelerator.backward(d_img_loss)
         except RuntimeError as exc:
             if "miopen" in str(exc).lower():
                 print(
@@ -1491,7 +1507,9 @@ class VAETrainer:
                     # Critical: no_grad so no gradient from this loss reaches the
                     # expander's parameters, regardless of whatever else is
                     # training the expander this same step.
-                    with torch.no_grad():
+                    # Autocast like the main reconstruction path: in fp32 this
+                    # extra full-res decode + encode fwd/bwd dominated step time.
+                    with torch.no_grad(), self._autocast():
                         synth_img = self.expander(packed_synth, use_context=True)
                         # A random (z, ctx) pair is off-manifold for the expander
                         # (no encoder ever produces this exact combination, and
@@ -1504,9 +1522,11 @@ class VAETrainer:
                         # pipeline. Clamp to that same domain before re-encoding
                         # instead of letting extreme values overflow into NaN
                         # inside the compressor's conv/norm stack.
-                        synth_img = synth_img.clamp(-1.0, 1.0)
+                        synth_img = synth_img.float().clamp(-1.0, 1.0)
 
-                    packed_rec_synth, _, _ = self.compressor(synth_img, training=True)
+                    with self._autocast():
+                        packed_rec_synth, _, _ = self.compressor(synth_img, training=True)
+                    packed_rec_synth = packed_rec_synth.float()
                     total_dim_rec = packed_rec_synth.size(-1)
                     half = total_dim_rec // 2
                     if total_dim_rec % 2 == 0 and half > 0:
@@ -1802,9 +1822,9 @@ class VAETrainer:
                 "_optimizer_stepped": False,  # Signal that optimizer was not stepped
             }
 
-        # CRITICAL: Clear cache before backward to prevent OOM
+        # Clear cache before backward to prevent OOM when memory is tight.
         # Gradient checkpointing in VAE causes memory spikes during backward pass
-        _empty_cache(real_imgs.device)
+        _empty_cache_if_low_memory(real_imgs.device)
 
         # Gradient accumulation: scale before backward (standard grad-accum),
         # matching FlowTrainer's total_loss / gradient_accumulation_steps.

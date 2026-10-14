@@ -122,6 +122,7 @@ class TestTrainScriptArgumentParsing:
             assert args.kl_beta == 0.0001
             assert args.max_text_length == 32
             assert args.kl_warmup_steps == 5000
+            assert args.compile_activations is False
 
     def test_parse_args_custom_hyperparameters(self):
         """Test custom hyperparameters are parsed."""
