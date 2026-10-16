@@ -36,6 +36,15 @@ Not yet released — work in progress toward v0.10.0.
   existing `batch_size`/`workers` per-dataset override convention.
 
 ### Added
+- **Latent cycle loss** (`train_latent_cycle`, `lambda_latent_cycle`,
+  `latent_cycle_*`; default off): image-space G.E idempotence. Compressor
+  re-encodes an expander output; the frozen expander (no weight gradient)
+  must decode it back (L1 + optional LPIPS). Targets: detached main-path
+  recon (C1a) and/or fresh posterior resample (C1b,
+  `latent_cycle_posterior_frac`). Off-manifold samples are dropped, not
+  clamped (`latent_cycle_reject_*`). Fixed weight with start/warmup, outside
+  adaptive weighting; cost knobs `every`, `batch_frac`, `crop_frac`. Logs
+  `latent_cycle_loss`, `latent_cycle_reject_frac`.
 - **`--compile_activations` / `training.compile_activations`** (default
   `false`): calls `fluxflow.models.pade_activation.compile_pade_activations()`
   at startup. ~17% faster VAE training measured on gfx1151 with
@@ -126,8 +135,6 @@ Not yet released — work in progress toward v0.10.0.
   override); default unchanged.
 
 ### Changed
-- Random-latent loss now runs its extra decode/re-encode under the same
-  autocast as the main reconstruction path (was fp32; ~15% faster VAE steps).
 - The per-step `empty_cache()` before the generator backward now only runs
   when free device memory is below 15%; unconditional release forced the
   backward to re-allocate every block from the driver.
@@ -171,7 +178,19 @@ Not yet released — work in progress toward v0.10.0.
 Both legacy keys still load via `_parse_step_config` and emit a
 `DeprecationWarning`. The new key wins when both are present.
 
+### Removed
+- Random-latent loss (`train_random_latent`, `lambda_random_latent_z/ctx`):
+  latent-space MSE/cosine against random N(0,I) targets was ill-posed.
+  Replaced by the latent cycle loss. Old keys are silently ignored by the
+  step parser -- remove them from configs and set `train_latent_cycle`.
+  Checkpoints trained with it may carry shifted latent/ctx statistics, and
+  resuming one also changes effective `ctx_shrinkage` (see Fixed).
+
 ### Fixed
+- `ctx_shrinkage` regularized the wrong tensor whenever a secondary
+  compressor forward ran inside the generator step: the capture hook
+  overwrote the real-image ctx features. Secondary forwards now run with
+  capture suspended.
 - `use_gradient_checkpointing: false` was silently ignored on the factory
   path (the core factory defaulted it to `True` and `train.py` only ever set
   `True`); it now applies to the compressor, expander, and flow processor.

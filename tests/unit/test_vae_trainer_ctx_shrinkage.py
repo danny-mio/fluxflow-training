@@ -12,6 +12,7 @@ has no ctx_zinject_norm, so the new path stays a no-op there).
 
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -284,3 +285,56 @@ class TestCtxShrinkageSchedule:
         out = compute_ctx_shrinkage(torch.randn(4, 8, 4, 4), alpha=0.0)
         assert out.item() == 0.0
         assert not out.requires_grad
+
+
+class _InputDependentCtxCompressor(_CompressorWithCtxNorm):
+    """ctx fed to ctx_zinject_norm depends on the input, so captures are distinguishable."""
+
+    def forward(self, x, training=False):
+        B = x.size(0)
+        ctx = x.mean(dim=(1, 2, 3)).view(B, 1, 1, 1).expand(B, self.d_model, self.H, self.W)
+        _ = self.ctx_zinject_norm(ctx.contiguous())
+        return torch.zeros(B, 1, 2 * self.d_model)
+
+
+class TestCtxCaptureSuspension:
+    """Secondary compressor forwards must not overwrite the real-image ctx cache."""
+
+    def test_secondary_forward_does_not_overwrite_cache(self):
+        comp = _InputDependentCtxCompressor()
+        trainer = _build_trainer(comp, ctx_shrinkage_weight=0.001)
+        comp(torch.full((2, 3, 8, 8), 1.0))
+        real_cache = trainer._ctx_features_cache
+        real_clone = real_cache.clone()
+
+        with trainer._suspend_ctx_capture():
+            comp(torch.full((2, 3, 8, 8), 5.0))
+
+        assert trainer._ctx_features_cache is real_cache
+        assert torch.equal(trainer._ctx_features_cache, real_clone)
+
+    def test_capture_resumes_after_context(self):
+        comp = _InputDependentCtxCompressor()
+        trainer = _build_trainer(comp, ctx_shrinkage_weight=0.001)
+        with trainer._suspend_ctx_capture():
+            comp(torch.full((2, 3, 8, 8), 5.0))
+        assert trainer._ctx_features_cache is None
+        comp(torch.full((2, 3, 8, 8), 2.0))
+        assert torch.allclose(trainer._ctx_features_cache, torch.full((2, 8, 4, 4), 2.0))
+
+    def test_capture_resumes_after_exception_and_nesting(self):
+        comp = _InputDependentCtxCompressor()
+        trainer = _build_trainer(comp, ctx_shrinkage_weight=0.001)
+        with pytest.raises(RuntimeError):
+            with trainer._suspend_ctx_capture():
+                with trainer._suspend_ctx_capture():
+                    pass
+                assert trainer._ctx_capture_enabled is False
+                raise RuntimeError("boom")
+        assert trainer._ctx_capture_enabled is True
+
+    def test_suspend_is_harmless_without_hook(self):
+        trainer = _build_trainer(_InputDependentCtxCompressor(), ctx_shrinkage_weight=0.0)
+        with trainer._suspend_ctx_capture():
+            pass
+        assert trainer._ctx_capture_enabled is True

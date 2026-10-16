@@ -60,6 +60,8 @@ training:
         ctx_shrinkage_warmup_start_step: 5000
         ctx_shrinkage_warmup_steps: 5000
         lambda_ctx_aux: 0.01           # aux ctx vs z_tokens (VAE only)
+        train_latent_cycle: false      # G.E idempotence; see config.example.yaml latent_cycle_*
+        # logs: latent_cycle_loss (unweighted), latent_cycle_reject_frac
 
       - name: flow_cfg
         train_diff: true

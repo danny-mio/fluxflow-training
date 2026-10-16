@@ -175,14 +175,9 @@ def plot_losses(
             "linestyle": "--",
         },
         "generator_loss": {"label": "Generator Loss", "color": "#9467bd", "linestyle": "--"},
-        "random_latent_z_loss": {
-            "label": "Random-Latent Z Loss",
+        "latent_cycle_loss": {
+            "label": "Latent Cycle Loss",
             "color": "#e377c2",
-            "linestyle": "--",
-        },
-        "random_latent_ctx_loss": {
-            "label": "Random-Latent Ctx Loss",
-            "color": "#7f7f7f",
             "linestyle": "--",
         },
     }

@@ -176,16 +176,30 @@ training:
   # VAETrainer with no config exposure. Default true (unchanged behavior).
   train_ctx_aux: true
 
-  # v0.10.0: random-latent compressor training (independently gated VAE loss).
-  # Samples a random packed latent, decodes it via the frozen (no-grad) expander,
-  # and trains the compressor to re-encode the synthetic image back into that
-  # same latent. Assumes the expander is already well-trained. Runs standalone
-  # (all other train_* flags off) or alongside the other VAE losses. Default off.
-  train_random_latent: false
-  # z uses MSE against the random z target; ctx uses cosine similarity
-  # (direction-only, avoids fighting ctx_shrinkage_weight's magnitude suppression).
-  lambda_random_latent_z: 1.0
-  lambda_random_latent_ctx: 1.0
+  # v0.10.0: latent cycle loss (image-space G.E idempotence). The compressor
+  # re-encodes an expander output; the frozen expander must decode it back to the
+  # same image. Only the compressor gets gradient. Default off.
+  train_latent_cycle: false
+  # Fixed weight (not adaptive). Effective weight is 0 before start_step, then a
+  # cosine ramp 0 -> lambda over warmup_steps.
+  lambda_latent_cycle: 1.0
+  latent_cycle_start_step: 0
+  latent_cycle_warmup_steps: 0
+  # LPIPS term weight inside the cycle loss (needs use_lpips / lpips available).
+  latent_cycle_lpips_weight: 0.0
+  # Compute every N steps (off-cadence steps add no forwards).
+  latent_cycle_every: 1
+  # Cost knobs: first ceil(frac*B) samples; random pixel crop (sizes/offsets
+  # aligned to 2**downscales, same window for source and target).
+  latent_cycle_batch_frac: 1.0
+  latent_cycle_crop_frac: 1.0
+  # Share of the cycle batch sourced from a fresh posterior sample of real
+  # images (rest reuses the detached main-path reconstruction).
+  latent_cycle_posterior_frac: 0.0
+  # Off-manifold guard (no clamping): drop a sample when more than reject_frac of
+  # its pixels have |x| > reject_range.
+  latent_cycle_reject_range: 1.05
+  latent_cycle_reject_frac: 0.01
 
   # v0.10.0: relative weight of context-dim v-prediction loss in FlowTrainer.
   # Context dims are now 50% of packed width (128/256 vs ~4% in v0.8.0).

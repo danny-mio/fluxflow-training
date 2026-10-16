@@ -141,10 +141,24 @@ class PipelineStepConfig:
     train_coarseness: bool = True
     train_diff: bool = False
     train_diff_full: bool = False
-    # v0.10.0: random-latent compressor training (independently gated VAE loss).
-    # Trains the compressor to re-encode an expander-decoded random latent back
-    # into that same latent. Runs standalone or alongside the other VAE losses.
-    train_random_latent: bool = False
+    # v0.10.0: latent cycle loss (image-space G.E idempotence). The compressor
+    # re-encodes an expander output; the (frozen) expander must decode it back
+    # to the same image. Only the compressor receives gradient.
+    train_latent_cycle: bool = False
+    # Fixed weight (outside adaptive weighting); ramps 0 -> lambda over
+    # latent_cycle_warmup_steps (cosine) once latent_cycle_start_step is reached.
+    lambda_latent_cycle: float = 1.0
+    latent_cycle_lpips_weight: float = 0.0
+    latent_cycle_start_step: int = 0
+    latent_cycle_warmup_steps: int = 0
+    latent_cycle_every: int = 1  # compute only when global_step % every == 0
+    latent_cycle_batch_frac: float = 1.0  # first ceil(frac * B) samples, in (0, 1]
+    latent_cycle_crop_frac: float = 1.0  # random pixel crop (aligned to 2**downscales), (0, 1]
+    latent_cycle_posterior_frac: float = 0.0  # share of samples from a fresh posterior, [0, 1]
+    # Off-manifold guard: drop a sample when more than reject_frac of its pixels
+    # have |x| > reject_range.
+    latent_cycle_reject_range: float = 1.05
+    latent_cycle_reject_frac: float = 0.01
     # v0.10.0: gate for the ctx_aux_loss term (MSE(ctx_tokens_half, stop_grad(z_tokens_half))).
     # Was previously hardcoded True in VAETrainer with no config exposure. Default
     # unchanged (True) so existing configs keep current behavior.
@@ -216,12 +230,6 @@ class PipelineStepConfig:
     # v0.10.0: auxiliary context reconstruction loss weight (stop-grad MSE vs z_tokens).
     # Applied only during VAE training. Default 0.01 per plan §4.1 / DP-1 decision.
     lambda_ctx_aux: float = 0.01
-    # v0.10.0: random-latent compressor training loss weights. Only active when
-    # train_random_latent=True. z uses MSE against the random z target;
-    # ctx uses cosine similarity (direction-only, since ctx magnitude is
-    # separately suppressed by ctx_shrinkage_weight). Default 1.0 each.
-    lambda_random_latent_z: float = 1.0
-    lambda_random_latent_ctx: float = 1.0
     # v0.10.0: relative weight of context-dim v-prediction loss vs VAE-dim loss in FlowTrainer.
     # Default 0.5 per plan §3.8.11 DP-1 decision from user.
     ctx_loss_weight: float = 0.5
@@ -459,6 +467,8 @@ class PipelineConfigValidator:
                 f"Step '{step_name}' (step {step_index + 1}): max_steps must be > 0 if specified"
             )
 
+        self._validate_latent_cycle(step, step_name, step_index)
+
         # Validate freeze/unfreeze
         self._validate_freeze_unfreeze(step, step_name, step_index, training_modes)
 
@@ -468,6 +478,34 @@ class PipelineConfigValidator:
 
         # Validate transition criteria
         self._validate_transition(step.transition_on, step_name, step_index)
+
+    def _validate_latent_cycle(
+        self, step: PipelineStepConfig, step_name: str, step_index: int
+    ) -> None:
+        """Validate latent_cycle_* ranges."""
+        # name -> (lower bound, lower inclusive, upper bound or None, upper inclusive)
+        rules = {
+            "lambda_latent_cycle": (0, True, None, True),
+            "latent_cycle_lpips_weight": (0, True, None, True),
+            "latent_cycle_start_step": (0, True, None, True),
+            "latent_cycle_warmup_steps": (0, True, None, True),
+            "latent_cycle_every": (1, True, None, True),
+            "latent_cycle_batch_frac": (0, False, 1, True),
+            "latent_cycle_crop_frac": (0, False, 1, True),
+            "latent_cycle_posterior_frac": (0, True, 1, True),
+            "latent_cycle_reject_range": (0, False, None, True),
+            "latent_cycle_reject_frac": (0, True, 1, True),
+        }
+        for key, (lo, lo_incl, hi, hi_incl) in rules.items():
+            val = getattr(step, key)
+            ok = (val >= lo if lo_incl else val > lo) and (hi is None or val <= hi)
+            if not ok:
+                lo_br = "[" if lo_incl else "("
+                hi_s = "inf)" if hi is None else f"{hi}]"
+                self.errors.append(
+                    f"Step '{step_name}' (step {step_index + 1}): "
+                    f"{key}={val} out of range {lo_br}{lo}, {hi_s}"
+                )
 
     def _validate_freeze_unfreeze(
         self,
@@ -758,7 +796,17 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         train_coarseness=step_dict.get("train_coarseness", True),
         train_diff=step_dict.get("train_diff", False),
         train_diff_full=step_dict.get("train_diff_full", False),
-        train_random_latent=step_dict.get("train_random_latent", False),
+        train_latent_cycle=step_dict.get("train_latent_cycle", False),
+        lambda_latent_cycle=step_dict.get("lambda_latent_cycle", 1.0),
+        latent_cycle_lpips_weight=step_dict.get("latent_cycle_lpips_weight", 0.0),
+        latent_cycle_start_step=step_dict.get("latent_cycle_start_step", 0),
+        latent_cycle_warmup_steps=step_dict.get("latent_cycle_warmup_steps", 0),
+        latent_cycle_every=step_dict.get("latent_cycle_every", 1),
+        latent_cycle_batch_frac=step_dict.get("latent_cycle_batch_frac", 1.0),
+        latent_cycle_crop_frac=step_dict.get("latent_cycle_crop_frac", 1.0),
+        latent_cycle_posterior_frac=step_dict.get("latent_cycle_posterior_frac", 0.0),
+        latent_cycle_reject_range=step_dict.get("latent_cycle_reject_range", 1.05),
+        latent_cycle_reject_frac=step_dict.get("latent_cycle_reject_frac", 0.01),
         train_ctx_aux=step_dict.get("train_ctx_aux", True),
         use_ema=step_dict.get("use_ema", True),
         cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
@@ -795,8 +843,6 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         discriminator_update_freq=step_dict.get("discriminator_update_freq", 1),
         discriminator_use_spectral_norm=step_dict.get("discriminator_use_spectral_norm", True),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
-        lambda_random_latent_z=step_dict.get("lambda_random_latent_z", 1.0),
-        lambda_random_latent_ctx=step_dict.get("lambda_random_latent_ctx", 1.0),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),
         disc_logit_diagnostic_interval=step_dict.get("disc_logit_diagnostic_interval", 0),

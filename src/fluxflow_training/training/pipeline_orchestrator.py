@@ -1149,10 +1149,18 @@ class TrainingPipelineOrchestrator:
                 mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
                 lambda_ctx_aux=step.lambda_ctx_aux if hasattr(step, "lambda_ctx_aux") else 0.01,
                 train_ctx_aux=getattr(step, "train_ctx_aux", True),
-                # v0.10.0: random-latent compressor training (independent VAE loss).
-                train_random_latent=getattr(step, "train_random_latent", False),
-                lambda_random_latent_z=getattr(step, "lambda_random_latent_z", 1.0),
-                lambda_random_latent_ctx=getattr(step, "lambda_random_latent_ctx", 1.0),
+                # v0.10.0: latent cycle loss (image-space G.E idempotence).
+                train_latent_cycle=getattr(step, "train_latent_cycle", False),
+                lambda_latent_cycle=getattr(step, "lambda_latent_cycle", 1.0),
+                latent_cycle_lpips_weight=getattr(step, "latent_cycle_lpips_weight", 0.0),
+                latent_cycle_start_step=getattr(step, "latent_cycle_start_step", 0),
+                latent_cycle_warmup_steps=getattr(step, "latent_cycle_warmup_steps", 0),
+                latent_cycle_every=getattr(step, "latent_cycle_every", 1),
+                latent_cycle_batch_frac=getattr(step, "latent_cycle_batch_frac", 1.0),
+                latent_cycle_crop_frac=getattr(step, "latent_cycle_crop_frac", 1.0),
+                latent_cycle_posterior_frac=getattr(step, "latent_cycle_posterior_frac", 0.0),
+                latent_cycle_reject_range=getattr(step, "latent_cycle_reject_range", 1.05),
+                latent_cycle_reject_frac=getattr(step, "latent_cycle_reject_frac", 0.01),
                 ctx_input_dim=_ctx_input_dim,
                 # Additive opt-in efficiency knob; default 1 preserves current behavior.
                 discriminator_update_freq=getattr(step, "discriminator_update_freq", 1),
@@ -1668,8 +1676,8 @@ class TrainingPipelineOrchestrator:
                 #   (active only when their respective weights are > 0).
                 ctx_shrinkage_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 ctx_aux_errors = FloatBuffer(max(args.log_interval * 2, 10))
-                random_latent_z_errors = FloatBuffer(max(args.log_interval * 2, 10))
-                random_latent_ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                latent_cycle_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                cycle_reject_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 # SPADE gamma/beta drift from init (0 at init) — first real signal of
                 # whether SPADE conditioning is learning anything.
                 spade_gamma_drift_errors = FloatBuffer(max(args.log_interval * 2, 10))
@@ -1751,12 +1759,10 @@ class TrainingPipelineOrchestrator:
                                 ctx_shrinkage_errors.add_item(vae_losses["ctx_shrinkage_loss"])
                             if "ctx_aux_loss" in vae_losses:
                                 ctx_aux_errors.add_item(vae_losses["ctx_aux_loss"])
-                            if "random_latent_z_loss" in vae_losses:
-                                random_latent_z_errors.add_item(vae_losses["random_latent_z_loss"])
-                            if "random_latent_ctx_loss" in vae_losses:
-                                random_latent_ctx_errors.add_item(
-                                    vae_losses["random_latent_ctx_loss"]
-                                )
+                            if "latent_cycle_loss" in vae_losses:
+                                latent_cycle_errors.add_item(vae_losses["latent_cycle_loss"])
+                            if "latent_cycle_reject_frac" in vae_losses:
+                                cycle_reject_errors.add_item(vae_losses["latent_cycle_reject_frac"])
                             if "spade_gamma_drift" in vae_losses:
                                 spade_gamma_drift_errors.add_item(vae_losses["spade_gamma_drift"])
                             if "spade_beta_drift" in vae_losses:
@@ -1873,12 +1879,10 @@ class TrainingPipelineOrchestrator:
                                 log_msg += f" | CtxShrink: {ctx_shrinkage_errors.average:.4f}"
                             if len(ctx_aux_errors._items) > 0:
                                 log_msg += f" | CtxAux: {ctx_aux_errors.average:.4f}"
-                            if len(random_latent_z_errors._items) > 0:
-                                log_msg += f" | RandomLatentZ: {random_latent_z_errors.average:.4f}"
-                            if len(random_latent_ctx_errors._items) > 0:
-                                log_msg += (
-                                    f" | RandomLatentCtx: {random_latent_ctx_errors.average:.4f}"
-                                )
+                            if len(latent_cycle_errors._items) > 0:
+                                log_msg += f" | LatentCycle: {latent_cycle_errors.average:.4f}"
+                            if len(cycle_reject_errors._items) > 0:
+                                log_msg += f" | CycleReject: {cycle_reject_errors.average:.2f}"
                             # First real signal of whether SPADE conditioning is learning.
                             if len(spade_gamma_drift_errors._items) > 0:
                                 log_msg += (
@@ -1929,10 +1933,10 @@ class TrainingPipelineOrchestrator:
                                 metrics["ctx_shrinkage_loss"] = ctx_shrinkage_errors.average
                             if len(ctx_aux_errors._items) > 0:
                                 metrics["ctx_aux_loss"] = ctx_aux_errors.average
-                            if len(random_latent_z_errors._items) > 0:
-                                metrics["random_latent_z_loss"] = random_latent_z_errors.average
-                            if len(random_latent_ctx_errors._items) > 0:
-                                metrics["random_latent_ctx_loss"] = random_latent_ctx_errors.average
+                            if len(latent_cycle_errors._items) > 0:
+                                metrics["latent_cycle_loss"] = latent_cycle_errors.average
+                            if len(cycle_reject_errors._items) > 0:
+                                metrics["latent_cycle_reject_frac"] = cycle_reject_errors.average
                             if len(spade_gamma_drift_errors._items) > 0:
                                 metrics["spade_gamma_drift"] = spade_gamma_drift_errors.average
                                 metrics["spade_beta_drift"] = spade_beta_drift_errors.average

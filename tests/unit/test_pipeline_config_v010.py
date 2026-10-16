@@ -6,6 +6,8 @@ for the legacy ``kl_beta`` / ``kl_warmup_steps`` field names.
 
 import warnings
 
+import pytest
+
 from fluxflow_training.training.pipeline_config import (
     PipelineStepConfig,
     parse_pipeline_config,
@@ -211,56 +213,96 @@ class TestDirectConstructionAcceptsNewKeys:
         assert step.null_prompt == "nothing"
 
 
-class TestRandomLatentConfigDefaults:
-    """Random-latent compressor training (independently gated VAE loss)."""
+_CYCLE_DEFAULTS = {
+    "train_latent_cycle": False,
+    "lambda_latent_cycle": 1.0,
+    "latent_cycle_lpips_weight": 0.0,
+    "latent_cycle_start_step": 0,
+    "latent_cycle_warmup_steps": 0,
+    "latent_cycle_every": 1,
+    "latent_cycle_batch_frac": 1.0,
+    "latent_cycle_crop_frac": 1.0,
+    "latent_cycle_posterior_frac": 0.0,
+    "latent_cycle_reject_range": 1.05,
+    "latent_cycle_reject_frac": 0.01,
+}
+_CYCLE_CUSTOM = {
+    "train_latent_cycle": True,
+    "lambda_latent_cycle": 2.5,
+    "latent_cycle_lpips_weight": 0.3,
+    "latent_cycle_start_step": 100,
+    "latent_cycle_warmup_steps": 50,
+    "latent_cycle_every": 4,
+    "latent_cycle_batch_frac": 0.5,
+    "latent_cycle_crop_frac": 0.75,
+    "latent_cycle_posterior_frac": 0.25,
+    "latent_cycle_reject_range": 1.2,
+    "latent_cycle_reject_frac": 0.05,
+}
 
-    def test_train_random_latent_default(self):
+
+class TestLatentCycleConfig:
+    """Latent cycle (image-space G.E idempotence) config."""
+
+    def test_defaults(self):
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.train_random_latent is False
+        for key, val in _CYCLE_DEFAULTS.items():
+            assert getattr(step, key) == val, key
 
-    def test_lambda_random_latent_z_default(self):
-        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.lambda_random_latent_z == 1.0
+    def test_yaml_defaults_when_absent(self):
+        cfg = parse_pipeline_config(_wrap_step({"name": "v", "n_epochs": 1, "train_vae": True}))
+        for key, val in _CYCLE_DEFAULTS.items():
+            assert getattr(cfg.steps[0], key) == val, key
 
-    def test_lambda_random_latent_ctx_default(self):
-        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.lambda_random_latent_ctx == 1.0
+    def test_yaml_values_load(self):
+        step_dict = {"name": "v", "n_epochs": 1, "train_vae": True, **_CYCLE_CUSTOM}
+        cfg = parse_pipeline_config(_wrap_step(step_dict))
+        for key, val in _CYCLE_CUSTOM.items():
+            assert getattr(cfg.steps[0], key) == val, key
 
-    def test_random_latent_keys_load_from_yaml(self):
-        cfg_dict = _wrap_step(
-            {
-                "name": "vae",
-                "n_epochs": 1,
-                "train_vae": True,
-                "train_random_latent": True,
-                "lambda_random_latent_z": 2.5,
-                "lambda_random_latent_ctx": 0.5,
-            }
-        )
-        cfg = parse_pipeline_config(cfg_dict)
-        assert cfg.steps[0].train_random_latent is True
-        assert cfg.steps[0].lambda_random_latent_z == 2.5
-        assert cfg.steps[0].lambda_random_latent_ctx == 0.5
+    def test_direct_construction(self):
+        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True, **_CYCLE_CUSTOM)
+        for key, val in _CYCLE_CUSTOM.items():
+            assert getattr(step, key) == val, key
 
-    def test_random_latent_keys_load_from_yaml_default_when_absent(self):
-        cfg_dict = _wrap_step({"name": "vae", "n_epochs": 1, "train_vae": True})
-        cfg = parse_pipeline_config(cfg_dict)
-        assert cfg.steps[0].train_random_latent is False
-        assert cfg.steps[0].lambda_random_latent_z == 1.0
-        assert cfg.steps[0].lambda_random_latent_ctx == 1.0
+    @pytest.mark.parametrize(
+        "key,bad",
+        [
+            ("lambda_latent_cycle", -0.1),
+            ("latent_cycle_lpips_weight", -1.0),
+            ("latent_cycle_start_step", -1),
+            ("latent_cycle_warmup_steps", -1),
+            ("latent_cycle_every", 0),
+            ("latent_cycle_batch_frac", 0.0),
+            ("latent_cycle_batch_frac", 1.5),
+            ("latent_cycle_crop_frac", 0.0),
+            ("latent_cycle_crop_frac", 1.01),
+            ("latent_cycle_posterior_frac", -0.1),
+            ("latent_cycle_posterior_frac", 1.1),
+            ("latent_cycle_reject_range", 0.0),
+            ("latent_cycle_reject_frac", -0.1),
+            ("latent_cycle_reject_frac", 1.1),
+        ],
+    )
+    def test_invalid_values_rejected(self, key, bad):
+        step_dict = {"name": "v", "n_epochs": 1, "train_vae": True, key: bad}
+        with pytest.raises(ValueError, match=key):
+            parse_pipeline_config(_wrap_step(step_dict))
 
-    def test_direct_construction_with_random_latent_keys(self):
-        step = PipelineStepConfig(
-            name="s",
-            n_epochs=1,
-            train_vae=True,
-            train_random_latent=True,
-            lambda_random_latent_z=3.0,
-            lambda_random_latent_ctx=4.0,
-        )
-        assert step.train_random_latent is True
-        assert step.lambda_random_latent_z == 3.0
-        assert step.lambda_random_latent_ctx == 4.0
+    @pytest.mark.parametrize(
+        "key,ok",
+        [
+            ("latent_cycle_batch_frac", 1.0),
+            ("latent_cycle_crop_frac", 0.01),
+            ("latent_cycle_posterior_frac", 0.0),
+            ("latent_cycle_posterior_frac", 1.0),
+            ("latent_cycle_reject_frac", 0.0),
+            ("latent_cycle_reject_frac", 1.0),
+        ],
+    )
+    def test_boundary_values_accepted(self, key, ok):
+        step_dict = {"name": "v", "n_epochs": 1, "train_vae": True, key: ok}
+        assert getattr(parse_pipeline_config(_wrap_step(step_dict)).steps[0], key) == ok
 
 
 class TestCtxAuxTrainingGateConfig:

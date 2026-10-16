@@ -155,6 +155,7 @@ lambda_adv: 0.5           # GAN adversarial loss weight
 lambda_lpips: 0.1         # LPIPS perceptual loss weight
 lambda_ctx_aux: 0.01      # Aux stop-grad MSE on ctx vs z_tokens (VAE only)
 ctx_loss_weight: 0.5      # ctx-dim vs VAE-dim v-pred loss weight (FlowTrainer)
+train_latent_cycle: false # Image-space G.E idempotence, frozen expander (VAE only); logs latent_cycle_loss, latent_cycle_reject_frac
 ```
 
 The pre-v0.10.0 `kl_beta` / `kl_warmup_steps` keys still load and emit a

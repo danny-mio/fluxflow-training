@@ -1,5 +1,6 @@
 """Unit tests for TrainingPipelineOrchestrator."""
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -753,50 +754,38 @@ class TestKlZWeightAndCtxShrinkageWiring:
         assert trainers["vae"].ctx_shrinkage_max_mean_sq == 777.0
 
 
-class TestRandomLatentWiring:
-    """train_random_latent / lambda_random_latent_z / lambda_random_latent_ctx
-    must flow from PipelineStepConfig into the VAETrainer(...) construction call."""
+_ORCH_PATH = (
+    Path(__file__).parent.parent.parent
+    / "src"
+    / "fluxflow_training"
+    / "training"
+    / "pipeline_orchestrator.py"
+)
 
-    def test_train_random_latent_passed_to_vae_trainer(self):
-        from pathlib import Path
+_CYCLE_FIELDS = {
+    "train_latent_cycle": (True, False),
+    "lambda_latent_cycle": (2.5, 1.0),
+    "latent_cycle_lpips_weight": (0.3, 0.0),
+    "latent_cycle_start_step": (100, 0),
+    "latent_cycle_warmup_steps": (50, 0),
+    "latent_cycle_every": (4, 1),
+    "latent_cycle_batch_frac": (0.5, 1.0),
+    "latent_cycle_crop_frac": (0.75, 1.0),
+    "latent_cycle_posterior_frac": (0.25, 0.0),
+    "latent_cycle_reject_range": (1.2, 1.05),
+    "latent_cycle_reject_frac": (0.05, 0.01),
+}
 
-        orchestrator_path = (
-            Path(__file__).parent.parent.parent
-            / "src"
-            / "fluxflow_training"
-            / "training"
-            / "pipeline_orchestrator.py"
-        )
-        content = orchestrator_path.read_text()
-        assert 'train_random_latent=getattr(step, "train_random_latent", False)' in content
 
-    def test_lambda_random_latent_z_passed_to_vae_trainer(self):
-        from pathlib import Path
+class TestLatentCycleWiring:
+    """latent cycle fields must flow from PipelineStepConfig into VAETrainer(...)."""
 
-        orchestrator_path = (
-            Path(__file__).parent.parent.parent
-            / "src"
-            / "fluxflow_training"
-            / "training"
-            / "pipeline_orchestrator.py"
-        )
-        content = orchestrator_path.read_text()
-        assert 'lambda_random_latent_z=getattr(step, "lambda_random_latent_z", 1.0)' in content
+    @pytest.mark.parametrize("field", list(_CYCLE_FIELDS))
+    def test_field_passed_to_vae_trainer(self, field):
+        default = _CYCLE_FIELDS[field][1]
+        assert f'{field}=getattr(step, "{field}", {default!r})' in _ORCH_PATH.read_text()
 
-    def test_lambda_random_latent_ctx_passed_to_vae_trainer(self):
-        from pathlib import Path
-
-        orchestrator_path = (
-            Path(__file__).parent.parent.parent
-            / "src"
-            / "fluxflow_training"
-            / "training"
-            / "pipeline_orchestrator.py"
-        )
-        content = orchestrator_path.read_text()
-        assert 'lambda_random_latent_ctx=getattr(step, "lambda_random_latent_ctx", 1.0)' in content
-
-    def test_random_latent_fields_reach_vae_trainer_instance(self):
+    def test_fields_reach_vae_trainer_instance(self):
         from unittest.mock import MagicMock
 
         from fluxflow_training.training.pipeline_config import (
@@ -811,12 +800,10 @@ class TestRandomLatentWiring:
             n_epochs=1,
             train_vae=True,
             gan_training=False,
-            train_random_latent=True,
-            lambda_random_latent_z=2.5,
-            lambda_random_latent_ctx=0.75,
             optimization=OptimizationConfig(
                 optimizers={"vae": OptimizerConfig(lr=1e-4)},
             ),
+            **{k: v[0] for k, v in _CYCLE_FIELDS.items()},
         )
         config = PipelineConfig(steps=[step])
         orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
@@ -840,9 +827,8 @@ class TestRandomLatentWiring:
 
         trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
 
-        assert trainers["vae"].train_random_latent is True
-        assert trainers["vae"].lambda_random_latent_z == 2.5
-        assert trainers["vae"].lambda_random_latent_ctx == 0.75
+        for field, (value, _) in _CYCLE_FIELDS.items():
+            assert getattr(trainers["vae"], field) == value, field
 
 
 class TestCtxAuxWiring:
@@ -1184,40 +1170,23 @@ class TestLoggingOutput:
         # (appears twice: once for console, once for metrics dict)
         assert content.count("if len(vae_errors._items) > 0:") >= 2
 
-    def test_random_latent_loss_wiring(self):
-        """random_latent_z_loss / random_latent_ctx_loss should flow from
-        vae_losses into console log and metrics dict."""
-        from pathlib import Path
+    def test_latent_cycle_loss_wiring(self):
+        """latent_cycle_loss / latent_cycle_reject_frac flow from vae_losses
+        into console log and metrics dict."""
+        content = _ORCH_PATH.read_text()
 
-        orchestrator_path = (
-            Path(__file__).parent.parent.parent
-            / "src"
-            / "fluxflow_training"
-            / "training"
-            / "pipeline_orchestrator.py"
-        )
-        content = orchestrator_path.read_text()
-
-        # Buffers declared
-        assert "random_latent_z_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
-        assert "random_latent_ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
-
-        # Verify random_latent_z_loss / random_latent_ctx_loss are tracked from correct keys
-        assert '"random_latent_z_loss" in vae_losses' in content
-        assert 'random_latent_z_errors.add_item(vae_losses["random_latent_z_loss"])' in content
-        assert '"random_latent_ctx_loss" in vae_losses' in content
-        assert "random_latent_ctx_errors.add_item(" in content
-        assert 'vae_losses["random_latent_ctx_loss"]' in content
-
-        # Verify logged to console
-        assert "if len(random_latent_z_errors._items) > 0:" in content
-        assert 'f" | RandomLatentZ: {random_latent_z_errors.average:.4f}"' in content
-        assert "if len(random_latent_ctx_errors._items) > 0:" in content
-        assert 'f" | RandomLatentCtx: {random_latent_ctx_errors.average:.4f}"' in content
-
-        # Verify logged to metrics
-        assert 'metrics["random_latent_z_loss"] = random_latent_z_errors.average' in content
-        assert 'metrics["random_latent_ctx_loss"] = random_latent_ctx_errors.average' in content
+        assert "latent_cycle_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
+        assert "cycle_reject_errors = FloatBuffer(max(args.log_interval * 2, 10))" in content
+        assert '"latent_cycle_loss" in vae_losses' in content
+        assert 'latent_cycle_errors.add_item(vae_losses["latent_cycle_loss"])' in content
+        assert '"latent_cycle_reject_frac" in vae_losses' in content
+        assert 'cycle_reject_errors.add_item(vae_losses["latent_cycle_reject_frac"])' in content
+        assert "if len(latent_cycle_errors._items) > 0:" in content
+        assert 'f" | LatentCycle: {latent_cycle_errors.average:.4f}"' in content
+        assert 'f" | CycleReject: {cycle_reject_errors.average:.2f}"' in content
+        assert 'metrics["latent_cycle_loss"] = latent_cycle_errors.average' in content
+        assert 'metrics["latent_cycle_reject_frac"] = cycle_reject_errors.average' in content
+        assert "random_latent" not in content
 
 
 class TestCreateStepOptimizersTextEncoderSplit:
