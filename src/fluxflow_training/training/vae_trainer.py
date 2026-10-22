@@ -7,7 +7,7 @@ import json
 import math
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Iterator, Optional, Union
+from typing import Any, Iterator, Optional, Union, cast
 
 import numpy as np
 import torch
@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from fluxflow.models.v100.conditioning import SPADE_v100b
 from fluxflow.utils import get_logger
 from fluxflow.utils.mps import mps_safe_pool2d
+from torch.func import functional_call
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
@@ -1289,6 +1290,16 @@ class VAETrainer:
         out_frac = (x.detach().float().abs() > self.latent_cycle_reject_range).flatten(1)
         return out_frac.float().mean(dim=1) <= self.latent_cycle_reject_frac
 
+    def _frozen_expander_forward(self, packed: torch.Tensor, use_context: bool) -> torch.Tensor:
+        """Expander forward with detached params (frozen, no ``requires_grad`` mutation).
+
+        Grad still flows to ``packed``; gradient checkpointing stays active.
+        """
+        model = self._get_unwrapped_model(self.expander)
+        params = {n: p.detach() for n, p in model.named_parameters()}
+        out = functional_call(model, params, (packed,), {"use_context": use_context})
+        return cast(torch.Tensor, out)
+
     def _compute_latent_cycle(
         self, real_imgs: torch.Tensor, out_imgs_rec: torch.Tensor, global_step: int
     ) -> tuple[torch.Tensor, float]:
@@ -1328,15 +1339,8 @@ class VAETrainer:
 
         with self._autocast(), self._suspend_ctx_capture():
             packed_cycle = self.compressor(x_s, training=True)[0]
-        flags = [(p, p.requires_grad) for p in self.expander.parameters()]
-        try:
-            for p, _ in flags:
-                p.requires_grad_(False)
-            with self._autocast():
-                x_hat = self.expander(packed_cycle, use_context=spade)
-        finally:
-            for p, flag in flags:
-                p.requires_grad_(flag)
+        with self._autocast():
+            x_hat = self._frozen_expander_forward(packed_cycle, spade)
 
         x_hat = x_hat.float()
         if not (torch.isfinite(packed_cycle).all() and torch.isfinite(x_hat).all()):

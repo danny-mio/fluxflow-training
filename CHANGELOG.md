@@ -227,6 +227,10 @@ Both legacy keys still load via `_parse_step_config` and emit a
   resuming one also changes effective `ctx_shrinkage` (see Fixed).
 
 ### Fixed
+- Latent cycle froze the expander by toggling `requires_grad`, which
+  disabled decoder checkpointing (+14% peak VRAM). It now calls the expander
+  via `torch.func.functional_call` with detached params; checkpointing stays
+  on and no gradient reaches the expander.
 - `kl_z_warmup_steps` and `ctx_shrinkage_warmup_*` were silently dropped
   (always defaults); legacy logging reported the wrong KL schedule.
 - LR schedulers stepped once per resolution group; now at most once per

@@ -14,6 +14,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import fluxflow.models.v100.vae as vae_mod
+from fluxflow.models.v100.vae import _ProgressiveUpscaler
 from fluxflow_training.training.vae_trainer import VAETrainer
 
 _D_MODEL = 4
@@ -91,7 +93,7 @@ class _FakeExpander(nn.Module):
 
     def forward(self, packed: torch.Tensor, use_context: bool = True) -> torch.Tensor:
         n = len(self.outputs) + 1
-        self.flags_at_call.append([p.requires_grad for p in self.parameters()])
+        self.flags_at_call.append([self.proj.weight.requires_grad, self.proj.bias.requires_grad])
         if self.raise_from_call is not None and n >= self.raise_from_call:
             self.outputs.append(packed)
             raise RuntimeError("expander boom")
@@ -289,6 +291,54 @@ class TestGradients:
         g1, g3 = c1.proj.weight.grad, c3.proj.weight.grad
         # bezier reg / context terms carry no grad on proj, so the ratio is exact.
         assert torch.allclose(g3, 3.0 * g1, rtol=1e-4, atol=1e-8)
+
+
+class _CkptExpander(_FakeExpander):
+    """Expander routing features through a real checkpointed upscaler."""
+
+    def __init__(self, downscales: int = 1):
+        super().__init__(downscales)
+        self.up = _ProgressiveUpscaler(
+            channels=2 * _D_MODEL, steps=1, use_spade=False, use_gradient_checkpointing=True
+        )
+        self.head = nn.Conv2d(self.up.out_channels, 3, kernel_size=1)
+
+    def forward(self, packed: torch.Tensor, use_context: bool = True) -> torch.Tensor:
+        B, _, D2 = packed.shape
+        hw = packed[:, -1, :]
+        H_lat = max(int(round(hw[0, 0].item() * self.max_hw)), 1)
+        W_lat = max(int(round(hw[0, 1].item() * self.max_hw)), 1)
+        feat = packed[:, :-1, :].transpose(1, 2).reshape(B, D2, H_lat, W_lat)
+        out = self.head(self.up(feat, None))  # upscaler supplies the 2x of downscales=1
+        self.outputs.append(out.detach().clone())
+        return out
+
+
+class TestCheckpointedFrozenExpander:
+    def _trainer(self):
+        trainer, comp, _ = _build(**_ON)
+        trainer.expander = _CkptExpander()
+        return trainer, comp, trainer.expander
+
+    def test_cycle_grads_only_reach_compressor(self):
+        trainer, comp, exp = self._trainer()
+        loss, _ = trainer._compute_latent_cycle(_imgs(), _imgs(seed=2), 0)
+        loss.backward()
+        assert all(p.grad is None for p in exp.parameters())
+        assert comp.proj.weight.grad.abs().sum().item() > 0
+
+    def test_checkpointing_used_for_cycle_decode(self, monkeypatch):
+        trainer, _, exp = self._trainer()
+        calls: list[int] = []
+        real = vae_mod.checkpoint
+        monkeypatch.setattr(vae_mod, "checkpoint", lambda *a, **k: calls.append(1) or real(*a, **k))
+        trainer._compute_latent_cycle(_imgs(), _imgs(seed=2), 0)[0].backward()
+        assert len(calls) == len(exp.up.layers)
+
+    def test_flags_never_mutated(self):
+        trainer, _, exp = self._trainer()
+        trainer._train_generator(_imgs(), global_step=0)
+        assert all(p.requires_grad for p in exp.parameters())
 
 
 class TestExpanderFreezing:
