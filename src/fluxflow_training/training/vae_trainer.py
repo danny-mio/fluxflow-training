@@ -7,7 +7,7 @@ import json
 import math
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Any, Iterator, Optional, Union
 
 import numpy as np
 import torch
@@ -40,6 +40,14 @@ from .utils import EMA, FloatBuffer
 # magnitude of this file's other fixed regularizers (color_stats=0.05,
 # contrast=0.1, coarseness=0.02 below).
 _BEZIER_REG_WEIGHT = 0.05
+
+# Std floor for the contrast log-ratio (keeps it bounded on flat targets).
+_STD_FLOOR = 0.05
+
+# Fallbacks / bounds for the adaptive GAN weight and the HF-ramp run length.
+_DEFAULT_TOTAL_STEPS = 100000
+_ADAPTIVE_GAN_EPS = 1e-4
+_ADAPTIVE_GAN_MAX = 1e4
 
 
 class ContextEncoder(nn.Module):
@@ -160,7 +168,7 @@ class VAETrainer:
         compressor: nn.Module,
         expander: nn.Module,
         optimizer: Optimizer,
-        scheduler: _LRScheduler,
+        scheduler: Optional[_LRScheduler],
         ema: EMA,
         reconstruction_loss_fn: nn.Module,
         reconstruction_loss_min_fn: nn.Module,
@@ -195,7 +203,7 @@ class VAETrainer:
         ctx_input_dim: Optional[int] = None,
         # v0.10.0: auxiliary context reconstruction loss weight (plan §4.1 / DP-1).
         lambda_ctx_aux: float = 0.01,
-        train_ctx_aux: bool = True,
+        train_ctx_aux: bool = False,
         # v0.10.0: latent cycle loss (image-space G.E idempotence): the compressor
         # re-encodes an expander output and the frozen expander must decode it back
         # to the same image. Compressor-only gradient; fixed (non-adaptive) weight.
@@ -225,7 +233,7 @@ class VAETrainer:
         kl_z_weight: float = 0.0,
         kl_z_warmup_steps: int = 10000,
         lambda_lpips: float = 0.1,
-        instance_noise_std: float = 0.01,
+        instance_noise_std: float = 0.05,
         instance_noise_decay: float = 0.9999,
         adaptive_weights: bool = True,
         mse_weight: float = 0.1,
@@ -244,6 +252,12 @@ class VAETrainer:
         # _accumulation_step / should_step pattern (flow_trainer.py). Default 1
         # reproduces the historical every-micro-batch-steps behavior.
         gradient_accumulation_steps: int = 1,
+        # Total run length (HF-loss ramp). None -> 100000.
+        total_training_steps: Optional[int] = None,
+        # Adversarial weight is 0 before gan_start_step (D is not trained either),
+        # then ramps (cosine) to lambda_adv over gan_warmup_steps.
+        gan_start_step: int = 0,
+        gan_warmup_steps: int = 1000,
     ):
         """
         Initialize VAE trainer.
@@ -271,7 +285,14 @@ class VAETrainer:
             discriminator: Discriminator model (required if use_gan=True)
             discriminator_optimizer: Discriminator optimizer
             discriminator_scheduler: Discriminator scheduler
-            lambda_adv: GAN adversarial loss weight
+            lambda_adv: GAN adversarial loss weight. With ``adaptive_weights`` it scales the
+                VQGAN-style ratio ||grad L_rec|| / ||grad L_gan|| at the expander's last layer;
+                otherwise it is the fixed weight. Both are multiplied by the warmup factor.
+            adaptive_weights: Adaptive GAN weight only; KL and recon are never adaptively weighted.
+            total_training_steps: Run length used by the progressive HF-loss ramp
+                (None -> 100000).
+            gan_start_step: Step before which the adversarial loss is off (and D untrained).
+            gan_warmup_steps: Cosine ramp length 0 -> lambda_adv after gan_start_step.
             r1_interval: R1 gradient penalty interval
             r1_gamma: R1 penalty strength
             gradient_clip_norm: Gradient clipping norm
@@ -283,7 +304,7 @@ class VAETrainer:
             lambda_ctx_aux: Weight for auxiliary context reconstruction loss (plan §4.1).
                 Applied as MSE(context_tokens, stop_grad(z_tokens)) during VAE training.
                 Default 0.01. Only active when train_ctx_aux=True.
-            train_ctx_aux: Compute auxiliary context reconstruction loss (default: True).
+            train_ctx_aux: Compute auxiliary context reconstruction loss (default: False).
             train_latent_cycle: Compute the latent cycle loss (default: False). The
                 compressor re-encodes an expander output x_s; the frozen expander decodes
                 it to x_hat; loss = L1(x_hat, x_s) (+ LPIPS). Only the compressor trains.
@@ -307,12 +328,11 @@ class VAETrainer:
                 global steps (default 1 = every step, current behavior). Values > 1
                 skip it on off-cycle steps as an opt-in efficiency knob; VAE/generator
                 training is unaffected.
-            gradient_accumulation_steps: Number of train_step() micro-batches to
-                accumulate gradients over before zero_grad()/optimizer.step() fire.
-                Generator (optimizer + context_predictor_optimizer) and discriminator
-                share one boundary counter so both step together once per real
-                accumulated batch. Default 1 preserves the historical
-                step-every-micro-batch behavior.
+            gradient_accumulation_steps: Number of micro-batches to accumulate gradients
+                over before zero_grad()/optimizer.step() fire. The generator and the
+                discriminator each keep their own counter (the discriminator only counts
+                micro-batches on which it runs, see discriminator_update_freq). Default 1
+                steps every micro-batch.
         """
         self.compressor = compressor
         self.expander = expander
@@ -384,10 +404,19 @@ class VAETrainer:
                 f"discriminator_update_freq must be >= 1, got {discriminator_update_freq}"
             )
         self.discriminator_update_freq = discriminator_update_freq
-        # Gradient accumulation: shared boundary counter for generator +
-        # discriminator (see FlowTrainer._accumulation_step in flow_trainer.py).
+        # Gradient accumulation: independent boundary counters (generator /
+        # discriminator), see FlowTrainer._accumulation_step in flow_trainer.py.
         self.gradient_accumulation_steps = max(1, gradient_accumulation_steps)
         self._accumulation_step = 0
+        self._d_accumulation_step = 0
+        self.total_training_steps = total_training_steps
+        self.gan_start_step = gan_start_step
+        self.gan_warmup_steps = gan_warmup_steps
+        self._last_vae_sched_step = -1
+        self._last_d_sched_step = -1
+        self._scaler_unscaled = False
+        self._adaptive_gan_warned = False
+        self._last_w_gan = 0.0
 
         # Initialize LPIPS if needed
         self.lpips_fn = None
@@ -420,14 +449,6 @@ class VAETrainer:
         self.d_loss_buffer = FloatBuffer(max_items=20)
         self.g_loss_buffer = FloatBuffer(max_items=20)
         self.lpips_loss_buffer = FloatBuffer(max_items=20)
-
-        # Loss history for adaptive weighting
-        self.loss_history = {
-            "recon": FloatBuffer(100),
-            "kl": FloatBuffer(100),
-            "gan": FloatBuffer(100),
-            "lpips": FloatBuffer(100),
-        }
 
         # Context predictor settings
         self.context_channels = context_channels
@@ -596,7 +617,14 @@ class VAETrainer:
         return (
             self.use_gan
             and self.discriminator is not None
+            and global_step >= self.gan_start_step
             and global_step % self.discriminator_update_freq == 0
+        )
+
+    def _gan_factor(self, global_step: int) -> float:
+        """Adversarial warmup factor in [0, 1]: 0 before gan_start_step, cosine ramp after."""
+        return delayed_cosine_warmup_weight(
+            global_step, self.gan_start_step, self.gan_warmup_steps, 1.0
         )
 
     def _compute_spade_drift(self) -> tuple[float, float]:
@@ -715,44 +743,27 @@ class VAETrainer:
 
         return loss_lf + alpha * loss_hf
 
-    def _histogram_matching_loss(self, pred, target, bins=64):
+    def _histogram_matching_loss(self, pred, target):
         """
-        Encourage matching color distribution between pred and target.
+        Encourage matching per-channel color distributions between pred and target.
 
-        Prevents contrast expansion and color shifts by matching
-        the histogram of each color channel.
+        Differentiable 1D Wasserstein-1 distance between the channels' empirical
+        value distributions (sorted-value matching), normalised by the [-1, 1]
+        range. Unlike a hard histogram (``torch.histc``) gradients reach ``pred``.
 
         Args:
             pred: Predicted images [B, C, H, W]
             target: Target images [B, C, H, W]
-            bins: Number of histogram bins
 
         Returns:
             Histogram matching loss
         """
-        loss = torch.tensor(0.0, device=pred.device)
+        loss = torch.zeros((), device=pred.device)
         for c in range(3):  # R, G, B channels
-            # Flatten spatial dimensions for histogram
-            pred_c = pred[:, c].reshape(-1)
-            target_c = target[:, c].reshape(-1)
-
-            # Compute normalized histograms
-            pred_hist = torch.histc(pred_c, bins=bins, min=-1.0, max=1.0)
-            target_hist = torch.histc(target_c, bins=bins, min=-1.0, max=1.0)
-
-            # Normalize to probability distribution
-            pred_hist = pred_hist / (pred_hist.sum() + 1e-8)
-            target_hist = target_hist / (target_hist.sum() + 1e-8)
-
-            # Use Earth Mover's Distance (more stable than KL divergence)
-            # Compute cumulative distributions
-            pred_cdf = torch.cumsum(pred_hist, dim=0)
-            target_cdf = torch.cumsum(target_hist, dim=0)
-
-            # L1 distance between CDFs (Wasserstein-1 distance)
-            loss += torch.mean(torch.abs(pred_cdf - target_cdf))
-
-        return loss / 3.0  # Average over channels
+            pred_sorted = pred[:, c].reshape(-1).sort().values
+            target_sorted = target[:, c].reshape(-1).sort().values
+            loss = loss + (pred_sorted - target_sorted).abs().mean() / 2.0
+        return loss / 3.0
 
     def _color_statistics_loss(self, pred, target):
         """
@@ -797,14 +808,14 @@ class VAETrainer:
         Returns:
             Scalar contrast loss
         """
-        loss = 0.0
+        loss = torch.zeros((), device=pred.device)
 
         # Component 1: Per-channel std ratio (global contrast preservation)
         for c in range(3):
             pred_std = pred[:, c].std()
             target_std = target[:, c].std()
-            std_ratio = pred_std / (target_std + 1e-8)
-            loss += (std_ratio - 1.0) ** 2
+            # Smoothed log-ratio: bounded on flat targets (std ~ 0), zero when equal.
+            loss += torch.log((pred_std + _STD_FLOOR) / (target_std + _STD_FLOOR)) ** 2
 
         # Component 2: Per-sample std (local contrast preservation)
         pred_std_per_sample = pred.reshape(pred.size(0), -1).std(dim=1)
@@ -875,28 +886,50 @@ class VAETrainer:
 
         return loss / 3.0
 
-    def _compute_adaptive_weight(self, loss_type, max_weight: float = 5.0):
-        """Balance losses based on magnitude using inverse weighting, clamped to max_weight.
+    def _expander_last_weight(self) -> Optional[torch.Tensor]:
+        """Weight of the expander's last (RGB) conv, or None when it cannot be found."""
+        model = self._get_unwrapped_model(self.expander)
+        model = getattr(model, "_orig_mod", model)
+        head = getattr(model, "to_rgb_conv", None)
+        if head is None:
+            head = getattr(model, "to_rgb", model)
+        convs = [m for m in head.modules() if isinstance(m, nn.Conv2d)]
+        if head is model:
+            convs = [m for m in convs if m.out_channels == 3]
+        if not convs or not convs[-1].weight.requires_grad:
+            return None
+        return convs[-1].weight
 
-        The weight is clamped to prevent any single loss (especially GAN at startup,
-        when its magnitude is near zero) from receiving an explosive gradient multiplier
-        that overwhelms the reconstruction signal and causes divergence.
+    def _warn_adaptive_once(self, reason: str) -> None:
+        if not self._adaptive_gan_warned:
+            self._adaptive_gan_warned = True
+            logger.warning(f"Adaptive GAN weight unavailable ({reason}); using fixed lambda_adv.")
+
+    def _adaptive_gan_weight(
+        self, rec_loss: torch.Tensor, gan_loss: torch.Tensor, last_weight: Optional[torch.Tensor]
+    ) -> Optional[float]:
+        """VQGAN weight ||grad_last L_rec|| / (||grad_last L_gan|| + eps), clamped, detached.
+
+        Returns None (one-time warning) when it cannot be computed; callers then use the
+        fixed weight. Ratio of grads of unscaled losses, so fp16 loss scaling is irrelevant.
         """
-        if not self.adaptive_weights:
-            return 1.0
-
-        avg = self.loss_history[loss_type].average
-        if avg == 0:
-            return 1.0
-
-        # Compute total average
-        total = sum(h.average for h in self.loss_history.values() if h.average > 0)
-        num_losses = sum(1 for h in self.loss_history.values() if h.average > 0)
-
-        if total > 0 and num_losses > 0:
-            target = total / num_losses
-            return min(target / (avg + 1e-8), max_weight)
-        return 1.0
+        if last_weight is None:
+            self._warn_adaptive_once("last layer not found")
+            return None
+        if not (rec_loss.requires_grad and gan_loss.requires_grad):
+            self._warn_adaptive_once("loss has no grad path")
+            return None
+        try:
+            g_rec = torch.autograd.grad(rec_loss, last_weight, retain_graph=True)[0]
+            g_gan = torch.autograd.grad(gan_loss, last_weight, retain_graph=True)[0]
+        except RuntimeError as exc:
+            self._warn_adaptive_once(str(exc).splitlines()[0])
+            return None
+        w = (g_rec.norm() / (g_gan.norm() + _ADAPTIVE_GAN_EPS)).detach()
+        if not torch.isfinite(w):
+            self._warn_adaptive_once("non-finite gradient ratio")
+            return None
+        return float(w.clamp(0.0, _ADAPTIVE_GAN_MAX).item())
 
     def _maybe_save_disc_logit_snapshot(self, real_logits: torch.Tensor, global_step: int) -> None:
         """Save discriminator spatial logit heatmap + JSONL record if diagnostic is enabled.
@@ -981,24 +1014,26 @@ class VAETrainer:
 
         losses = {}
         discriminator_was_stepped: bool = False
+        self._scaler_unscaled = False
 
-        # Train discriminator first if using GAN (gated by discriminator_update_freq)
-        if self._should_train_discriminator(global_step):
-            # Extra safety check (should never happen due to __init__ validation)
-            if self.discriminator_optimizer is None:
-                raise RuntimeError(
-                    "VAETrainer.use_gan=True but discriminator_optimizer is None. "
-                    "This should have been caught in __init__. Please report this bug."
-                )
-            d_result = self._train_discriminator(real_imgs, global_step)
-            discriminator_was_stepped = bool(d_result["_optimizer_stepped"])
-            if discriminator_was_stepped:
-                d_loss = d_result["d_loss"]
-                losses["discriminator"] = d_loss
-                self.d_loss_buffer.add_item(d_loss)
-
-        # Train VAE generator
-        gen_losses = self._train_generator(real_imgs, global_step)
+        try:
+            # VQGAN order: generator first, then D on the detached G-step reconstruction.
+            gen_losses = self._train_generator(real_imgs, global_step)
+            fake_imgs = gen_losses.pop("_fake_imgs", None)
+            if fake_imgs is not None and self._should_train_discriminator(global_step):
+                if self.discriminator_optimizer is None:
+                    raise RuntimeError(
+                        "VAETrainer.use_gan=True but discriminator_optimizer is None. "
+                        "This should have been caught in __init__. Please report this bug."
+                    )
+                d_result = self._train_discriminator(real_imgs, global_step, fake_imgs)
+                discriminator_was_stepped = bool(d_result["_optimizer_stepped"])
+                if discriminator_was_stepped:
+                    d_loss = d_result["d_loss"]
+                    losses["discriminator"] = d_loss
+                    self.d_loss_buffer.add_item(d_loss)
+        finally:
+            self._finish_scaler()
 
         losses["vae"] = gen_losses["vae"]  # recon_loss
         losses["recon"] = gen_losses["recon"]  # same as vae
@@ -1049,27 +1084,15 @@ class VAETrainer:
         if optimizer_was_stepped and self.ema is not None:
             self.ema.update()
 
-        # Step schedulers after optimizer step (ReduceLROnPlateau requires metric, others don't)
-        # Only step if: 1) optimizer was actually stepped, and 2) not the very first step
-        if optimizer_was_stepped and global_step > 0:
-            total_loss = gen_losses["vae"]  # Use recon_loss for scheduler
-
-            # Get the underlying scheduler (may be wrapped by accelerator)
-            base_scheduler = getattr(self.scheduler, "scheduler", self.scheduler)
-            if isinstance(base_scheduler, ReduceLROnPlateau):
-                self.scheduler.step(float(total_loss))  # type: ignore[arg-type]
-            else:
-                self.scheduler.step()  # type: ignore[call-arg]
-
-            # Step discriminator scheduler only if discriminator was actually trained this step
-            if discriminator_was_stepped and self.discriminator_scheduler is not None:
-                base_d_scheduler = getattr(
-                    self.discriminator_scheduler, "scheduler", self.discriminator_scheduler
-                )
-                if isinstance(base_d_scheduler, ReduceLROnPlateau):
-                    self.discriminator_scheduler.step(float(losses.get("discriminator", 0.0)))  # type: ignore[arg-type]
-                else:
-                    self.discriminator_scheduler.step()  # type: ignore[call-arg]
+        # Step schedulers at most once per distinct global_step (the orchestrator calls
+        # train_step once per resolution with the same step), only after a real optimizer step.
+        plateau_metric = gen_losses.pop("_plateau_metric", gen_losses["vae"])
+        if optimizer_was_stepped and global_step > 0 and global_step != self._last_vae_sched_step:
+            self._last_vae_sched_step = global_step
+            self._step_scheduler(self.scheduler, plateau_metric)
+        if discriminator_was_stepped and global_step > 0 and global_step != self._last_d_sched_step:
+            self._last_d_sched_step = global_step
+            self._step_scheduler(self.discriminator_scheduler, losses.get("discriminator", 0.0))
 
         # Add comprehensive metrics
         vae_params = list(self.compressor.parameters()) + list(self.expander.parameters())
@@ -1085,102 +1108,84 @@ class VAETrainer:
                 "lr_disc": (
                     self.discriminator_optimizer.param_groups[0]["lr"] if self.use_gan else 0.0
                 ),
-                # Adaptive weights (if enabled)
-                "weight_recon": (
-                    self._compute_adaptive_weight("recon") if self.adaptive_weights else 1.0
-                ),
-                "weight_kl": self._compute_adaptive_weight("kl") if self.adaptive_weights else 1.0,
-                "weight_gan": (
-                    self._compute_adaptive_weight("gan")
-                    if self.use_gan and self.adaptive_weights
-                    else 0.0
-                ),
+                # Loss weights: recon/KL are fixed; weight_gan is the effective
+                # multiplier on the generator hinge loss (adaptive x lambda_adv x warmup).
+                "weight_recon": 1.0,
+                "weight_kl": 1.0,
+                "weight_gan": self._last_w_gan if self.use_gan else 0.0,
             }
         )
 
         return losses
 
+    @staticmethod
+    def _step_scheduler(scheduler, metric: float) -> None:
+        """Step a scheduler (ReduceLROnPlateau takes a metric); None is a no-op."""
+        if scheduler is None:
+            return
+        base = getattr(scheduler, "scheduler", scheduler)
+        if isinstance(base, ReduceLROnPlateau):
+            scheduler.step(float(metric))
+        else:
+            scheduler.step()
+
+    def _unscale_clip(self, optimizer: Optimizer, params: list, name: str) -> bool:
+        """Unscale (fp16), clip, and report whether grads are finite (False -> skip step)."""
+        self.accelerator.unscale_gradients(optimizer)
+        self._scaler_unscaled = True
+        norm = torch.nn.utils.clip_grad_norm_(params, self.gradient_clip_norm)
+        if not bool(torch.isfinite(norm)):
+            logger.warning(f"Non-finite {name} gradients - skipping optimizer step")
+            return False
+        return True
+
+    def _finish_scaler(self) -> None:
+        """Call GradScaler.update() once per iteration, after both optimizers."""
+        scaler = getattr(self.accelerator, "scaler", None)
+        if self._scaler_unscaled and scaler is not None:
+            scaler.update()
+        self._scaler_unscaled = False
+
     def _train_discriminator(
         self,
         real_imgs: torch.Tensor,
         global_step: int,
-    ) -> dict[str, float]:
-        """Train discriminator on real and fake images.
+        fake_imgs: torch.Tensor,
+    ) -> dict[str, Any]:
+        """Train discriminator on real images and the generator's reconstructions.
 
-        Note: VAE (encoder+decoder) is frozen during discriminator training.
-        Only the discriminator learns to distinguish real from fake images.
+        ``fake_imgs`` is the G step's reconstruction (VQGAN order); it is detached
+        here, so no extra compressor/expander forward is needed and the VAE gets no
+        gradient. The D accumulation counter only counts micro-batches where D runs.
 
         Returns:
-            Dict with ``d_loss`` (float) and ``_optimizer_stepped`` (bool,
-            mirroring the convention used by ``_train_generator``'s NaN-skip
-            path). ``_optimizer_stepped`` is ``False`` when the backward pass
-            hit a ROCm/MIOpen kernel-compile failure (a known upstream
-            cold-start bug on some GPU targets, not a logic bug here) — in
-            that case ``discriminator_optimizer.step()`` is skipped and
-            ``d_loss`` is a meaningless placeholder that callers must ignore.
+            Dict with ``d_loss`` (float) and ``_optimizer_stepped`` (bool).
+            ``_optimizer_stepped`` is ``False`` mid-accumulation, on NaN/Inf loss or
+            gradients, and on a ROCm/MIOpen kernel-compile failure (a known upstream
+            cold-start bug); in the last cases ``d_loss`` is a placeholder.
         """
         self.discriminator.train()
 
-        # Gradient accumulation: shared boundary counter with _train_generator
-        # (see __init__ / gradient_accumulation_steps). zero_grad only at the
-        # start of a fresh accumulation window; step only once the window is full.
-        is_accum_boundary_start = self._accumulation_step == 0
-        should_step = (self._accumulation_step + 1) % self.gradient_accumulation_steps == 0
-
-        # Generate fake images using the stochastic (reparameterised) path so the
-        # discriminator sees the same distribution of reconstructions as the generator.
-        # torch.no_grad() prevents stale encoder gradients from accumulating here;
-        # they would be zeroed at the start of _train_generator anyway, but being
-        # explicit avoids any subtle interaction with gradient checkpointing.
-        with torch.no_grad(), self._autocast():
-            packed, _, _ = self.compressor(real_imgs, training=True)
-        img_seq = packed[:, :-1, :].contiguous()
-        ctx_vec = img_seq.mean(dim=1)
-
-        # Validate context vector dimension against discriminator expectation
-        if hasattr(self.discriminator, "ctx_proj") and self.discriminator.ctx_dim > 0:
-            expected_ctx_dim = self.discriminator.ctx_proj.in_features
-            if ctx_vec.shape[-1] != expected_ctx_dim:
-                raise RuntimeError(
-                    f"Discriminator ctx_dim={expected_ctx_dim} does not match "
-                    f"compressor ctx_vec dim={ctx_vec.shape[-1]}. "
-                    f"Delete D_img.safetensors and restart to create a fresh discriminator."
-                )
-        else:
-            ctx_vec = None
-
-        # Generate conditional reconstructions (VAE doesn't receive gradients here)
-        with torch.no_grad(), self._autocast():
-            out_imgs_for_D = self.expander(
-                packed, use_context=self._get_effective_spade_usage(global_step)
-            )
-
-        # Discriminator step. zero_grad only at an accumulation-window boundary
-        # start so earlier micro-batches' accumulated gradients survive.
-        if is_accum_boundary_start:
+        accum = self.gradient_accumulation_steps
+        should_step = (self._d_accumulation_step + 1) % accum == 0
+        if self._d_accumulation_step == 0:
             self.discriminator_optimizer.zero_grad(set_to_none=True)
 
-        # Add instance noise to inputs
+        # Instance noise on both inputs. SPADE is always active, so D is unconditional.
         real_imgs_noisy = add_instance_noise(
             real_imgs, self.instance_noise_std, self.instance_noise_decay, global_step
         )
         fake_imgs_noisy = add_instance_noise(
-            out_imgs_for_D.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
+            fake_imgs.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
         )
-
-        # Determine if SPADE conditioning is active this step
-        spade_active = self._get_effective_spade_usage(global_step)
-
-        # Context vectors: None when SPADE is active (conditioning happens in generator)
-        # Actual context when SPADE is inactive (traditional conditional GAN)
-        disc_ctx = None if spade_active else (ctx_vec.detach() if ctx_vec is not None else None)
+        disc_ctx = None
 
         do_r1 = (global_step % self.r1_interval) == 0
 
         # Only keep grad graph on real images when R1 penalty is needed
-        real_noisy_base = real_imgs_noisy if do_r1 else real_imgs_noisy.detach()
+        real_noisy_base = real_imgs_noisy.detach()
         if do_r1:
-            real_noisy_base = real_noisy_base.detach().requires_grad_(True)
+            real_noisy_base = real_noisy_base.requires_grad_(True)
 
         # Real images. On ROCm R1 steps the real forward, R1 term and backward
         # run on native conv kernels (see r1_conv_context).
@@ -1190,28 +1195,25 @@ class VAETrainer:
 
         d_img_loss = torch.tensor(0.0, device=real_imgs.device)
 
-        # R1 gradient penalty (periodic) - only on real images
+        # Lazy R1 (every r1_interval steps): scaled by the interval so the expected
+        # penalty per step matches applying it every step.
         if do_r1:
             with r1_conv_context(do_r1):
                 r1 = r1_penalty(real_noisy_base, real_logits)
-            d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * r1
+            d_img_loss = d_img_loss + (self.r1_gamma * 0.5) * self.r1_interval * r1
 
-        # Fake images - use same context logic as real images
         with self._autocast():
             fake_logits = self.discriminator(fake_imgs_noisy, disc_ctx)
 
         d_hinge = d_hinge_loss(real_logits, fake_logits)
         d_img_loss = d_img_loss + d_hinge
 
-        # Gradient accumulation: scale before backward (standard grad-accum),
-        # matching FlowTrainer's total_loss / gradient_accumulation_steps.
-        d_img_loss = d_img_loss / self.gradient_accumulation_steps
+        # Gradient accumulation: scale before backward (standard grad-accum).
+        d_img_loss = d_img_loss / accum
 
         # Check for NaN/Inf in loss with detailed diagnostics (mirrors
-        # _train_generator's NaN guard below). r1_penalty (double-backward)
-        # and d_hinge_loss (unbounded above) can both blow up; without this
-        # guard the discriminator weights go permanently NaN with no
-        # diagnostic ever logged.
+        # _train_generator's NaN guard). r1_penalty (double-backward) and
+        # d_hinge_loss (unbounded above) can both blow up.
         if check_for_nan(d_img_loss, "d_img_loss", logger):
             logger.error("Skipping discriminator batch due to NaN/Inf in d_img_loss")
             if do_r1:
@@ -1242,23 +1244,22 @@ class VAETrainer:
                 return {"d_loss": 0.0, "_optimizer_stepped": False}
             raise
 
+        d_loss = float(d_img_loss.detach().item())
         if not should_step:
-            # Mid-accumulation-window: gradients stay accumulated in .grad,
-            # optimizer/scaler untouched until the boundary.
-            return {"d_loss": float(d_img_loss.detach().item()), "_optimizer_stepped": False}
+            # Mid-accumulation-window: gradients stay accumulated in .grad.
+            self._d_accumulation_step += 1
+            return {"d_loss": d_loss, "_optimizer_stepped": False}
+        self._d_accumulation_step = 0
 
-        # Same fp16/GradScaler protocol as _train_generator: discriminator_optimizer
-        # is a plain torch optimizer (never accelerator.prepare()'d), so it must be
-        # unscaled explicitly before step() -- otherwise, under fp16, step() would
-        # silently apply gradients still multiplied by the GradScaler's growth
-        # factor (>= 2**16). update() resets the scaler's per-optimizer stage so a
-        # later unscale of this same optimizer doesn't raise "already been called".
-        self.accelerator.unscale_gradients(self.discriminator_optimizer)
+        # discriminator_optimizer is a plain torch optimizer: unscale explicitly, clip
+        # (same max norm as G), and skip the step on non-finite grads (no GradScaler
+        # auto-skip here). scaler.update() is called once per iteration in train_step.
+        d_params = list(self.discriminator.parameters())
+        assert self.discriminator_optimizer is not None
+        if not self._unscale_clip(self.discriminator_optimizer, d_params, "discriminator"):
+            return {"d_loss": d_loss, "_optimizer_stepped": False}
         self.discriminator_optimizer.step()
-        if self.accelerator.scaler is not None:
-            self.accelerator.scaler.update()
-
-        return {"d_loss": float(d_img_loss.detach().item()), "_optimizer_stepped": True}
+        return {"d_loss": d_loss, "_optimizer_stepped": True}
 
     def _latent_cycle_lambda(self, global_step: int) -> float:
         """Effective cycle weight: 0 when disabled/before start, cosine ramp to lambda."""
@@ -1354,7 +1355,7 @@ class VAETrainer:
         self,
         real_imgs: torch.Tensor,
         global_step: int,
-    ) -> dict[str, float]:
+    ) -> dict[str, Any]:
         """Train VAE generator (compressor + expander).
 
         Each loss component is gated solely by its own flag:
@@ -1455,7 +1456,7 @@ class VAETrainer:
         if self.train_reconstruction:
             # Progressive frequency weighting: start low to prevent over-sharpening, increase over time
             # This allows the model to learn basic structure first, then focus on sharp edges
-            total_training_steps = 100000  # Assume ~100k steps for full training
+            total_training_steps = self.total_training_steps or _DEFAULT_TOTAL_STEPS
             alpha_progress = min(
                 1.0, global_step / (total_training_steps * 0.3)
             )  # Ramp over first 30%
@@ -1468,6 +1469,13 @@ class VAETrainer:
             )
             # Remove MSE loss as it can contribute to blur - rely on L1 + LPIPS for reconstruction
             recon_loss = recon_l1
+
+        # Plateau-scheduler metric: fixed-alpha L1, detached (no HF ramp, no LPIPS), so
+        # the LR scheduler does not see a loss whose definition drifts over training.
+        with torch.no_grad():
+            plateau_metric = float(
+                self._frequency_weighted_loss(out_imgs_rec.detach(), real_imgs, alpha=1.0).item()
+            )
 
         # LPIPS perceptual anchor — independent of train_reconstruction, has its own use_lpips flag.
         # When train_reconstruction is also active, fold into recon_loss (single backward pass).
@@ -1610,16 +1618,21 @@ class VAETrainer:
         ideal_context = self.context_encoder(real_imgs.detach())
         context_alignment_loss = F.mse_loss(predicted_context, ideal_context)
 
-        # GAN generator loss
+        # GAN generator loss (off, with no D forward, until gan_start_step)
         G_img_loss = torch.tensor(0.0, device=real_imgs.device)
+        gan_factor = self._gan_factor(global_step) if self.use_gan else 0.0
+        w_gan = 0.0
         spade_active = self._get_effective_spade_usage(global_step)
-        if self.use_gan and self.discriminator is not None:
+        if self.use_gan and self.discriminator is not None and gan_factor > 0:
             # Reuse already-decoded images for generator loss (gradients flow into encoder/decoder)
             out_imgs_gan = out_imgs_rec
             ctx_vec_rec = packed_rec[:, :-1, :].contiguous().mean(dim=1).detach()
 
-            # Validate context vector dimension against discriminator expectation
-            if hasattr(self.discriminator, "ctx_proj") and self.discriminator.ctx_dim > 0:
+            # Validate context vector dimension for ctx-conditioned discriminators only
+            # (ctx_dim == 0 / no ctx_proj: unconditional D, nothing to validate).
+            if getattr(self.discriminator, "ctx_dim", 0) > 0 and hasattr(
+                self.discriminator, "ctx_proj"
+            ):
                 expected_ctx_dim = self.discriminator.ctx_proj.in_features
                 if ctx_vec_rec.shape[-1] != expected_ctx_dim:
                     raise RuntimeError(
@@ -1675,19 +1688,22 @@ class VAETrainer:
                     # Raw hinge loss; lambda_adv applied when adding to total_loss
                     G_img_loss = g_hinge_loss(g_real_logits)
 
-        # Update loss history for adaptive weighting (record unscaled G_img_loss)
-        if self.train_reconstruction:
-            self.loss_history["recon"].add_item(float(recon_loss.item()))
-        if self.use_lpips:
-            self.loss_history["lpips"].add_item(float(perceptual_loss.item()))
-        self.loss_history["kl"].add_item(float(kl.item()))
-        if self.use_gan:
-            self.loss_history["gan"].add_item(float(G_img_loss.item()))
-
-        # Compute adaptive weights
-        w_recon = self._compute_adaptive_weight("recon") if self.train_reconstruction else 0.0
-        w_kl = self._compute_adaptive_weight("kl") if self.train_kl else 0.0
-        w_gan = self._compute_adaptive_weight("gan") if self.use_gan else 0.0
+        # GAN weight: VQGAN adaptive ratio at the expander's last layer (or fixed
+        # lambda_adv), times the warmup factor. Needs a recon-type loss to compare with.
+        if self.use_gan and gan_factor > 0:
+            if self.train_reconstruction:
+                rec_for_weight: Optional[torch.Tensor] = recon_loss
+            elif self.use_lpips:
+                rec_for_weight = self.lambda_lpips * perceptual_loss
+            else:
+                rec_for_weight = None
+            w_adapt = None
+            if self.adaptive_weights and rec_for_weight is not None:
+                w_adapt = self._adaptive_gan_weight(
+                    rec_for_weight, G_img_loss, self._expander_last_weight()
+                )
+            w_gan = self.lambda_adv * gan_factor * (1.0 if w_adapt is None else w_adapt)
+        self._last_w_gan = w_gan
 
         # Color/contrast regularization losses — each gated on its own flag only.
         # out_imgs_rec and real_imgs are always available (computed above), so these
@@ -1733,16 +1749,16 @@ class VAETrainer:
         else:
             bezier_reg_loss = torch.tensor(0.0, device=real_imgs.device)
 
-        # Total loss with adaptive weighting
-        total_loss = w_kl * beta * kl
+        # Total loss: KL and recon use fixed weights (never adaptive).
+        total_loss = beta * kl
         if self.train_reconstruction:
             # recon_loss already includes lambda_lpips * perceptual_loss when use_lpips=True
-            total_loss = total_loss + w_recon * recon_loss
+            total_loss = total_loss + recon_loss
         elif self.use_lpips:
             # GAN-only mode: LPIPS not folded into recon_loss, add it standalone here
             total_loss = total_loss + self.lambda_lpips * perceptual_loss
         if self.use_gan:
-            total_loss = total_loss + self.lambda_adv * w_gan * G_img_loss
+            total_loss = total_loss + w_gan * G_img_loss
 
         # v0.10.0: auxiliary context reconstruction loss (plan §4.1 / DP-1).
         if self.train_ctx_aux:
@@ -1818,7 +1834,7 @@ class VAETrainer:
             logger.error(
                 f"  G_img_loss: {G_img_loss.item() if not check_for_nan(G_img_loss, 'gan', logger) else 'NaN'}"
             )
-            logger.error(f"  w_recon: {w_recon}, w_kl: {w_kl}, w_gan: {w_gan}, beta: {beta}")
+            logger.error(f"  w_gan: {w_gan}, beta: {beta}")
             logger.error(
                 f"  mu stats: min={mu.min().item():.4f}, max={mu.max().item():.4f}, mean={mu.mean().item():.4f}"
             )
@@ -1851,64 +1867,55 @@ class VAETrainer:
         total_loss = total_loss / self.gradient_accumulation_steps
         self.accelerator.backward(total_loss)
 
-        # Boundary check uses the SAME pre-increment counter value that
-        # _train_discriminator (if it ran earlier this train_step call) already
-        # used to compute its own should_step, so generator and discriminator
-        # step in lockstep. Increment now, mirroring FlowTrainer's
-        # self._accumulation_step += 1 / should_step ordering.
+        # Generator counter: only micro-batches that reach backward are counted; the
+        # skip paths above return before touching it. The discriminator keeps its own.
         should_step = (self._accumulation_step + 1) % self.gradient_accumulation_steps == 0
         self._accumulation_step += 1
+
+        result = {
+            "vae": float(recon_loss.detach().item()),
+            "kl": float(kl.detach().item()),
+            "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
+            "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
+            "recon": float(recon_loss.detach().item()),
+            "weight_gan": float(w_gan),
+            # v0.10.0: auxiliary context reconstruction loss (plan §4.1)
+            "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
+            # v0.10.0: latent cycle loss (unweighted) + reject fraction
+            "latent_cycle_loss": float(latent_cycle_loss.detach().item()),
+            "latent_cycle_reject_frac": float(latent_cycle_reject_frac),
+            # v0.10.0: ctx-features L2 shrinkage (design §5.5)
+            "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
+            "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
+            # Diagnostic probe, no gradient into SPADE/compressor/expander.
+            "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
+            "color_stats": float(color_stats_loss.detach().item()),
+            "hist_loss": float(hist_loss.detach().item()),
+            "contrast_loss": float(contrast_loss.detach().item()),
+            "coarseness_loss": float(coarseness_loss.detach().item()),
+            # v0.10.0: Bezier control-point monotonicity regularizer (plan Fix 2)
+            "bezier_reg": float(bezier_reg_loss.detach().item()),
+            "_optimizer_stepped": False,
+            "_plateau_metric": plateau_metric,
+        }
+        if self.use_gan:
+            result["_fake_imgs"] = out_imgs_rec.detach()
 
         if not should_step:
             # Mid-accumulation-window: gradients stay accumulated in .grad,
             # optimizer/scaler untouched until the boundary.
-            return {
-                "vae": float(recon_loss.detach().item()),
-                "kl": float(kl.detach().item()),
-                "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
-                "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
-                "recon": float(recon_loss.detach().item()),
-                "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
-                "latent_cycle_loss": float(latent_cycle_loss.detach().item()),
-                "latent_cycle_reject_frac": float(latent_cycle_reject_frac),
-                "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
-                "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
-                "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
-                "color_stats": float(color_stats_loss.detach().item()),
-                "hist_loss": float(hist_loss.detach().item()),
-                "contrast_loss": float(contrast_loss.detach().item()),
-                "coarseness_loss": float(coarseness_loss.detach().item()),
-                "bezier_reg": float(bezier_reg_loss.detach().item()),
-                "_optimizer_stepped": False,
-            }
+            return result
 
         # Reset the boundary counter now that this window is complete.
         self._accumulation_step = 0
 
-        # Unscale once via Accelerate's public wrapper (no-op under bf16/no-AMP).
-        # self.optimizer is never passed through accelerator.prepare() in the
-        # PipelineOrchestrator training path (see pipeline_orchestrator.py's
-        # _create_step_optimizers), so we must NOT rely on accelerator.clip_grad_norm_()
-        # to unscale it implicitly (its internal unscale_gradients() only covers
-        # accelerator-prepared optimizers). We also must NOT call scaler.unscale_()
-        # here *and* let clip_grad_norm_ unscale again below -- GradScaler raises
-        # "unscale_() has already been called on this optimizer since the last
-        # update()" on a second unscale_ of the same optimizer before update().
-        # So: unscale explicitly once, then clip with the plain torch function
-        # (not accelerator.clip_grad_norm_, which would try to unscale again).
+        # Unscale once (no-op without fp16), clip with the plain torch function (not
+        # accelerator.clip_grad_norm_, which would unscale a second time), and skip the
+        # step on non-finite grads: self.optimizer is a plain torch optimizer, so no
+        # GradScaler auto-skip. scaler.update() is called once per iteration in train_step.
         vae_params = list(self.compressor.parameters()) + list(self.expander.parameters())
-        self.accelerator.unscale_gradients(self.optimizer)
-
-        # Check gradients for NaN/Inf after unscale, before clipping. self.optimizer.step()
-        # below is a plain (non-GradScaler) step, so unlike scaler.step() it will NOT
-        # auto-skip on overflow -- this guard replaces that safety net.
-        for param in vae_params:
-            if param.grad is not None and check_for_nan(param.grad, "vae_grad", logger):
-                logger.warning("NaN gradient in VAE, zeroing it")
-                param.grad.zero_()
-
-        # Clip gradients (only VAE parameters). Gradients are already unscaled above.
-        torch.nn.utils.clip_grad_norm_(vae_params, self.gradient_clip_norm)
+        if not self._unscale_clip(self.optimizer, vae_params, "VAE"):
+            return result
 
         accelerator_step = (
             self.accelerator is not None
@@ -1922,41 +1929,9 @@ class VAETrainer:
             self.optimizer.step()
             self.context_predictor_optimizer.step()
 
-        # Reset the GradScaler's per-optimizer "unscaled" stage for the next call.
-        # self.optimizer/context_predictor_optimizer are plain torch optimizers (see
-        # above), so nothing else ever calls scaler.update() -- without this, the
-        # NEXT _train_generator call's unscale_gradients() would see the stale
-        # "already unscaled" stage and raise the same RuntimeError.
-        if self.accelerator.scaler is not None:
-            self.accelerator.scaler.update()
-
-        # Return dict matching original tuple behavior:
-        # vae = recon_loss (NOT total_loss which includes adaptive weighting and can be huge/negative)
-        return {
-            "vae": float(recon_loss.detach().item()),
-            "kl": float(kl.detach().item()),
-            "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
-            "lpips": float(perceptual_loss.detach().item()) if self.use_lpips else 0.0,
-            "recon": float(recon_loss.detach().item()),
-            # v0.10.0: auxiliary context reconstruction loss (plan §4.1)
-            "ctx_aux_loss": float(ctx_aux_loss.detach().item()),
-            # v0.10.0: latent cycle loss (unweighted) + reject fraction
-            "latent_cycle_loss": float(latent_cycle_loss.detach().item()),
-            "latent_cycle_reject_frac": float(latent_cycle_reject_frac),
-            # v0.10.0: ctx-features L2 shrinkage (design §5.5)
-            "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
-            "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
-            # Diagnostic probe, no gradient into SPADE/compressor/expander — see the
-            # comment above the context_alignment_loss computation for why.
-            "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
-            "color_stats": float(color_stats_loss.detach().item()),
-            "hist_loss": float(hist_loss.detach().item()),
-            "contrast_loss": float(contrast_loss.detach().item()),
-            "coarseness_loss": float(coarseness_loss.detach().item()),
-            # v0.10.0: Bezier control-point monotonicity regularizer (plan Fix 2)
-            "bezier_reg": float(bezier_reg_loss.detach().item()),
-            "_optimizer_stepped": True,  # Signal that optimizer was stepped
-        }
+        # "vae" is recon_loss (NOT total_loss, which includes weighting and can be huge/negative)
+        result["_optimizer_stepped"] = True
+        return result
 
     def get_average_losses(self) -> dict[str, float]:
         """Get average losses from buffers."""

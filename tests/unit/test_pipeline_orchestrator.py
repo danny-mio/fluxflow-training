@@ -833,7 +833,7 @@ class TestLatentCycleWiring:
 
 class TestCtxAuxWiring:
     """train_ctx_aux must flow from PipelineStepConfig into the VAETrainer(...)
-    construction call, defaulting to True when unset (regression: existing configs
+    construction call, defaulting to False when unset (regression: existing configs
     keep working unchanged)."""
 
     def test_train_ctx_aux_passed_to_vae_trainer(self):
@@ -847,7 +847,7 @@ class TestCtxAuxWiring:
             / "pipeline_orchestrator.py"
         )
         content = orchestrator_path.read_text()
-        assert 'train_ctx_aux=getattr(step, "train_ctx_aux", True)' in content
+        assert 'train_ctx_aux=getattr(step, "train_ctx_aux", False)' in content
 
     def test_train_ctx_aux_false_reaches_vae_trainer_instance(self):
         from unittest.mock import MagicMock
@@ -893,7 +893,7 @@ class TestCtxAuxWiring:
 
         assert trainers["vae"].train_ctx_aux is False
 
-    def test_train_ctx_aux_omitted_defaults_to_true_on_vae_trainer_instance(self):
+    def test_train_ctx_aux_omitted_defaults_to_false_on_vae_trainer_instance(self):
         """Regression: existing configs without train_ctx_aux keep getting True."""
         from unittest.mock import MagicMock
 
@@ -935,7 +935,7 @@ class TestCtxAuxWiring:
 
         trainers = orch._create_step_trainers(step, models, optimizers, {}, None, args)
 
-        assert trainers["vae"].train_ctx_aux is True
+        assert trainers["vae"].train_ctx_aux is False
 
 
 class TestDiscriminatorSpectralNormWiring:
@@ -954,7 +954,7 @@ class TestDiscriminatorSpectralNormWiring:
             / "pipeline_orchestrator.py"
         )
         content = orchestrator_path.read_text()
-        assert 'use_spectral_norm=getattr(step, "discriminator_use_spectral_norm", True)' in content
+        assert "self._want_spectral_norm(step, args)" in content
 
     def _make_gan_step_and_models(self, discriminator_use_spectral_norm):
         from unittest.mock import MagicMock

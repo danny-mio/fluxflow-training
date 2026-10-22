@@ -87,6 +87,7 @@ training:
 | `train_vae` | `bool` | `false` | Train VAE encoder/decoder with reconstruction loss |
 | `train_spade` | `bool` | `false` | Deprecated and ignored — SPADE is always-on in v0.10.0 |
 | `gan_training` | `bool` | `false` | Train GAN discriminator |
+| `train_ctx_aux` | `bool` | `false` | Enable the auxiliary ctx reconstruction loss |
 | `use_lpips` | `bool` | `false` | Add LPIPS perceptual loss (adds ~6-8GB VRAM) |
 | `train_diff` | `bool` | `false` | Train flow processor (partial) |
 | `train_diff_full` | `bool` | `false` | Train flow processor (full) |
@@ -525,6 +526,35 @@ EMA (Exponential Moving Average) is created when any of these are true:
 - `use_lpips: true`
 
 This ensures EMA exists even in GAN-only mode. SPADE is always-on in v0.10.0 and no longer contributes to the EMA trigger.
+
+EMA weights (decay 0.999) are what you get out: sample generation and the saved model
+files (`save_models`) use them, and the raw weights are always restored afterwards
+(try/finally). The training-state checkpoint stores the raw weights next to the EMA
+state (`ema_raw`), so resume continues from the exact raw weights. `use_ema: false`
+exports raw weights.
+
+### GAN Schedule and Discriminator
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `gan_start_step` | `0` | Global step before which adversarial terms are off |
+| `gan_warmup_steps` | `1000` | Global steps over which the adversarial weight ramps up (0 = no ramp) |
+| `instance_noise_std` | `0.05` | Discriminator instance-noise std |
+| `discriminator_use_spectral_norm` | unset | Unset inherits the CLI/YAML `training.discriminator_use_spectral_norm` (default `true`); a step value that differs from a loaded D rebuilds it, **reinitialised**, with a warning |
+
+For v0.10.0 compressors the discriminator is built with `ctx_dim=0` (SPADE always
+conditions the generator, so `ctx_proj` is unused); `ctx_proj.*` keys in old `D_img`
+checkpoints are ignored on load (info log). A saved D whose keys/shapes do not match
+(e.g. spectral-norm `weight_orig` vs `weight`) is never partially loaded: it is
+reinitialised with a warning.
+
+### Scheduler and VAETrainer Step Budgets
+
+A global step is one batch (all resolution groups of that batch share it). The VAE and
+discriminator schedulers step at most once per global step, only when the optimizer
+stepped, so their `T_max` is `n_epochs * min(batches_per_epoch, max_steps)` divided by
+`gradient_accumulation_steps`. The undivided count is passed to VAETrainer as
+`total_training_steps`.
 
 ### Auto-Create Missing Models
 

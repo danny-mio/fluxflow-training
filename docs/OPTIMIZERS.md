@@ -197,11 +197,28 @@ Root mean square propagation optimizer. Adapts learning rates per parameter.
 
 ## VAE Weight-Decay Exemption (v0.10.0+)
 
-The VAE optimizer always places identity-gating scalars (parameters named
-`*_scale` with a single element, e.g. `conv1_scale`, SPADE `beta_scale` /
-`gamma_scale`, `ctx_zinject_*_scale`) in a `weight_decay=0` param group; the
-configured `weight_decay` applies to everything else. Decay would otherwise
-pull these gates toward their "off" value. Not configurable.
+The VAE optimizer always places the following in a `weight_decay=0` param group;
+the configured `weight_decay` applies to everything else. Not configurable.
+
+- Identity-gating scalars (parameters named `*_scale` with a single element, e.g.
+  `conv1_scale`, SPADE `beta_scale` / `gamma_scale`, `ctx_zinject_*_scale`): decay
+  would pull these gates toward their "off" value.
+- Every parameter of a trainable activation module (`TrainableBezier`,
+  `WideTrainableBezier`, `TrainablePade`, `WideTrainablePade`; detected by module
+  type): decay would drag Bezier control points / Pade coefficients toward zero,
+  i.e. flatten the learned activation instead of regularising it.
+
+Resuming a checkpoint saved with an older group layout is supported: optimizer
+state is remapped per parameter via the saved `orig_idx`.
+
+## Discriminator Optimizer Defaults
+
+With no `discriminator` entry in a step's `optimization.optimizers` (or no
+`optimization` block at all) the discriminator gets the GAN-tuned defaults of
+`get_default_optimizer_config("discriminator")` (AdamW, `betas: [0.0, 0.9]`,
+`weight_decay: 0.001`, `amsgrad: true`; Lion-scaled variant when the `vae`
+optimizer is Lion) -- never the VAE optimizer's settings. A step-level `lr`
+overrides the default `lr` in the no-`optimization` case.
 
 ## Split Text Encoder Optimizers (v0.10.0+)
 

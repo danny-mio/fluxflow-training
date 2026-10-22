@@ -23,7 +23,8 @@ def d_hinge_loss(real_logits: torch.Tensor, fake_logits: torch.Tensor) -> torch.
     """
     Hinge loss for discriminator training.
 
-    Encourages real_logits > 1 and fake_logits < -1.
+    Encourages real_logits > 1 and fake_logits < -1. Applied per patch (the
+    hinge is taken before averaging), so one bad patch is not masked by good ones.
 
     Args:
         real_logits: Discriminator output for real samples
@@ -32,9 +33,7 @@ def d_hinge_loss(real_logits: torch.Tensor, fake_logits: torch.Tensor) -> torch.
     Returns:
         Scalar hinge loss
     """
-    r = F.relu(1.0 - _reduce_logits(real_logits)).mean()
-    f = F.relu(1.0 + _reduce_logits(fake_logits)).mean()
-    return r + f
+    return F.relu(1.0 - real_logits).mean() + F.relu(1.0 + fake_logits).mean()
 
 
 def g_hinge_loss(fake_logits: torch.Tensor) -> torch.Tensor:
@@ -49,7 +48,7 @@ def g_hinge_loss(fake_logits: torch.Tensor) -> torch.Tensor:
     Returns:
         Scalar hinge loss
     """
-    return -_reduce_logits(fake_logits).mean()
+    return -fake_logits.mean()
 
 
 def r1_penalty(real_imgs: torch.Tensor, d_out: torch.Tensor) -> torch.Tensor:
@@ -88,7 +87,8 @@ def kl_standard_normal(
     """
     KL divergence between learned Gaussian and standard normal.
 
-    Optionally applies free-bits constraint (minimum KL per dimension).
+    Optionally applies free-bits: the batch-mean KL of each latent dimension
+    (C, H, W position) is floored at ``free_bits_nats``; floored dims carry no gradient.
 
     Args:
         mu: Mean tensor [B, D, H, W]
@@ -111,7 +111,8 @@ def kl_standard_normal(
     kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
 
     if free_bits_nats > 0.0:
-        kl = torch.clamp(kl, min=free_bits_nats)
+        below = kl.mean(dim=0, keepdim=True) < free_bits_nats
+        kl = torch.where(below, torch.full_like(kl, free_bits_nats), kl)
 
     if normalize_by_dims:
         # Mean over all dimensions (resolution-invariant, recommended for new training)

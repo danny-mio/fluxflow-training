@@ -14,6 +14,23 @@ logger = logging.getLogger(__name__)
 
 GATING_SCALE_SUFFIX = "_scale"
 
+
+def _activation_module_types() -> tuple[type, ...]:
+    """Trainable Bezier/Pade activation classes from fluxflow core (those available)."""
+    import fluxflow.models as models
+
+    types: list[type] = [
+        getattr(models, n) for n in ("TrainableBezier", "WideTrainableBezier") if hasattr(models, n)
+    ]
+    try:
+        from fluxflow.models.pade_activation import TrainablePade, WideTrainablePade
+
+        types += [TrainablePade, WideTrainablePade]
+    except ImportError:
+        pass
+    return tuple(types)
+
+
 SUPPORTED_OPTIMIZERS = {
     "Lion": Lion,
     "AdamW": optim.AdamW,
@@ -75,20 +92,32 @@ def validate_optimizer_config(optimizer_config: Dict[str, Any]) -> None:
 
 def split_weight_decay_groups(
     named_params: Iterable[tuple[str, nn.Parameter]],
+    modules: Optional[Iterable[nn.Module]] = None,
 ) -> list[Dict[str, Any]]:
     """Split params into decay / no-decay groups.
 
-    Zero-/identity-gating scalars (name ends with ``_scale``, numel()==1) get
-    ``weight_decay=0`` so decay does not pull them toward "off". Each group keeps
-    ``orig_idx`` (positions in the input order) so single-group optimizer state
-    from older checkpoints can be remapped (see ``remap_optimizer_state``).
-    Empty groups are dropped.
+    No-decay (``weight_decay=0``): zero-/identity-gating scalars (name ends with
+    ``_scale``, numel()==1) so decay does not pull them toward "off", and -- when
+    ``modules`` (root modules the params come from) is given -- every parameter of
+    a trainable Bezier/Pade activation module (decaying control points / rational
+    coefficients drags the activation toward zero). Each group keeps ``orig_idx``
+    (positions in the input order) so single-group optimizer state from older
+    checkpoints can be remapped (see ``remap_optimizer_state``). Empty groups are
+    dropped.
     """
+    act_types = _activation_module_types()
+    act_ids = {
+        id(p)
+        for root in (modules or ())
+        for m in root.modules()
+        if isinstance(m, act_types)
+        for p in m.parameters()
+    }
     decay: list[tuple[int, nn.Parameter]] = []
     no_decay: list[tuple[int, nn.Parameter]] = []
     for i, (name, p) in enumerate(named_params):
-        gated = name.endswith(GATING_SCALE_SUFFIX) and p.numel() == 1
-        (no_decay if gated else decay).append((i, p))
+        exempt = (name.endswith(GATING_SCALE_SUFFIX) and p.numel() == 1) or id(p) in act_ids
+        (no_decay if exempt else decay).append((i, p))
     groups: list[Dict[str, Any]] = []
     for items, extra in ((decay, {}), (no_decay, {"weight_decay": 0.0})):
         if items:
@@ -98,23 +127,37 @@ def split_weight_decay_groups(
     return groups
 
 
+def _saved_orig_idx(saved_groups: list[Dict[str, Any]]) -> Optional[list[list[int]]]:
+    """Per saved group, the original param positions (``orig_idx``); a lone legacy
+    group without ``orig_idx`` is positional. ``None`` if not derivable."""
+    if all("orig_idx" in g for g in saved_groups):
+        return [list(g["orig_idx"]) for g in saved_groups]
+    if len(saved_groups) == 1:
+        return [list(range(len(saved_groups[0]["params"])))]
+    return None
+
+
 def remap_optimizer_state(
     optimizer: optim.Optimizer, saved: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
-    """Make ``saved`` loadable into ``optimizer`` when group counts differ.
+    """Make ``saved`` loadable into ``optimizer`` when the param-group layout differs.
 
-    Returns ``saved`` unchanged if group counts match; a remapped copy if a
-    single-group state can be spread over groups carrying ``orig_idx``; ``None``
-    if the mismatch cannot be resolved.
+    Returns ``saved`` unchanged if the layouts already match (same group sizes); a
+    remapped copy if the saved state can be re-spread over the optimizer's groups via
+    ``orig_idx`` (single legacy group, or groups whose membership changed, e.g. newly
+    weight-decay-exempt params); ``None`` if the mismatch cannot be resolved.
     """
     groups = optimizer.param_groups
-    if len(saved["param_groups"]) == len(groups):
+    saved_groups = saved["param_groups"]
+    if [len(g["params"]) for g in saved_groups] == [len(g["params"]) for g in groups]:
         return saved
-    if len(saved["param_groups"]) != 1 or any("orig_idx" not in g for g in groups):
+    saved_idx = _saved_orig_idx(saved_groups)
+    if saved_idx is None or any("orig_idx" not in g for g in groups):
         return None
-    old_group = saved["param_groups"][0]
-    old_ids = old_group["params"]
-    if sorted(i for g in groups for i in g["orig_idx"]) != list(range(len(old_ids))):
+    old_ids = {
+        oi: pid for g, idx in zip(saved_groups, saved_idx) for oi, pid in zip(idx, g["params"])
+    }
+    if sorted(i for g in groups for i in g["orig_idx"]) != sorted(old_ids):
         return None
     state: Dict[int, Any] = {}
     new_groups: list[Dict[str, Any]] = []
@@ -127,7 +170,7 @@ def remap_optimizer_state(
             ids.append(k)
             k += 1
         new_groups.append(
-            {**old_group, "params": ids, "orig_idx": g["orig_idx"]}
+            {**saved_groups[0], "params": ids, "orig_idx": g["orig_idx"]}
             | ({"weight_decay": g["weight_decay"]} if "weight_decay" in g else {})
         )
     return {"state": state, "param_groups": new_groups}

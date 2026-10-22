@@ -141,7 +141,7 @@ class TestTrainDiscriminatorNanGuardHealthyPath:
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
-        result = trainer._train_discriminator(real_imgs, global_step=1)
+        result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         accelerator.backward.assert_called_once()
         trainer.discriminator_optimizer.step.assert_called_once()
@@ -163,7 +163,7 @@ class TestTrainDiscriminatorNanGuardSkip:
             "fluxflow_training.training.vae_trainer.d_hinge_loss",
             return_value=torch.tensor(float("nan")),
         ):
-            result = trainer._train_discriminator(real_imgs, global_step=1)
+            result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         accelerator.backward.assert_not_called()
         trainer.discriminator_optimizer.step.assert_not_called()
@@ -179,7 +179,7 @@ class TestTrainDiscriminatorNanGuardSkip:
             "fluxflow_training.training.vae_trainer.d_hinge_loss",
             return_value=torch.tensor(float("inf")),
         ):
-            result = trainer._train_discriminator(real_imgs, global_step=1)
+            result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         accelerator.backward.assert_not_called()
         trainer.discriminator_optimizer.step.assert_not_called()
@@ -196,7 +196,7 @@ class TestTrainDiscriminatorNanGuardSkip:
                 "fluxflow_training.training.vae_trainer.d_hinge_loss",
                 return_value=torch.tensor(float("nan")),
             ):
-                trainer._train_discriminator(real_imgs, global_step=1)
+                trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         text = caplog.text.lower()
         assert "d_hinge" in text
@@ -219,7 +219,7 @@ class TestTrainDiscriminatorNanGuardDoR1False:
             return_value=torch.tensor(float("nan")),
         ):
             # Must not raise UnboundLocalError/NameError for undefined `r1`.
-            result = trainer._train_discriminator(real_imgs, global_step=1)
+            result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         assert result == {"d_loss": 0.0, "_optimizer_stepped": False}
 
@@ -239,7 +239,7 @@ class TestTrainDiscriminatorNanGuardDoR1True:
                 "fluxflow_training.training.vae_trainer.d_hinge_loss",
                 return_value=torch.tensor(float("nan")),
             ):
-                result = trainer._train_discriminator(real_imgs, global_step=0)
+                result = trainer._train_discriminator(real_imgs, global_step=0, fake_imgs=real_imgs)
 
         assert result == {"d_loss": 0.0, "_optimizer_stepped": False}
         accelerator.backward.assert_not_called()
@@ -267,7 +267,7 @@ class TestTrainDiscriminatorNanGuardAccumulation:
             "fluxflow_training.training.vae_trainer.d_hinge_loss",
             return_value=torch.tensor(float("nan")),
         ):
-            result = trainer._train_discriminator(real_imgs, global_step=1)
+            result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         accelerator.backward.assert_not_called()
         trainer.discriminator_optimizer.step.assert_not_called()

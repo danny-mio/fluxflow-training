@@ -5,6 +5,7 @@ loss-threshold transitions, and checkpoint management.
 """
 
 import gc
+from contextlib import nullcontext
 from itertools import chain
 import math
 from dataclasses import asdict
@@ -14,7 +15,14 @@ import torch.nn as nn
 from fluxflow.utils import get_logger, safe_vae_sample, save_sample_images
 
 from .checkpoint_manager import CheckpointManager
+from .optimizer_factory import get_default_optimizer_config
 from .pipeline_config import PipelineConfig, PipelineStepConfig
+from .utils import (
+    discriminator_ctx_dim,
+    has_spectral_norm,
+    rebuild_discriminator,
+    record_gan_losses,
+)
 
 logger = get_logger(__name__)
 
@@ -66,6 +74,21 @@ def compute_batches_per_epoch(dataset_size: int, batch_size: int) -> int:
     still yielded -- use ceil division, not floor.
     """
     return max(1, math.ceil(dataset_size / batch_size))
+
+
+def compute_total_global_steps(
+    n_epochs: int, batches_per_epoch: int, max_steps: Optional[int]
+) -> int:
+    """Number of global steps (one per batch) a pipeline step will run.
+
+    ``max_steps`` caps batches per epoch (mirrors ``epoch_total_batches`` in ``run``).
+    This is the budget for ``VAETrainer.total_training_steps`` and, divided by
+    ``gradient_accumulation_steps`` for gated schedulers, for scheduler ``T_max``:
+    VAETrainer steps its schedulers at most once per distinct global_step (and only
+    when the optimizer stepped), however many resolution groups a batch contains.
+    """
+    per_epoch = min(batches_per_epoch, max_steps) if max_steps else batches_per_epoch
+    return max(1, n_epochs * per_epoch)
 
 
 class FastForwardDataLoader:
@@ -819,7 +842,8 @@ class TrainingPipelineOrchestrator:
                     chain(
                         models["compressor"].named_parameters(),
                         models["expander"].named_parameters(),
-                    )
+                    ),
+                    modules=[models["compressor"], models["expander"]],
                 )
                 optimizers["vae"] = create_optimizer(vae_params, default_opt_config)
                 logger.info(
@@ -834,11 +858,15 @@ class TrainingPipelineOrchestrator:
                         f"Step '{step.name}' requires GAN training (gan_training=true) "
                         f"but discriminator model (D_img) is not available"
                     )
+                disc_default = get_default_optimizer_config("discriminator")
+                if getattr(step, "lr", None):
+                    disc_default = {**disc_default, "lr": step.lr}
                 optimizers["discriminator"] = create_optimizer(
-                    models["D_img"].parameters(), default_opt_config
+                    models["D_img"].parameters(), disc_default
                 )
                 logger.info(
-                    f"✓ Created default discriminator optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
+                    f"✓ Created default discriminator optimizer: {disc_default['type']} "
+                    f"(lr={disc_default['lr']:.2e}, betas={disc_default['betas']})"
                 )
 
             # Create flow optimizer if training flow
@@ -879,7 +907,8 @@ class TrainingPipelineOrchestrator:
                     chain(
                         models["compressor"].named_parameters(),
                         models["expander"].named_parameters(),
-                    )
+                    ),
+                    modules=[models["compressor"], models["expander"]],
                 )
             elif name == "discriminator":
                 params = models["D_img"].parameters()
@@ -921,33 +950,21 @@ class TrainingPipelineOrchestrator:
                     f"but discriminator model (D_img) is not available"
                 )
 
-            # Use same config as VAE optimizer if available, else use defaults
-            if "vae" in optimizers and step.optimization.optimizers.get("vae"):
-                vae_config_obj = step.optimization.optimizers["vae"]
-                if hasattr(vae_config_obj, "__dataclass_fields__"):
-                    disc_opt_config = {
-                        k: v for k, v in asdict(vae_config_obj).items() if v is not None
-                    }
-                else:
-                    disc_opt_config = (
-                        vae_config_obj.copy() if isinstance(vae_config_obj, dict) else {}
-                    )
-                logger.info(f"Using VAE optimizer config for discriminator")
-            else:
-                disc_opt_config = {
-                    "type": "AdamW",
-                    "lr": 0.0001,
-                    "weight_decay": 0.01,
-                    "betas": (0.9, 0.999),
-                }
-                logger.info(f"Using default AdamW config for discriminator")
+            # GAN-tuned discriminator defaults (betas [0, 0.9], ...); never the VAE
+            # optimizer config. A Lion VAE optimizer selects the Lion-scaled variant.
+            vae_cfg = step.optimization.optimizers.get("vae")
+            vae_type = (
+                vae_cfg.get("type") if isinstance(vae_cfg, dict) else getattr(vae_cfg, "type", None)
+            )
+            disc_opt_config = get_default_optimizer_config("discriminator", vae_type)
+            logger.info("Using default discriminator optimizer config (GAN-tuned)")
 
             optimizers["discriminator"] = create_optimizer(
                 models["D_img"].parameters(), disc_opt_config
             )
             logger.info(
                 f"✓ Created discriminator optimizer: {disc_opt_config.get('type', 'AdamW')} "
-                f"(lr={disc_opt_config.get('lr', 0.0001):.2e})"
+                f"(lr={disc_opt_config['lr']:.2e})"
             )
 
         return optimizers
@@ -955,12 +972,13 @@ class TrainingPipelineOrchestrator:
     def _create_step_schedulers(self, step, optimizers, total_steps):
         """Create schedulers for current step from inline config.
 
-        ``total_steps`` is the real number of micro-batches (n_epochs *
-        batches_per_epoch) the step will process. For scheduler names in
+        ``total_steps`` is the number of global steps (one per batch, see
+        ``compute_total_global_steps``) the step will run. For scheduler names in
         _ACCUMULATION_GATED_SCHEDULER_NAMES (all FlowTrainer- and
-        VAETrainer-managed schedulers), the actual number of scheduler.step()
-        calls is gated by gradient_accumulation_steps, so their step budget is
-        divided accordingly.
+        VAETrainer-managed schedulers), scheduler.step() fires at most once per
+        global step and only when the optimizer stepped (every
+        gradient_accumulation_steps calls), so their step budget is divided
+        accordingly.
         """
         from ..training.scheduler_factory import create_scheduler
 
@@ -996,8 +1014,38 @@ class TrainingPipelineOrchestrator:
 
         return schedulers
 
-    def _create_step_trainers(self, step, models, optimizers, schedulers, ema, args):
-        """Create trainers for current step."""
+    @staticmethod
+    def _want_spectral_norm(step, args) -> bool:
+        """Step flag wins; unset (None) inherits the CLI/YAML ``args`` flag (default True)."""
+        flag = getattr(step, "discriminator_use_spectral_norm", None)
+        return bool(
+            getattr(args, "discriminator_use_spectral_norm", True) if flag is None else flag
+        )
+
+    def _ensure_discriminator_spectral_norm(self, step, models, args) -> None:
+        """Honour the step's spectral-norm setting: rebuild (reinitialise, loudly) a
+        loaded D whose format differs. Must run before D's optimizer is created."""
+        old = models.get("D_img")
+        if not step.gan_training or old is None:
+            return
+        want = self._want_spectral_norm(step, args)
+        if has_spectral_norm(old) == want:
+            return
+        logger.warning(
+            f"Step '{step.name}': discriminator_use_spectral_norm={want} differs from the "
+            f"loaded D_img (spectral_norm={not want}); weight formats are incompatible, "
+            f"reinitialising the discriminator from scratch."
+        )
+        models["D_img"] = rebuild_discriminator(old, want).to(self.device)
+
+    def _create_step_trainers(
+        self, step, models, optimizers, schedulers, ema, args, total_steps=None
+    ):
+        """Create trainers for current step.
+
+        ``total_steps``: global steps this pipeline step runs (VAETrainer
+        ``total_training_steps``); omitted from the trainer call when None.
+        """
         import torch.nn as nn
 
         from ..training import FlowTrainer, VAETrainer
@@ -1047,18 +1095,9 @@ class TrainingPipelineOrchestrator:
                 # may be missing, wrong, or not match the checkpoint on disk.
                 vae_dim = models["compressor"].d_model
 
-                # Calculate expected context dimension.
-                # ctx_vec = img_seq.mean(dim=1) has dim = packed_token_width = vae_dim +
-                # context_dims.  For v0.10.0, get_context_dims() returns d_model (== vae_dim)
-                # so packed_token_width = 2 * d_model.  For v0.8.0 and earlier,
-                # get_context_dims() is not defined; fall back to the legacy constant
-                # vae_dim + 5 = 133 (CONTEXT_DIMS from v070).
-                try:
-                    context_dims = models["compressor"].get_context_dims()
-                    expected_ctx_dim = vae_dim + context_dims
-                except (AttributeError, TypeError):
-                    # v0.7.0/v0.8.0 compressors without get_context_dims(); use legacy value.
-                    expected_ctx_dim = vae_dim + 5  # CONTEXT_DIMS = 5 for v070/v080
+                # v0.10.0 compressors always run SPADE, so D never sees a ctx vector:
+                # ctx_dim=0 (no ctx_proj). Older ones: vae_dim + get_context_dims().
+                expected_ctx_dim = discriminator_ctx_dim(models["compressor"], vae_dim)
 
                 base_ch = getattr(args, "feature_maps_dim_disc", 32)
 
@@ -1071,7 +1110,7 @@ class TrainingPipelineOrchestrator:
                         in_channels=channels,
                         base_ch=base_ch,
                         ctx_dim=expected_ctx_dim,
-                        use_spectral_norm=getattr(step, "discriminator_use_spectral_norm", True),
+                        use_spectral_norm=self._want_spectral_norm(step, args),
                     ).to(self.device)
                 else:
                     actual_ctx_dim = getattr(models["D_img"], "ctx_dim", 0)
@@ -1113,6 +1152,7 @@ class TrainingPipelineOrchestrator:
             except (AttributeError, TypeError):
                 pass  # legacy compressor; VAETrainer will auto-detect
 
+            extra_kwargs = {} if total_steps is None else {"total_training_steps": total_steps}
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
                 expander=models["expander"],
@@ -1133,6 +1173,7 @@ class TrainingPipelineOrchestrator:
                 ),
                 kl_beta=step.kl_beta if hasattr(step, "kl_beta") else 0.0001,
                 kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
+                kl_z_warmup_steps=getattr(step, "kl_z_warmup_steps", 10000),
                 kl_free_bits=step.kl_free_bits if hasattr(step, "kl_free_bits") else 0.0,
                 use_gan=step.gan_training,
                 discriminator=models["D_img"] if step.gan_training else None,
@@ -1145,7 +1186,7 @@ class TrainingPipelineOrchestrator:
                 r1_gamma=step.r1_gamma if hasattr(step, "r1_gamma") else 5.0,
                 r1_interval=step.r1_interval if hasattr(step, "r1_interval") else 16,
                 instance_noise_std=(
-                    step.instance_noise_std if hasattr(step, "instance_noise_std") else 0.01
+                    step.instance_noise_std if hasattr(step, "instance_noise_std") else 0.05
                 ),
                 instance_noise_decay=(
                     step.instance_noise_decay if hasattr(step, "instance_noise_decay") else 0.9999
@@ -1155,7 +1196,9 @@ class TrainingPipelineOrchestrator:
                 ),
                 mse_weight=step.mse_weight if hasattr(step, "mse_weight") else 0.1,
                 lambda_ctx_aux=step.lambda_ctx_aux if hasattr(step, "lambda_ctx_aux") else 0.01,
-                train_ctx_aux=getattr(step, "train_ctx_aux", True),
+                train_ctx_aux=getattr(step, "train_ctx_aux", False),
+                gan_start_step=getattr(step, "gan_start_step", 0),
+                gan_warmup_steps=getattr(step, "gan_warmup_steps", 1000),
                 # v0.10.0: latent cycle loss (image-space G.E idempotence).
                 train_latent_cycle=getattr(step, "train_latent_cycle", False),
                 lambda_latent_cycle=getattr(step, "lambda_latent_cycle", 1.0),
@@ -1195,6 +1238,7 @@ class TrainingPipelineOrchestrator:
                 # optimizers now share one accumulation-boundary counter -- see
                 # VAETrainer.gradient_accumulation_steps / _accumulation_step.
                 gradient_accumulation_steps=step.gradient_accumulation_steps,
+                **extra_kwargs,
             )
 
             # Build descriptive message about what's being trained
@@ -1307,12 +1351,15 @@ class TrainingPipelineOrchestrator:
         # Save models with model configuration metadata
         # TODO: Extract model config from pipeline config
         model_config = models.get("model_config", {})
-        self.checkpoint_manager.save_models(
-            diffuser=models["diffuser"],
-            text_encoder=models["text_encoder"],
-            discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
-            model_config=model_config,
-        )
+        # Exported weights are the EMA weights; the training state below is saved with
+        # the raw weights (+ EMA state) so resume is exact.
+        with ema.applied() if ema is not None else nullcontext():
+            self.checkpoint_manager.save_models(
+                diffuser=models["diffuser"],
+                text_encoder=models["text_encoder"],
+                discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
+                model_config=model_config,
+            )
 
         # Save training state with pipeline metadata
         self.checkpoint_manager.save_training_state(
@@ -1331,7 +1378,16 @@ class TrainingPipelineOrchestrator:
         )
 
     def _generate_samples(
-        self, step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
+        self,
+        step,
+        step_idx,
+        epoch,
+        batch_idx,
+        models,
+        tokenizer,
+        args,
+        parsed_sample_sizes,
+        ema=None,
     ):
         """
         Generate sample images for monitoring training progress.
@@ -1345,9 +1401,19 @@ class TrainingPipelineOrchestrator:
             tokenizer: Tokenizer instance
             args: Training arguments
             parsed_sample_sizes: List of sample size tuples
+            ema: Optional EMA; samples are generated with its weights (raw restored after)
         """
         if args.no_samples:
             return
+        with ema.applied() if ema is not None else nullcontext():
+            self._generate_samples_impl(
+                step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
+            )
+
+    def _generate_samples_impl(
+        self, step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
+    ):
+        """Sample generation body of :meth:`_generate_samples` (weights already swapped)."""
 
         diffuser = models.get("diffuser")
         text_encoder = models.get("text_encoder")
@@ -1555,6 +1621,9 @@ class TrainingPipelineOrchestrator:
             else:
                 logger.info("Using default dataloader (no dataset specified for this step)")
 
+            # Honour the step's D spectral-norm setting before freezing / optimizer creation
+            self._ensure_discriminator_spectral_norm(step, models, args)
+
             # Configure models for this step (freeze/unfreeze)
             self.configure_step_models(step, models)
 
@@ -1564,11 +1633,13 @@ class TrainingPipelineOrchestrator:
 
             # Create optimizers and schedulers for this step
             optimizers = self._create_step_optimizers(step, models, args)
-            # Real number of micro-batches this step will process. Division by
-            # gradient_accumulation_steps (where applicable) happens inside
+            # Global steps (one per batch, honouring max_steps) this step will run.
+            # Division by gradient_accumulation_steps (where applicable) happens inside
             # _create_step_schedulers, scoped per scheduler name -- see
             # _ACCUMULATION_GATED_SCHEDULER_NAMES.
-            total_steps = max(1, step.n_epochs * batches_per_epoch)
+            total_steps = compute_total_global_steps(
+                step.n_epochs, batches_per_epoch, step.max_steps
+            )
             schedulers = self._create_step_schedulers(step, optimizers, total_steps)
 
             # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)
@@ -1601,7 +1672,9 @@ class TrainingPipelineOrchestrator:
                     )
 
             # Create trainers for this step
-            trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
+            trainers = self._create_step_trainers(
+                step, models, optimizers, schedulers, ema, args, total_steps=total_steps
+            )
 
             # Training loop for this step
             step_start_time = time.time()
@@ -1743,6 +1816,7 @@ class TrainingPipelineOrchestrator:
                             # Track GAN losses if available
                             if "generator" in vae_losses:
                                 g_errors.add_item(vae_losses["generator"])
+                                record_gan_losses(trainers["vae"], vae_losses)
                             if "discriminator" in vae_losses:
                                 d_errors.add_item(vae_losses["discriminator"])
                             if "lpips" in vae_losses:
@@ -1991,6 +2065,7 @@ class TrainingPipelineOrchestrator:
                                 tokenizer,
                                 args,
                                 parsed_sample_sizes,
+                                ema=ema,
                             )
 
                             # Clear cache after sample generation
@@ -2010,7 +2085,15 @@ class TrainingPipelineOrchestrator:
 
                 # Generate samples after epoch completes (use last batch_idx)
                 self._generate_samples(
-                    step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
+                    step,
+                    step_idx,
+                    epoch,
+                    batch_idx,
+                    models,
+                    tokenizer,
+                    args,
+                    parsed_sample_sizes,
+                    ema=ema,
                 )
 
                 # Aggressive memory cleanup at end of epoch

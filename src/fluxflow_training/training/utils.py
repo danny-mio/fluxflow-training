@@ -1,11 +1,17 @@
 """Training utilities for FluxFlow (EMA, buffers, device detection)."""
 
+import logging
 import time
-from typing import Any, Callable, Dict, Iterator, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+
+logger = logging.getLogger(__name__)
+
+LEGACY_CTX_DIM_OFFSET = 5  # CONTEXT_DIMS of pre-v0.10.0 compressors
 
 
 class FloatBuffer:
@@ -78,6 +84,15 @@ class EMA:
             self.model.load_state_dict(self._original)
             self._original = None
 
+    @contextmanager
+    def applied(self) -> Iterator[None]:
+        """Context manager: EMA weights inside, raw weights always restored."""
+        self.apply_shadow()
+        try:
+            yield
+        finally:
+            self.restore()
+
     def copy_to(self, model: nn.Module) -> None:
         """
         Copy EMA shadow parameters to another model.
@@ -114,6 +129,91 @@ class EMA:
             self.shadow = shadow_state
         # Ensure all shadow parameters are on the correct device
         self.shadow = {k: v.to(self.device) for k, v in self.shadow.items()}
+
+
+def record_gan_losses(trainer: Any, losses: Mapping[str, float]) -> None:
+    """Feed the trainer's generator-loss rolling buffer (``generator_avg``) from a step's losses."""
+    buf = getattr(trainer, "g_loss_buffer", None)
+    if buf is not None and "generator" in losses:
+        buf.add_item(losses["generator"])
+
+
+def has_spectral_norm(model: nn.Module) -> bool:
+    """True if ``model`` carries torch spectral-norm params (``*.weight_orig``)."""
+    return any(k.endswith("weight_orig") for k in model.state_dict())
+
+
+def rebuild_discriminator(old: nn.Module, use_spectral_norm: bool) -> nn.Module:
+    """Fresh PatchDiscriminator with ``old``'s architecture but the given spectral-norm
+    setting (weights are NOT carried over: the key formats are incompatible)."""
+    from fluxflow.models import PatchDiscriminator
+
+    convs = [m for m in old.backbone if hasattr(m, "out_channels")]  # type: ignore[union-attr]
+    first = convs[0]
+    return PatchDiscriminator(
+        in_channels=first.in_channels,
+        base_ch=first.out_channels,
+        depth=len(convs) - 1,
+        ctx_dim=int(getattr(old, "ctx_dim", 0)),
+        use_spectral_norm=use_spectral_norm,
+    )
+
+
+def discriminator_ctx_dim(compressor: Any, vae_dim: int) -> int:
+    """ctx_dim for PatchDiscriminator.
+
+    v0.10.0 compressors (expose ``ctx_zinject_norm``) always run SPADE, so the
+    discriminator never receives a ctx vector: build with 0 (no ``ctx_proj``).
+    Older compressors: ``vae_dim + get_context_dims()`` (legacy fallback ``+5``).
+    """
+    if getattr(compressor, "ctx_zinject_norm", None) is not None:
+        return 0
+    try:
+        dims = compressor.get_context_dims()
+        return int(vae_dim + int(dims.item() if hasattr(dims, "item") else dims))
+    except (AttributeError, TypeError, ValueError):
+        return int(vae_dim + LEGACY_CTX_DIM_OFFSET)
+
+
+def load_discriminator_state(disc: nn.Module, saved: Mapping[str, torch.Tensor]) -> bool:
+    """Strictly load ``saved`` into ``disc``; never partially load.
+
+    Legacy ``ctx_proj.*`` keys are dropped (info log) when ``disc`` has none.
+    On missing/unexpected keys (e.g. spectral-norm ``weight_orig`` vs ``weight``
+    format) or shape mismatch, logs a warning, leaves ``disc`` untouched and
+    returns False so the caller can reinitialise loudly.
+    """
+    current = disc.state_dict()
+    saved = dict(saved)
+    if not hasattr(disc, "ctx_proj"):
+        stale = [k for k in saved if k.startswith("ctx_proj.")]
+        if stale:
+            logger.info(
+                "Ignoring %d legacy ctx_proj keys in saved D_img (unused for v0.10.0)", len(stale)
+            )
+            saved = {k: v for k, v in saved.items() if k not in stale}
+    missing = sorted(set(current) - set(saved))
+    unexpected = sorted(set(saved) - set(current))
+    bad_shape = sorted(k for k in set(current) & set(saved) if current[k].shape != saved[k].shape)
+    if not (missing or unexpected or bad_shape):
+        disc.load_state_dict(saved, strict=True)
+        return True
+    sn_saved = any(k.endswith("weight_orig") for k in saved)
+    hint = (
+        f" (spectral-norm format mismatch: saved={'weight_orig' if sn_saved else 'weight'}, "
+        f"current={'weight_orig' if has_spectral_norm(disc) else 'weight'})"
+        if sn_saved != has_spectral_norm(disc)
+        else ""
+    )
+    logger.warning(
+        "Saved D_img incompatible%s: missing=%s unexpected=%s shape_mismatch=%s. "
+        "Discriminator NOT loaded; reinitialising from scratch.",
+        hint,
+        missing[:3],
+        unexpected[:3],
+        bad_shape[:3],
+    )
+    return False
 
 
 def current_lr(optim: torch.optim.Optimizer) -> float:

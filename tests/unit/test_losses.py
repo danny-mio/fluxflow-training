@@ -1,5 +1,6 @@
 """Unit tests for training loss functions (src/training/losses.py)."""
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -362,3 +363,45 @@ class TestLossesIntegration:
         assert mu.grad is not None
         assert logvar.grad is not None
         assert fake_logits.grad is not None
+
+
+class TestPerPatchHinge:
+    def test_d_hinge_penalizes_bad_patches_despite_good_mean(self):
+        real = torch.tensor([[[[5.0, -3.0]]]])  # mean 1.0 (relu(1-mean)=0), patch -3 is bad
+        fake = torch.full((1, 1, 1, 2), -5.0)
+        assert d_hinge_loss(real, fake).item() == pytest.approx(2.0)  # mean(0,4)
+
+    def test_d_hinge_fake_patches(self):
+        real = torch.full((1, 1, 1, 2), 5.0)
+        fake = torch.tensor([[[[3.0, -5.0]]]])  # mean -1 -> old 0
+        assert d_hinge_loss(real, fake).item() == pytest.approx(2.0)
+
+    def test_g_hinge_is_negative_mean_over_all_elements(self):
+        f = torch.randn(3, 1, 4, 4)
+        assert g_hinge_loss(f).item() == pytest.approx(-f.mean().item(), rel=1e-5)
+
+    def test_r1_matches_mean_over_patches(self):
+        x = torch.randn(2, 3, 4, 4, requires_grad=True)
+        out = (x.mean(dim=1, keepdim=True)) ** 2
+        assert r1_penalty(x, out).item() >= 0
+
+
+class TestFreeBitsPerDimension:
+    def test_batch_mean_clamp_not_per_element(self):
+        mu = torch.zeros(2, 1, 1, 2)
+        mu[0, 0, 0, 0] = 3.0  # KL 4.5 in sample 0, dim 0
+        logvar = torch.zeros_like(mu)
+        kl = kl_standard_normal(mu, logvar, free_bits_nats=1.0, normalize_by_dims=True)
+        # dim0 batch-mean 2.25 (>1, unclamped); dim1 mean 0 -> clamped to 1
+        assert kl.item() == pytest.approx((2.25 + 1.0) / 2)
+
+    def test_clamped_dims_have_no_gradient(self):
+        mu = torch.zeros(2, 1, 1, 2, requires_grad=True)
+        kl_standard_normal(mu, torch.zeros_like(mu), free_bits_nats=1.0).backward()
+        assert torch.count_nonzero(mu.grad) == 0
+
+    def test_zero_free_bits_inert(self):
+        mu, lv = torch.randn(3, 2, 4, 4), torch.randn(3, 2, 4, 4)
+        a = kl_standard_normal(mu, lv)
+        b = kl_standard_normal(mu, lv, free_bits_nats=0.0)
+        assert torch.equal(a, b)

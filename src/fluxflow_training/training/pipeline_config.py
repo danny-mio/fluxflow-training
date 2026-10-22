@@ -160,9 +160,8 @@ class PipelineStepConfig:
     latent_cycle_reject_range: float = 1.05
     latent_cycle_reject_frac: float = 0.01
     # v0.10.0: gate for the ctx_aux_loss term (MSE(ctx_tokens_half, stop_grad(z_tokens_half))).
-    # Was previously hardcoded True in VAETrainer with no config exposure. Default
-    # unchanged (True) so existing configs keep current behavior.
-    train_ctx_aux: bool = True
+    # Default False: the stop-grad MSE against z_tokens only taxes the ctx head.
+    train_ctx_aux: bool = False
     use_ema: bool = True  # Exponential Moving Average (costs 2x model VRAM)
 
     # Classifier-Free Guidance (CFG) for text-conditioned flow training
@@ -248,17 +247,23 @@ class PipelineStepConfig:
     # GAN settings
     r1_interval: int = 16
     r1_gamma: float = 5.0
-    instance_noise_std: float = 0.01
+    instance_noise_std: float = 0.05
     instance_noise_decay: float = 0.9999
     adaptive_weights: bool = True
+    # GAN schedule: adversarial terms are off before ``gan_start_step`` and ramp up over
+    # ``gan_warmup_steps`` global steps afterwards (0 = no ramp).
+    gan_start_step: int = 0
+    gan_warmup_steps: int = 1000
     # Additive opt-in efficiency knob: run discriminator forward+backward every N
     # global steps. 1 (default) reproduces the historical every-step behavior.
     discriminator_update_freq: int = 1
     # Spectral normalization (Miyato et al. 2018) on PatchDiscriminator's conv layers.
     # Bounds the discriminator's Lipschitz constant, preventing the unbounded weight/
     # gradient growth that can drive it to NaN under the (unbounded) hinge loss.
-    # Defaults to True (safer setting) -- deliberate behavior change for all configs.
-    discriminator_use_spectral_norm: bool = True
+    # None (default) inherits the CLI/YAML ``training.discriminator_use_spectral_norm``
+    # (default True); an explicit value rebuilds D (reinitialised, loudly) when the loaded
+    # discriminator was built with the other setting.
+    discriminator_use_spectral_norm: Optional[bool] = None
 
     # Optimization configuration (inline YAML)
     optimization: Optional[OptimizationConfig] = None
@@ -468,6 +473,7 @@ class PipelineConfigValidator:
             )
 
         self._validate_latent_cycle(step, step_name, step_index)
+        self._validate_non_negative(step, step_name, step_index)
 
         # Validate freeze/unfreeze
         self._validate_freeze_unfreeze(step, step_name, step_index, training_modes)
@@ -478,6 +484,24 @@ class PipelineConfigValidator:
 
         # Validate transition criteria
         self._validate_transition(step.transition_on, step_name, step_index)
+
+    NON_NEGATIVE_KEYS = (
+        "gan_start_step",
+        "gan_warmup_steps",
+        "kl_z_warmup_steps",
+        "instance_noise_std",
+    )
+
+    def _validate_non_negative(
+        self, step: PipelineStepConfig, step_name: str, step_index: int
+    ) -> None:
+        """Validate keys that must be >= 0."""
+        for key in self.NON_NEGATIVE_KEYS:
+            if getattr(step, key) < 0:
+                self.errors.append(
+                    f"Step '{step_name}' (step {step_index + 1}): "
+                    f"{key}={getattr(step, key)} must be >= 0"
+                )
 
     def _validate_latent_cycle(
         self, step: PipelineStepConfig, step_name: str, step_index: int
@@ -807,7 +831,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         latent_cycle_posterior_frac=step_dict.get("latent_cycle_posterior_frac", 0.0),
         latent_cycle_reject_range=step_dict.get("latent_cycle_reject_range", 1.05),
         latent_cycle_reject_frac=step_dict.get("latent_cycle_reject_frac", 0.01),
-        train_ctx_aux=step_dict.get("train_ctx_aux", True),
+        train_ctx_aux=step_dict.get("train_ctx_aux", False),
         use_ema=step_dict.get("use_ema", True),
         cfg_dropout_prob=step_dict.get("cfg_dropout_prob", 0.0),
         num_train_timesteps=step_dict.get("num_train_timesteps", 1000),
@@ -837,11 +861,13 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         mse_weight=step_dict.get("mse_weight", 0.1),
         r1_interval=step_dict.get("r1_interval", 16),
         r1_gamma=step_dict.get("r1_gamma", 5.0),
-        instance_noise_std=step_dict.get("instance_noise_std", 0.01),
+        instance_noise_std=step_dict.get("instance_noise_std", 0.05),
         instance_noise_decay=step_dict.get("instance_noise_decay", 0.9999),
         adaptive_weights=step_dict.get("adaptive_weights", True),
+        gan_start_step=step_dict.get("gan_start_step", 0),
+        gan_warmup_steps=step_dict.get("gan_warmup_steps", 1000),
         discriminator_update_freq=step_dict.get("discriminator_update_freq", 1),
-        discriminator_use_spectral_norm=step_dict.get("discriminator_use_spectral_norm", True),
+        discriminator_use_spectral_norm=step_dict.get("discriminator_use_spectral_norm"),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),

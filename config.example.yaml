@@ -172,9 +172,30 @@ training:
   # Active only during VAE training steps. Default 0.01.
   lambda_ctx_aux: 0.01
 
-  # v0.10.0: gate for the ctx_aux_loss term above. Previously hardcoded True in
-  # VAETrainer with no config exposure. Default true (unchanged behavior).
-  train_ctx_aux: true
+  # v0.10.0: gate for the ctx_aux_loss term above. Default false (the stop-grad
+  # MSE only taxes the ctx head). Same default in --train_ctx_aux and pipeline steps.
+  train_ctx_aux: false
+
+  # KL_z cosine warmup length (used when kl_z_weight > 0). Legacy kl_warmup_steps
+  # is the remapped fallback in pipeline configs. Wired into both drivers.
+  kl_z_warmup_steps: 10000
+
+  # ctx shrinkage schedule (see ctx_shrinkage_weight above): off before the start
+  # step, cosine ramp over warmup_steps. Wired into both drivers.
+  ctx_shrinkage_warmup_start_step: 5000
+  ctx_shrinkage_warmup_steps: 5000
+
+  # GAN schedule: adversarial terms are off before gan_start_step, then ramp up over
+  # gan_warmup_steps global steps (0 = no ramp). Pipeline steps take the same keys.
+  gan_start_step: 0
+  gan_warmup_steps: 1000
+
+  # Discriminator instance noise (decays per step). Default 0.05.
+  instance_noise_std: 0.05
+  instance_noise_decay: 0.9999
+  # Spectral norm on D. In pipeline steps the per-step key overrides this; unset
+  # inherits it. A loaded D with the other format is reinitialised (with a warning).
+  discriminator_use_spectral_norm: true
 
   # v0.10.0: latent cycle loss (image-space G.E idempotence). The compressor
   # re-encodes an expander output; the frozen expander must decode it back to the

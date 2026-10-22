@@ -42,7 +42,7 @@ training:
         lambda_adv: 0.1
         r1_gamma: 5.0
         r1_interval: 16
-        instance_noise_std: 0.01
+        instance_noise_std: 0.05
         instance_noise_decay: 0.9999
         adaptive_weights: true
         mse_weight: 0.1

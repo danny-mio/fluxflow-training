@@ -310,7 +310,7 @@ class TestCtxAuxTrainingGateConfig:
 
     def test_train_ctx_aux_default(self):
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.train_ctx_aux is True
+        assert step.train_ctx_aux is False
 
     def test_train_ctx_aux_keys_load_from_yaml(self):
         cfg_dict = _wrap_step(
@@ -327,7 +327,7 @@ class TestCtxAuxTrainingGateConfig:
     def test_train_ctx_aux_keys_load_from_yaml_default_when_absent(self):
         cfg_dict = _wrap_step({"name": "vae", "n_epochs": 1, "train_vae": True})
         cfg = parse_pipeline_config(cfg_dict)
-        assert cfg.steps[0].train_ctx_aux is True
+        assert cfg.steps[0].train_ctx_aux is False
 
     def test_direct_construction_with_train_ctx_aux_key(self):
         step = PipelineStepConfig(
@@ -345,7 +345,7 @@ class TestDiscriminatorUseSpectralNormConfig:
 
     def test_discriminator_use_spectral_norm_default(self):
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.discriminator_use_spectral_norm is True
+        assert step.discriminator_use_spectral_norm is None  # inherits CLI (default True)
 
     def test_discriminator_use_spectral_norm_keys_load_from_yaml(self):
         cfg_dict = _wrap_step(
@@ -362,7 +362,7 @@ class TestDiscriminatorUseSpectralNormConfig:
     def test_discriminator_use_spectral_norm_keys_load_from_yaml_default_when_absent(self):
         cfg_dict = _wrap_step({"name": "vae", "n_epochs": 1, "train_vae": True})
         cfg = parse_pipeline_config(cfg_dict)
-        assert cfg.steps[0].discriminator_use_spectral_norm is True
+        assert cfg.steps[0].discriminator_use_spectral_norm is None
 
     def test_direct_construction_with_discriminator_use_spectral_norm_key(self):
         step = PipelineStepConfig(
@@ -372,3 +372,43 @@ class TestDiscriminatorUseSpectralNormConfig:
             discriminator_use_spectral_norm=False,
         )
         assert step.discriminator_use_spectral_norm is False
+
+
+class TestGanScheduleAndNoiseConfig:
+    """gan_start_step / gan_warmup_steps / instance_noise_std defaults + validation."""
+
+    def test_defaults(self):
+        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
+        assert step.gan_start_step == 0
+        assert step.gan_warmup_steps == 1000
+        assert step.instance_noise_std == 0.05
+        assert step.discriminator_use_spectral_norm is None  # inherit CLI
+
+    def test_yaml_defaults_and_overrides(self):
+        base = {"name": "g", "n_epochs": 1, "gan_training": True, "train_vae": True}
+        s = parse_pipeline_config(_wrap_step(base)).steps[0]
+        assert (s.gan_start_step, s.gan_warmup_steps, s.instance_noise_std) == (0, 1000, 0.05)
+        s = parse_pipeline_config(
+            _wrap_step({**base, "gan_start_step": 7, "gan_warmup_steps": 9})
+        ).steps[0]
+        assert (s.gan_start_step, s.gan_warmup_steps) == (7, 9)
+
+    @pytest.mark.parametrize(
+        "key,val",
+        [
+            ("gan_start_step", -1),
+            ("gan_warmup_steps", -1),
+            ("kl_z_warmup_steps", -1),
+            ("instance_noise_std", -0.1),
+        ],
+    )
+    def test_negative_rejected(self, key, val):
+        step = {"name": "g", "n_epochs": 1, "train_vae": True, key: val}
+        with pytest.raises(ValueError, match=key):
+            parse_pipeline_config(_wrap_step(step))
+
+    def test_legacy_kl_warmup_steps_remaps_to_kl_z_warmup_steps(self):
+        step = {"name": "g", "n_epochs": 1, "train_vae": True, "kl_warmup_steps": 123}
+        with pytest.warns(DeprecationWarning):
+            cfg = parse_pipeline_config(_wrap_step(step))
+        assert cfg.steps[0].kl_z_warmup_steps == 123

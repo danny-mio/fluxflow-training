@@ -489,3 +489,98 @@ class TestResumeOldSingleGroupState:
 class _NoEma:
     def load_state_dict(self, _):
         raise AssertionError("no ema in checkpoint")
+
+
+class _ActNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        from fluxflow.models import TrainableBezier, WideTrainableBezier
+        from fluxflow.models.pade_activation import TrainablePade, WideTrainablePade
+
+        self.lin = nn.Linear(2, 2)
+        self.bez = TrainableBezier((2,), channel_only=True)
+        self.wbez = WideTrainableBezier((2,), channel_only=True)
+        self.pade = TrainablePade((2,), channel_only=True)
+        self.wpade = WideTrainablePade((2,), channel_only=True)
+
+
+class TestActivationWeightDecayExemption:
+    """E7: activation coefficients must not be weight-decayed (detected by module type)."""
+
+    def test_activation_params_in_no_decay_group(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _ActNet()
+        groups = split_weight_decay_groups(m.named_parameters(), modules=[m])
+        decay = [g for g in groups if "weight_decay" not in g]
+        no_decay = [g for g in groups if g.get("weight_decay") == 0.0]
+        assert len(decay) == 1 and len(no_decay) == 1
+        assert {id(p) for p in decay[0]["params"]} == {id(m.lin.weight), id(m.lin.bias)}
+        act_ids = {id(p) for sub in (m.bez, m.wbez, m.pade, m.wpade) for p in sub.parameters()}
+        assert {id(p) for p in no_decay[0]["params"]} == act_ids
+
+    def test_orig_idx_preserved_for_resume(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _ActNet()
+        named = list(m.named_parameters())
+        groups = split_weight_decay_groups(iter(named), modules=[m])
+        idx = sorted(i for g in groups for i in g["orig_idx"])
+        assert idx == list(range(len(named)))
+        for g in groups:
+            assert [named[i][1] for i in g["orig_idx"]] == g["params"]
+
+    def test_without_modules_behaviour_unchanged(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _ActNet()
+        groups = split_weight_decay_groups(m.named_parameters())
+        assert len(groups) == 1 and "weight_decay" not in groups[0]
+
+    def test_scale_scalars_still_exempt_with_modules(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _Gated()
+        groups = split_weight_decay_groups(m.named_parameters(), modules=[m])
+        nd = [g for g in groups if g.get("weight_decay") == 0.0][0]
+        assert {id(p) for p in nd["params"]} == {id(m.conv1_scale), id(m.spade.beta_scale)}
+
+
+class TestDiscriminatorDefaults:
+    """C7: GAN-tuned discriminator defaults, not the VAE optimizer config."""
+
+    def test_default_discriminator_config_is_gan_tuned(self):
+        from fluxflow_training.training.optimizer_factory import get_default_optimizer_config
+
+        cfg = get_default_optimizer_config("discriminator")
+        assert cfg["betas"] == [0.0, 0.9]
+
+
+class TestResumeAcrossGroupLayoutChange:
+    """Same group count but different membership (activation params newly exempt)."""
+
+    def test_two_group_state_remapped_by_orig_idx(self):
+        from fluxflow_training.training.optimizer_factory import (
+            remap_optimizer_state,
+            split_weight_decay_groups,
+        )
+
+        m = _ActNet()
+        cfg = {"type": "AdamW", "lr": 0.5, "weight_decay": 0.1}
+        # HEAD layout: decay group = everything, no-decay = one scale scalar
+        m.conv1_scale = nn.Parameter(torch.zeros(1))
+        old = create_optimizer(split_weight_decay_groups(m.named_parameters()), cfg)
+        assert len(old.param_groups) == 2
+        for g in old.param_groups:
+            for p in g["params"]:
+                p.grad = torch.ones_like(p)
+        old.step()
+        saved = old.state_dict()
+        new = create_optimizer(split_weight_decay_groups(m.named_parameters(), modules=[m]), cfg)
+        assert len(new.param_groups) == 2
+        remapped = remap_optimizer_state(new, saved)
+        assert remapped is not None
+        new.load_state_dict(remapped)
+        for p in m.parameters():
+            assert torch.equal(new.state[p]["exp_avg"], old.state[p]["exp_avg"])
+        assert new.param_groups[1]["weight_decay"] == 0.0

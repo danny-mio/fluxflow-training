@@ -135,6 +135,35 @@ Not yet released — work in progress toward v0.10.0.
   override); default unchanged.
 
 ### Changed
+- **Loss weighting**: loss-history adaptive weighting removed (could go
+  negative for the GAN term and cancelled `kl_z_weight`). KL always uses its
+  schedule; recon weight 1; GAN weight is VQGAN-style
+  `lambda_adv · warmup · clamp(‖∇rec‖/‖∇gan‖, 0, 1e4)` at the decoder's last
+  conv (fixed `lambda_adv · warmup` with `adaptive_weights: false`).
+- **GAN schedule**: new `gan_start_step` (0) / `gan_warmup_steps` (1000)
+  pipeline keys and CLI flags; D is not trained before start. Generator step
+  now runs first and D trains on the detached reconstruction (one fewer VAE
+  forward per step). D for v0.10.0 is built with `ctx_dim=0`; old
+  `ctx_proj` keys are ignored.
+- **GAN losses**: hinge per patch (was on the patch-mean), lazy R1 scaled by
+  `r1_interval`, D grad clipping, D defaults from the discriminator optimizer
+  config, `instance_noise_std` default 0.05.
+- **Defaults**: `train_ctx_aux` now `false` (it trained ctx to copy z).
+- **Weight decay**: all params of trainable Bezier/Padé activation modules
+  join the no-decay group; resume remaps optimizer state by original index.
+- **EMA** weights are now used for samples and exported models; raw weights
+  stay in training state for exact resume.
+- Contrast loss uses a smoothed log std ratio; histogram loss is a
+  differentiable sorted-value 1D Wasserstein distance (`bins` removed).
+- Free bits clamp the batch-mean KL per latent dimension.
+- ReduceLROnPlateau metric is fixed-alpha L1; HF-weight ramp uses the real
+  run length (`total_training_steps`).
+- Legacy `train.py`: new flags `--kl_z_warmup_steps`,
+  `--ctx_shrinkage_warmup_start_step`, `--ctx_shrinkage_warmup_steps`,
+  `--ctx_shrinkage_max_mean_sq`, `--instance_noise_std`,
+  `--instance_noise_decay`, `--r1_gamma`, `--r1_interval`,
+  `--[no-]train_ctx_aux`, `--lambda_ctx_aux`, `--gan_start_step`,
+  `--gan_warmup_steps`.
 - **VAE optimizer weight decay**: identity-gating scalars (`*_scale` params
   with one element: `conv1_scale`, SPADE `beta_scale`/`gamma_scale`,
   `ctx_zinject_*_scale`) are now in a `weight_decay=0` param group so decay no
@@ -198,6 +227,22 @@ Both legacy keys still load via `_parse_step_config` and emit a
   resuming one also changes effective `ctx_shrinkage` (see Fixed).
 
 ### Fixed
+- `kl_z_warmup_steps` and `ctx_shrinkage_warmup_*` were silently dropped
+  (always defaults); legacy logging reported the wrong KL schedule.
+- LR schedulers stepped once per resolution group; now at most once per
+  global step, with budgets from `compute_total_global_steps` (honours
+  `max_steps`). Approximate when several resolution groups share a batch
+  and `gradient_accumulation_steps > 1`.
+- D accumulation broke with `discriminator_update_freq > 1` (never zeroed or
+  dropped windows); D now has its own counter.
+- fp16: non-finite gradients now skip the whole optimizer step (G and D);
+  `scaler.update()` runs once per iteration.
+- Switching discriminator spectral norm silently loaded a random D while
+  reporting success; loads are now strict-or-reinit with a warning, and the
+  pipeline step's `discriminator_use_spectral_norm` is honoured (default:
+  inherit CLI/YAML).
+- Contrast loss exploded on low-variance targets; histogram loss had no
+  gradient; `generator_avg` always logged 0; `None` scheduler crashed.
 - **Latent-cycle loss trained the "frozen" expander** under gradient
   checkpointing (reentrant recompute ignored the `requires_grad` toggle).
   Fixed in fluxflow-core's `_ProgressiveUpscaler`; requires the matching core.

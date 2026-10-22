@@ -126,6 +126,7 @@ class TestDiscriminatorUpdateFreq:
                 "use_gan": use_gan,
                 "discriminator": discriminator,
                 "discriminator_update_freq": freq,
+                "gan_start_step": 0,
             },
         )()
 

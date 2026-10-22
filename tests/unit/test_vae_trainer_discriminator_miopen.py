@@ -136,7 +136,7 @@ class TestTrainDiscriminatorMiopenSkip:
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
-        result = trainer._train_discriminator(real_imgs, global_step=1)
+        result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         assert result["_optimizer_stepped"] is False
         trainer.discriminator_optimizer.step.assert_not_called()
@@ -148,7 +148,7 @@ class TestTrainDiscriminatorMiopenSkip:
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
-        result = trainer._train_discriminator(real_imgs, global_step=1)
+        result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         assert result["_optimizer_stepped"] is False
         trainer.discriminator_optimizer.step.assert_not_called()
@@ -160,7 +160,7 @@ class TestTrainDiscriminatorMiopenSkip:
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
-        trainer._train_discriminator(real_imgs, global_step=42)
+        trainer._train_discriminator(real_imgs, global_step=42, fake_imgs=real_imgs)
 
         out = capsys.readouterr().out.lower()
         assert "miopen" in out
@@ -176,7 +176,7 @@ class TestTrainDiscriminatorMiopenSkip:
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
         with pytest.raises(RuntimeError, match="CUDA out of memory"):
-            trainer._train_discriminator(real_imgs, global_step=1)
+            trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         trainer.discriminator_optimizer.step.assert_not_called()
 
@@ -189,7 +189,7 @@ class TestTrainDiscriminatorMiopenSkip:
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
         with pytest.raises(ValueError, match="unrelated failure"):
-            trainer._train_discriminator(real_imgs, global_step=1)
+            trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
     def test_happy_path_unchanged(self):
         """No exception: optimizer steps, dict return carries the loss + stepped=True."""
@@ -198,7 +198,7 @@ class TestTrainDiscriminatorMiopenSkip:
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)
 
-        result = trainer._train_discriminator(real_imgs, global_step=1)
+        result = trainer._train_discriminator(real_imgs, global_step=1, fake_imgs=real_imgs)
 
         assert result["_optimizer_stepped"] is True
         assert isinstance(result["d_loss"], float)
@@ -211,10 +211,10 @@ class TestTrainStepDiscriminatorSkipIntegration:
     def test_skip_does_not_pollute_d_loss_buffer_or_step_scheduler(self):
         discriminator = _FakeDiscriminator(ctx_dim=TOKEN_DIM)
         accelerator = MagicMock()
-        # Discriminator backward fails (MIOpen); generator backward succeeds.
+        # Generator backward succeeds; discriminator (runs second) fails (MIOpen).
         accelerator.backward.side_effect = [
-            RuntimeError("miopenStatusUnknownError"),
             None,
+            RuntimeError("miopenStatusUnknownError"),
         ]
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)
@@ -229,8 +229,8 @@ class TestTrainStepDiscriminatorSkipIntegration:
         discriminator = _FakeDiscriminator(ctx_dim=TOKEN_DIM)
         accelerator = MagicMock()
         accelerator.backward.side_effect = [
-            RuntimeError("miopenStatusUnknownError"),
             None,
+            RuntimeError("miopenStatusUnknownError"),
         ]
         trainer = _build_trainer(discriminator, accelerator)
         real_imgs = torch.randn(2, *IMG_SHAPE)

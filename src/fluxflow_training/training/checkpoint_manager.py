@@ -337,6 +337,10 @@ class CheckpointManager:
         # Only save EMA if it exists (not all steps use EMA)
         if ema is not None:
             consolidated_state["ema"] = ema.state_dict()
+            # Exports carry EMA weights; keep the raw weights here for exact resume.
+            consolidated_state["ema_raw"] = {
+                k: v.detach().clone() for k, v in ema.model.state_dict().items()
+            }
         # Move all tensors to CPU before saving to avoid CUDA issues
         consolidated_state = _move_to_cpu(consolidated_state)
         torch.save(consolidated_state, self.training_states_path)
@@ -438,8 +442,10 @@ class CheckpointManager:
                             sched.load_state_dict(_fit_scheduler_state(sched, training_states["schedulers"][name]))  # type: ignore[arg-type]
                     logger.debug("✓ Scheduler states restored")
 
-                if "ema" in training_states:
+                if "ema" in training_states and ema is not None:
                     ema.load_state_dict(training_states["ema"])
+                    if "ema_raw" in training_states:
+                        ema.model.load_state_dict(training_states["ema_raw"])
                     logger.debug("✓ EMA state restored")
 
                 return True

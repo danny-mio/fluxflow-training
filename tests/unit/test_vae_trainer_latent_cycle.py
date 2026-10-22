@@ -481,23 +481,14 @@ class TestLPIPSTerm:
         assert t.lpips_fn.calls == []
 
 
-class TestAdaptiveWeightIsolation:
-    def test_cycle_not_in_loss_history(self):
+class TestCycleOutsideReconWeighting:
+    def test_recon_term_unaffected_by_cycle(self):
+        imgs = _imgs()
         t_off, _, _ = _build(train_reconstruction=True)
         t_on, _, _ = _build(train_reconstruction=True, **_ON)
-        t_off._train_generator(_imgs(), global_step=0)
-        t_on._train_generator(_imgs(), global_step=0)
-        assert set(t_on.loss_history) == set(t_off.loss_history)
-        assert not any("cycle" in k for k in t_on.loss_history)
-        for k in t_off.loss_history:
-            assert t_on.loss_history[k]._items == t_off.loss_history[k]._items
-
-    def test_adaptive_weights_unchanged_by_cycle(self):
-        t_off, _, _ = _build(train_reconstruction=True)
-        t_on, _, _ = _build(train_reconstruction=True, **_ON)
-        for t in (t_off, t_on):
-            t._train_generator(_imgs(), global_step=0)
-        assert t_on._compute_adaptive_weight("recon") == t_off._compute_adaptive_weight("recon")
+        r_off = t_off._train_generator(imgs, global_step=0)
+        r_on = t_on._train_generator(imgs, global_step=0)
+        assert r_on["recon"] == pytest.approx(r_off["recon"])
 
 
 class TestCtxShrinkageNotOverwrittenByCycle:

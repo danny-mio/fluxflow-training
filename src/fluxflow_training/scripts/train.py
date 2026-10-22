@@ -7,6 +7,7 @@ import random
 import sys
 import time
 import warnings
+from contextlib import nullcontext
 from itertools import chain
 from functools import partial
 from pathlib import Path
@@ -62,6 +63,11 @@ from fluxflow_training.training.rocm_compat import disable_broken_rocm_sdpa
 from fluxflow_training.training.scheduler_factory import (
     create_scheduler,
     get_default_scheduler_config,
+)
+from fluxflow_training.training.utils import (
+    discriminator_ctx_dim,
+    load_discriminator_state,
+    record_gan_losses,
 )
 
 try:
@@ -226,6 +232,60 @@ def _sd_weight(state_dict: dict, prefix: str):
     return state_dict[orig_key] if orig_key in state_dict else state_dict[f"{prefix}.weight"]
 
 
+# Plain scalar training.* YAML keys that map 1:1 onto CLI args (CLI wins over YAML).
+_YAML_TRAINING_KEYS = (
+    "kl_z_warmup_steps",
+    "ctx_shrinkage_warmup_start_step",
+    "ctx_shrinkage_warmup_steps",
+    "ctx_shrinkage_max_mean_sq",
+    "gan_start_step",
+    "gan_warmup_steps",
+    "instance_noise_std",
+    "instance_noise_decay",
+    "r1_gamma",
+    "r1_interval",
+    "train_ctx_aux",
+    "lambda_ctx_aux",
+)
+
+
+def _kl_schedule(args) -> tuple[int, float]:
+    """(warmup_steps, max_weight) of the KL schedule VAETrainer actually uses:
+    kl_z_* when ``kl_z_weight > 0``, else legacy kl_warmup_steps / kl_beta."""
+    if args.kl_z_weight > 0:
+        return args.kl_z_warmup_steps, args.kl_z_weight
+    return args.kl_warmup_steps, args.kl_beta
+
+
+def _make_discriminator(args, ctx_dim: int, saved_state=None):
+    """Build PatchDiscriminator per ``args``; load ``saved_state`` only if it fits exactly.
+
+    Incompatible state (spectral-norm key format, base_ch, ctx_dim) or NaN/Inf weights
+    leave a freshly initialised D and say so; "Loaded" is printed only on real success.
+    """
+    kwargs = dict(
+        in_channels=args.channels,
+        base_ch=args.feature_maps_dim_disc,
+        depth=3,
+        ctx_dim=ctx_dim,
+        use_spectral_norm=args.discriminator_use_spectral_norm,
+    )
+    disc = PatchDiscriminator(**kwargs)
+    if not saved_state:
+        return disc
+    if not load_discriminator_state(disc, saved_state):
+        print(
+            "⚠️  D_img checkpoint incompatible with current architecture. Reinitialising from scratch."
+        )
+        return disc
+    bad = [n for n, p in disc.named_parameters() if torch.isnan(p).any() or torch.isinf(p).any()]
+    if bad:
+        print(f"  ⚠️  NaN/Inf in D_img parameters {bad[:3]}. Reinitializing discriminator.")
+        return PatchDiscriminator(**kwargs)
+    print("✓ Loaded D_img checkpoint")
+    return disc
+
+
 def initialize_models(args, config, device, checkpoint_manager):
     """
     Initialize FluxFlow models from configuration.
@@ -351,35 +411,18 @@ def initialize_models(args, config, device, checkpoint_manager):
         # Ensure loaded_states is the state dict dict, not the tuple
         assert isinstance(loaded_states, dict), "loaded_states should be a dict"
 
-    # Discriminators - determine correct ctx_dim:
-    # 1. Prefer the saved D_img checkpoint's value (exact match guarantees compatibility).
-    # 2. Fall back to compressor.get_context_dims() — same formula used by the orchestrator.
-    # 3. Last-resort fallback for legacy compressors: vae_dim + 5 (CONTEXT_DIMS from v070/v080).
-    ctx_dim = None
-    if loaded_states and loaded_states.get("D_img"):
+    # Discriminator ctx_dim: 0 for v0.10.0 compressors (SPADE always on, ctx_proj unused;
+    # old D checkpoints' ctx_proj keys are ignored on load). Legacy compressors: keep the
+    # saved D_img's width when present, else vae_dim + get_context_dims().
+    ctx_dim = discriminator_ctx_dim(compressor, args.vae_dim)
+    if ctx_dim and loaded_states and loaded_states.get("D_img"):
         try:
             ctx_dim = _sd_weight(loaded_states["D_img"], "ctx_proj").shape[1]  # in_features
             print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
         except (KeyError, AttributeError):
-            ctx_dim = None
-    if ctx_dim is None:
-        try:
-            context_dims = compressor.get_context_dims()
-            if hasattr(context_dims, "item"):
-                context_dims = int(context_dims.item())
-            ctx_dim = args.vae_dim + int(context_dims)
-            print(f"Using ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})")
-        except (AttributeError, TypeError, ValueError):
-            ctx_dim = args.vae_dim + 5  # legacy v070/v080 fallback
-            print(f"Using ctx_dim={ctx_dim} (legacy fallback: vae_dim + 5)")
-
-    D_img = PatchDiscriminator(
-        in_channels=args.channels,
-        base_ch=args.feature_maps_dim_disc,
-        depth=3,
-        ctx_dim=ctx_dim,
-        use_spectral_norm=args.discriminator_use_spectral_norm,
-    )
+            pass
+    print(f"Discriminator ctx_dim={ctx_dim}")
+    D_img = _make_discriminator(args, ctx_dim)
 
     # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
@@ -402,42 +445,7 @@ def initialize_models(args, config, device, checkpoint_manager):
             image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded image_encoder checkpoint")
         if loaded_states.get("D_img"):
-            # Check if loaded discriminator is compatible with current architecture.
-            # Both ctx_proj (ctx_dim) and backbone.0 (base_ch) must match; a size
-            # mismatch raises RuntimeError even with strict=False.
-            try:
-                saved_ctx_dim = _sd_weight(loaded_states["D_img"], "ctx_proj").shape[1]
-                saved_base_ch = _sd_weight(loaded_states["D_img"], "backbone.0").shape[0]
-                current_ctx_dim = D_img.ctx_proj.in_features
-                current_base_ch = D_img.backbone[0].out_channels
-                if saved_ctx_dim == current_ctx_dim and saved_base_ch == current_base_ch:
-                    D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
-                    print("✓ Loaded D_img checkpoint")
-                else:
-                    print(
-                        f"⚠️  D_img checkpoint incompatible "
-                        f"(saved base_ch={saved_base_ch}/ctx_dim={saved_ctx_dim}, "
-                        f"current base_ch={current_base_ch}/ctx_dim={current_ctx_dim}). "
-                        f"Reinitialising from scratch."
-                    )
-            except (KeyError, AttributeError, RuntimeError) as e:
-                print(f"⚠️  D_img checkpoint incompatible: {e}. Reinitialising from scratch.")
-
-            # Validate discriminator weights for NaN/Inf
-            nan_found = False
-            for name, param in D_img.named_parameters():
-                if torch.isnan(param).any() or torch.isinf(param).any():
-                    print(f"  ⚠️  WARNING: NaN/Inf in D_img parameter: {name}")
-                    nan_found = True
-            if nan_found:
-                print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-                D_img = PatchDiscriminator(
-                    in_channels=args.channels,
-                    base_ch=args.feature_maps_dim_disc,
-                    depth=3,
-                    ctx_dim=ctx_dim,  # reuse the same ctx_dim computed above
-                    use_spectral_norm=args.discriminator_use_spectral_norm,
-                )
+            D_img = _make_discriminator(args, ctx_dim, loaded_states["D_img"])
 
     # Move to device
     diffuser.to(device)
@@ -901,28 +909,10 @@ def train_legacy(args):
     flow_processor = FluxFlowProcessor(d_model=args.feature_maps_dim, vae_dim=args.vae_dim)
     diffuser = FluxPipeline(compressor, flow_processor, expander)
 
-    # Discriminators - determine context dimension from the compressor model
-    try:
-        context_dims_result = diffuser.compressor.get_context_dims()
-        # Handle case where it returns a tensor or other type
-        if hasattr(context_dims_result, "item"):
-            context_dims = int(context_dims_result.item())
-        else:
-            context_dims = int(context_dims_result)
-        ctx_dim = args.vae_dim + context_dims
-        print(
-            f"Creating discriminator with ctx_dim={ctx_dim} (vae_dim={args.vae_dim} + context_dims={context_dims})"
-        )
-    except (AttributeError, TypeError, ValueError):
-        ctx_dim = args.vae_dim + 5  # legacy v070/v080 fallback (CONTEXT_DIMS = 5)
-        print(f"Creating discriminator with ctx_dim={ctx_dim} (legacy v070/v080 fallback)")
-
-    D_img = PatchDiscriminator(
-        in_channels=args.channels,
-        base_ch=args.feature_maps_dim_disc,
-        ctx_dim=ctx_dim,
-        use_spectral_norm=args.discriminator_use_spectral_norm,
-    )
+    # Discriminator: ctx_dim 0 for v0.10.0 compressors (see discriminator_ctx_dim)
+    ctx_dim = discriminator_ctx_dim(diffuser.compressor, args.vae_dim)
+    print(f"Creating discriminator with ctx_dim={ctx_dim}")
+    D_img = _make_discriminator(args, ctx_dim)
 
     # Initialize checkpoint manager for easier model management
     checkpoint_manager = CheckpointManager(
@@ -956,23 +946,7 @@ def train_legacy(args):
         image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded image_encoder checkpoint")
     if loaded_states.get("D_img"):
-        D_img.load_state_dict(loaded_states["D_img"], strict=False)  # type: ignore[arg-type]
-        print("✓ Loaded D_img checkpoint")
-
-        # Validate discriminator weights for NaN/Inf
-        nan_found = False
-        for name, param in D_img.named_parameters():
-            if torch.isnan(param).any() or torch.isinf(param).any():
-                print(f"  ⚠️  WARNING: NaN/Inf in D_img parameter: {name}")
-                nan_found = True
-        if nan_found:
-            print("  ⚠️  Reinitializing discriminator due to NaN/Inf values")
-            D_img = PatchDiscriminator(
-                in_channels=args.channels,
-                base_ch=args.feature_maps_dim_disc,
-                ctx_dim=ctx_dim,
-                use_spectral_norm=args.discriminator_use_spectral_norm,
-            )
+        D_img = _make_discriminator(args, ctx_dim, loaded_states["D_img"])
 
     diffuser.to(device)
     text_encoder.to(device)
@@ -1109,6 +1083,9 @@ def train_legacy(args):
         dt_items = len(dataloader)
     steps_per_epoch = dt_items * args.training_steps
     total_steps = args.n_epochs * steps_per_epoch
+    # VAETrainer steps its schedulers at most once per global step (one per batch,
+    # however many inner training_steps / resolutions run), not once per train_step call.
+    total_global_steps = max(1, args.n_epochs * dt_items)
 
     # Create optimizers using factory
     print("\n=== Creating Optimizers ===")
@@ -1119,7 +1096,8 @@ def train_legacy(args):
 
     optimizer_Diff = create_optimizer(
         split_weight_decay_groups(
-            chain(diffuser.compressor.named_parameters(), diffuser.expander.named_parameters())
+            chain(diffuser.compressor.named_parameters(), diffuser.expander.named_parameters()),
+            modules=[diffuser.compressor, diffuser.expander],
         ),
         optimizer_configs["vae"],
     )
@@ -1140,17 +1118,17 @@ def train_legacy(args):
     scheduler_FDiff = create_scheduler(optimizer_FDiff, scheduler_configs["flow"], total_steps)
     print(f"Flow: {scheduler_configs['flow']['type']}")
 
-    scheduler_Diff = create_scheduler(optimizer_Diff, scheduler_configs["vae"], total_steps)
+    scheduler_Diff = create_scheduler(optimizer_Diff, scheduler_configs["vae"], total_global_steps)
     print(f"VAE: {scheduler_configs['vae']['type']}")
 
     scheduler_te = create_scheduler(optimizer_te, scheduler_configs["text_encoder"], total_steps)
     print(f"Text Encoder: {scheduler_configs['text_encoder']['type']}")
 
     scheduler_Dimg = create_scheduler(
-        optimizer_Dimg, scheduler_configs["discriminator"], total_steps
+        optimizer_Dimg, scheduler_configs["discriminator"], total_global_steps
     )
     print(f"Discriminator: {scheduler_configs['discriminator']['type']}")
-    print(f"Total steps: {total_steps}\n")
+    print(f"Total steps: {total_steps} (VAE/D schedulers: {total_global_steps} global steps)\n")
 
     # Prepare with accelerator
     objs = [
@@ -1242,6 +1220,7 @@ def train_legacy(args):
             train_coarseness=args.train_coarseness,
             kl_beta=args.kl_beta,
             kl_warmup_steps=args.kl_warmup_steps,
+            kl_z_warmup_steps=args.kl_z_warmup_steps,
             kl_free_bits=args.kl_free_bits,
             use_gan=args.gan_training,
             discriminator=D_img if args.gan_training else None,
@@ -1250,11 +1229,21 @@ def train_legacy(args):
             lambda_adv=args.lambda_adv,
             use_lpips=args.use_lpips,
             lambda_lpips=args.lambda_lpips,
-            r1_gamma=5.0,
-            r1_interval=16,
+            r1_gamma=args.r1_gamma,
+            r1_interval=args.r1_interval,
+            gan_start_step=args.gan_start_step,
+            gan_warmup_steps=args.gan_warmup_steps,
+            instance_noise_std=args.instance_noise_std,
+            instance_noise_decay=args.instance_noise_decay,
+            train_ctx_aux=args.train_ctx_aux,
+            lambda_ctx_aux=args.lambda_ctx_aux,
+            total_training_steps=total_global_steps,
             discriminator_update_freq=args.discriminator_update_freq,
             kl_z_weight=args.kl_z_weight,
             ctx_shrinkage_weight=args.ctx_shrinkage_weight,
+            ctx_shrinkage_warmup_start_step=args.ctx_shrinkage_warmup_start_step,
+            ctx_shrinkage_warmup_steps=args.ctx_shrinkage_warmup_steps,
+            ctx_shrinkage_max_mean_sq=args.ctx_shrinkage_max_mean_sq,
             gradient_clip_norm=args.initial_clipping_norm,
             accelerator=accelerator,
         )
@@ -1275,6 +1264,11 @@ def train_legacy(args):
 
     # Parse sample sizes for generation
     parsed_sample_sizes = parse_sample_sizes(args.sample_sizes)
+    kl_warmup, kl_max = _kl_schedule(args)
+
+    def ema_applied():
+        """EMA weights for exports/samples (only when the VAE is being trained)."""
+        return ema.applied() if args.train_vae else nullcontext()
 
     # Initial sampling
     if not args.no_samples:
@@ -1308,10 +1302,10 @@ def train_legacy(args):
         print(f"Resuming from global step: {global_step}")
         if args.train_vae:
             # Show current KL warmup state when resuming
-            current_beta = cosine_anneal_beta(global_step, args.kl_warmup_steps, args.kl_beta)
-            warmup_progress = min(100.0 * global_step / args.kl_warmup_steps, 100.0)
+            current_beta = cosine_anneal_beta(global_step, kl_warmup, kl_max)
+            warmup_progress = min(100.0 * global_step / max(kl_warmup, 1), 100.0)
             print(f"  KL warmup: {warmup_progress:.1f}% complete (β={current_beta:.6f})")
-            print(f"  KL will reach max (β={args.kl_beta}) at step {args.kl_warmup_steps}")
+            print(f"  KL will reach max (β={kl_max}) at step {kl_warmup}")
 
     # Training loop - resume from saved epoch and batch
     for epoch in range(saved_epoch, args.n_epochs):
@@ -1372,6 +1366,7 @@ def train_legacy(args):
                                 adv_img_errors.add_item(vae_losses["discriminator"])
                             if "generator" in vae_losses:
                                 avg_G_img_loss += vae_losses["generator"] / resolutions
+                                record_gan_losses(vae_trainer, vae_losses)
 
                         # Flow/Diffusion training using trainer
                         if flow_trainer:
@@ -1445,9 +1440,7 @@ def train_legacy(args):
                         log_msg += f" | VAE: {vae_errors.average:.4f}"
                         if args.train_kl and len(kl_errors._items) > 0:
                             # Show current KL beta for warmup monitoring
-                            current_beta = cosine_anneal_beta(
-                                global_step, args.kl_warmup_steps, args.kl_beta
-                            )
+                            current_beta = cosine_anneal_beta(global_step, kl_warmup, kl_max)
                             log_msg += f" | KL: {kl_errors.average:.4f} (β={current_beta:.6f})"
                         if lpips_errors.average > 0:
                             log_msg += f" | LPIPS: {lpips_errors.average:.4f}"
@@ -1504,15 +1497,16 @@ def train_legacy(args):
 
                 # Checkpoint saving
                 if i % args.checkpoint_save_interval == 0 and i > 0:
-                    # Save models using checkpoint manager
-                    checkpoint_manager.save_models(
-                        diffuser=diffuser,
-                        text_encoder=text_encoder,
-                        discriminators=(
-                            {"D_img": D_img} if args.train_vae and args.gan_training else None
-                        ),
-                        model_config=None,  # Legacy training doesn't use factory
-                    )
+                    # Save models (EMA weights; raw weights go in the training state)
+                    with ema_applied():
+                        checkpoint_manager.save_models(
+                            diffuser=diffuser,
+                            text_encoder=text_encoder,
+                            discriminators=(
+                                {"D_img": D_img} if args.train_vae and args.gan_training else None
+                            ),
+                            model_config=None,  # Legacy training doesn't use factory
+                        )
 
                     # Save learning rates
                     with open(LR_SAVE_FILE, "w") as f:
@@ -1543,11 +1537,9 @@ def train_legacy(args):
                         },
                         ema=ema,
                         sampler=actual_sampler,
-                        kl_beta_current=cosine_anneal_beta(
-                            global_step, args.kl_warmup_steps, args.kl_beta
-                        ),
-                        kl_warmup_steps=args.kl_warmup_steps,
-                        kl_max_beta=args.kl_beta,
+                        kl_beta_current=cosine_anneal_beta(global_step, kl_warmup, kl_max),
+                        kl_warmup_steps=kl_warmup,
+                        kl_max_beta=kl_max,
                     )
 
                     # Clear CUDA cache to prevent memory fragmentation
@@ -1562,29 +1554,31 @@ def train_legacy(args):
                     ):
                         if args.train_vae:
                             for img_addr in args.test_image_address:
-                                safe_vae_sample(
+                                with ema_applied():
+                                    safe_vae_sample(
+                                        diffuser,
+                                        img_addr,
+                                        channels,
+                                        args.output_path,
+                                        epoch,
+                                        device,
+                                    )
+                        if args.train_diff or args.train_diff_full:
+                            with ema_applied():
+                                save_sample_images(
                                     diffuser,
-                                    img_addr,
-                                    channels,
+                                    text_encoder,
+                                    tokenizer,
                                     args.output_path,
                                     epoch,
                                     device,
+                                    args.sample_captions,
+                                    args.batch_size,
+                                    sample_sizes=parsed_sample_sizes,
+                                    use_cfg=True,
+                                    guidance_scale=5.0,
+                                    num_inference_steps=args.sample_steps,
                                 )
-                        if args.train_diff or args.train_diff_full:
-                            save_sample_images(
-                                diffuser,
-                                text_encoder,
-                                tokenizer,
-                                args.output_path,
-                                epoch,
-                                device,
-                                args.sample_captions,
-                                args.batch_size,
-                                sample_sizes=parsed_sample_sizes,
-                                use_cfg=True,
-                                guidance_scale=5.0,
-                                num_inference_steps=args.sample_steps,
-                            )
                         last_sample_step = global_step
 
             except Exception as e:
@@ -1596,12 +1590,13 @@ def train_legacy(args):
 
         # Save at end of epoch
         print(f"\nEpoch {epoch} complete. Saving models...")
-        checkpoint_manager.save_models(
-            diffuser=diffuser,
-            text_encoder=text_encoder,
-            discriminators={"D_img": D_img} if args.train_vae and args.gan_training else None,
-            model_config=None,  # Legacy training doesn't use factory
-        )
+        with ema_applied():
+            checkpoint_manager.save_models(
+                diffuser=diffuser,
+                text_encoder=text_encoder,
+                discriminators={"D_img": D_img} if args.train_vae and args.gan_training else None,
+                model_config=None,  # Legacy training doesn't use factory
+            )
 
         # Save learning rates
         with open(LR_SAVE_FILE, "w") as f:
@@ -1629,9 +1624,9 @@ def train_legacy(args):
             },
             ema=ema,
             sampler=actual_sampler,
-            kl_beta_current=cosine_anneal_beta(global_step, args.kl_warmup_steps, args.kl_beta),
-            kl_warmup_steps=args.kl_warmup_steps,
-            kl_max_beta=args.kl_beta,
+            kl_beta_current=cosine_anneal_beta(global_step, kl_warmup, kl_max),
+            kl_warmup_steps=kl_warmup,
+            kl_max_beta=kl_max,
             last_sample_step=last_sample_step,
         )
 
@@ -2066,6 +2061,62 @@ def parse_args():
         help="v0.10.0: L2-like shrinkage pressure on the ctx branch (design §5.5). "
         "Default 0.0 = inactive (current behavior).",
     )
+    parser.add_argument(
+        "--kl_z_warmup_steps",
+        type=int,
+        default=10000,
+        help="Cosine warmup length of kl_z_weight (used when --kl_z_weight > 0).",
+    )
+    parser.add_argument(
+        "--ctx_shrinkage_warmup_start_step",
+        type=int,
+        default=5000,
+        help="Step at which ctx shrinkage starts ramping up.",
+    )
+    parser.add_argument(
+        "--ctx_shrinkage_warmup_steps",
+        type=int,
+        default=5000,
+        help="Cosine warmup length of ctx_shrinkage_weight.",
+    )
+    parser.add_argument(
+        "--ctx_shrinkage_max_mean_sq",
+        type=float,
+        default=1000.0,
+        help="Clamp on mean(ctx_features**2) inside the shrinkage term.",
+    )
+    parser.add_argument(
+        "--gan_start_step",
+        type=int,
+        default=0,
+        help="Global step before which adversarial terms are off.",
+    )
+    parser.add_argument(
+        "--gan_warmup_steps",
+        type=int,
+        default=1000,
+        help="Global steps over which adversarial weight ramps up after --gan_start_step.",
+    )
+    parser.add_argument(
+        "--instance_noise_std", type=float, default=0.05, help="Discriminator instance noise std"
+    )
+    parser.add_argument(
+        "--instance_noise_decay",
+        type=float,
+        default=0.9999,
+        help="Per-step decay of the discriminator instance noise",
+    )
+    parser.add_argument("--r1_gamma", type=float, default=5.0, help="R1 penalty strength")
+    parser.add_argument("--r1_interval", type=int, default=16, help="R1 penalty interval (steps)")
+    parser.add_argument(
+        "--train_ctx_aux",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable the auxiliary ctx reconstruction loss (default off).",
+    )
+    parser.add_argument(
+        "--lambda_ctx_aux", type=float, default=0.01, help="Weight of the ctx aux loss"
+    )
 
     args = parser.parse_args()
 
@@ -2260,6 +2311,9 @@ def parse_args():
                 and "ctx_shrinkage_weight" not in cli_provided
             ):
                 args.ctx_shrinkage_weight = config["training"]["ctx_shrinkage_weight"]
+            for key in _YAML_TRAINING_KEYS:
+                if key in config["training"] and key not in cli_provided:
+                    setattr(args, key, config["training"][key])
 
         if "optimization" in config:
             if (

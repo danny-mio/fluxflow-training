@@ -30,6 +30,8 @@ _MOCKED_MODULES = [
     "fluxflow.utils",
     "fluxflow_training.training.optimizer_factory",
     "fluxflow_training.training.scheduler_factory",
+    "fluxflow_training.training.utils",
+    "fluxflow_training.training.rocm_compat",
 ]
 
 
@@ -423,10 +425,9 @@ class TestDiscriminatorUseSpectralNormArg:
 
         assert "use_spectral_norm=False" not in content
 
-        call_count = content.count("PatchDiscriminator(")
-        flag_count = content.count("use_spectral_norm=args.discriminator_use_spectral_norm")
-        assert call_count == 4
-        assert flag_count == call_count
+        # All constructions share one kwargs dict (in _make_discriminator) carrying the flag.
+        assert content.count("PatchDiscriminator(") == content.count("PatchDiscriminator(**kwargs)")
+        assert content.count("use_spectral_norm=args.discriminator_use_spectral_norm") == 1
 
 
 class TestResolveMixedPrecision:

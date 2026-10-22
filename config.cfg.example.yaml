@@ -83,6 +83,12 @@ training:
         lr: 0.00005  # Lower LR for refinement
         lr_min: 0.01
 
+        # GAN schedule: adversarial terms off before gan_start_step, then ramp over
+        # gan_warmup_steps global steps. Instance noise defaults to 0.05.
+        gan_start_step: 0
+        gan_warmup_steps: 1000
+        instance_noise_std: 0.05
+
       # ====================================================================
       # STAGE 3: Text-Conditioned Flow with CLASSIFIER-FREE GUIDANCE ✨
       # ====================================================================

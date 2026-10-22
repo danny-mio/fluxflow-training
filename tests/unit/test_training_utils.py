@@ -542,3 +542,29 @@ class TestTrainingUtilsIntegration:
         # Should match expected shape for discriminator training
         assert random_packet.shape[0] == 8  # Same batch size
         assert random_packet.shape[-1] == 128  # d_model
+
+
+class TestEMAApplied:
+    """EMA.applied() swaps in shadow weights and ALWAYS restores (try/finally)."""
+
+    def test_applies_and_restores(self):
+        m = nn.Linear(2, 2)
+        ema = EMA(m, decay=0.5)
+        raw = m.weight.detach().clone()
+        with torch.no_grad():
+            m.weight.add_(1.0)
+        trained = m.weight.detach().clone()
+        with ema.applied():
+            assert torch.allclose(m.weight, raw)
+        assert torch.allclose(m.weight, trained)
+
+    def test_restores_on_exception(self):
+        m = nn.Linear(2, 2)
+        ema = EMA(m, decay=0.5)
+        with torch.no_grad():
+            m.weight.add_(1.0)
+        trained = m.weight.detach().clone()
+        with pytest.raises(RuntimeError):
+            with ema.applied():
+                raise RuntimeError("boom")
+        assert torch.allclose(m.weight, trained)

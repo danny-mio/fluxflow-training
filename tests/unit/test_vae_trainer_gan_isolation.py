@@ -42,7 +42,7 @@ def test_generator_restores_requires_grad_on_error():
 
 def test_accumulation_d_grads_come_only_from_d_loss():
     trainer = _build_trainer(use_gan=True, gradient_accumulation_steps=2)
-    trainer._train_discriminator(_imgs(), global_step=1)
+    trainer._train_discriminator(_imgs(), global_step=1, fake_imgs=_imgs())
     before = _d_grads(trainer)
     assert any(g is not None for g in before)
     trainer._train_generator(_imgs(), global_step=1)
@@ -64,14 +64,14 @@ def test_discriminator_uses_single_hinge_and_no_uncond_expander_call():
     real_hinge = vae_trainer.d_hinge_loss
     vae_trainer.d_hinge_loss = lambda *a: hinge_calls.append(1) or real_hinge(*a)
     try:
-        trainer._train_discriminator(_imgs(), global_step=1)
+        trainer._train_discriminator(_imgs(), global_step=1, fake_imgs=_imgs())
     finally:
         vae_trainer.d_hinge_loss = real_hinge
-    assert len(calls) == 1
+    assert len(calls) == 0  # D reuses the G-step reconstruction
     assert len(hinge_calls) == 1
 
 
 def test_discriminator_never_runs_context_predictor():
     trainer = _build_trainer(use_gan=True)
     trainer.context_predictor = None  # would raise if touched
-    trainer._train_discriminator(_imgs(), global_step=1)
+    trainer._train_discriminator(_imgs(), global_step=1, fake_imgs=_imgs())
