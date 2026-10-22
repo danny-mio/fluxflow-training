@@ -135,6 +135,8 @@ Not yet released — work in progress toward v0.10.0.
   override); default unchanged.
 
 ### Changed
+- `rocm_compat.disable_broken_rocm_sdpa` now re-exports the fluxflow-core
+  implementation (requires the matching core).
 - **Loss weighting**: loss-history adaptive weighting removed (could go
   negative for the GAN term and cancelled `kl_z_weight`). KL always uses its
   schedule; recon weight 1; GAN weight is VQGAN-style
