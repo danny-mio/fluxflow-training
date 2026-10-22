@@ -1155,9 +1155,6 @@ class VAETrainer:
                 packed, use_context=self._get_effective_spade_usage(global_step)
             )
 
-            # Also generate unconditional reconstructions for discriminator training
-            out_imgs_uncond_for_D = self.expander(packed, use_context=False)
-
         # Discriminator step. zero_grad only at an accumulation-window boundary
         # start so earlier micro-batches' accumulated gradients survive.
         if is_accum_boundary_start:
@@ -1170,47 +1167,9 @@ class VAETrainer:
         fake_imgs_noisy = add_instance_noise(
             out_imgs_for_D.detach(), self.instance_noise_std, self.instance_noise_decay, global_step
         )
-        fake_uncond_imgs_noisy = add_instance_noise(
-            out_imgs_uncond_for_D.detach(),
-            self.instance_noise_std,
-            self.instance_noise_decay,
-            global_step,
-        )
 
         # Determine if SPADE conditioning is active this step
         spade_active = self._get_effective_spade_usage(global_step)
-
-        # Compute predicted context for SPADE-Aware GAN loss (Step 3)
-        B = real_imgs.shape[0]
-        predicted_context = None
-        if spade_active:
-            # Use ctx_vec as latent representation (already padded/truncated).
-            # context_predictor is deliberately never run under autocast (like
-            # LPIPS) -- .float() undoes the half dtype ctx_vec may carry when it
-            # was derived from the compressor's autocast'd forward pass above.
-            latent_repr = ctx_vec.detach().float()  # [B, expected_ctx_dim]
-
-            context_input_dim = self._get_context_input_dim()
-            # Ensure context_predictor matches ctx_vec dimension
-            if context_input_dim != latent_repr.shape[-1]:
-                logger.warning(
-                    "Context predictor dimension mismatch in discriminator: expected %s, got %s",
-                    context_input_dim,
-                    latent_repr.shape[-1],
-                )
-                # Skip context prediction if dimensions don't match
-                predicted_context = torch.randn(
-                    B,
-                    self.context_channels,
-                    self.context_height,
-                    self.context_width,
-                    device=latent_repr.device,
-                )
-            else:
-                predicted_context = self.context_predictor(latent_repr)
-                predicted_context = predicted_context.view(
-                    B, self.context_channels, self.context_height, self.context_width
-                )
 
         # Context vectors: None when SPADE is active (conditioning happens in generator)
         # Actual context when SPADE is inactive (traditional conditional GAN)
@@ -1240,13 +1199,8 @@ class VAETrainer:
         # Fake images - use same context logic as real images
         with self._autocast():
             fake_logits = self.discriminator(fake_imgs_noisy, disc_ctx)
-            # Unconditional fake images (should also be classified as fake)
-            fake_uncond_logits = self.discriminator(fake_uncond_imgs_noisy, disc_ctx)
 
-        # Combine losses - weight unconditional fakes more since they're easier to classify
-        d_hinge_cond = d_hinge_loss(real_logits, fake_logits)
-        d_hinge_uncond = d_hinge_loss(real_logits, fake_uncond_logits)
-        d_hinge = d_hinge_cond + 0.5 * d_hinge_uncond  # Weight conditional loss more
+        d_hinge = d_hinge_loss(real_logits, fake_logits)
         d_img_loss = d_img_loss + d_hinge
 
         # Gradient accumulation: scale before backward (standard grad-accum),
@@ -1263,19 +1217,13 @@ class VAETrainer:
             if do_r1:
                 logger.error(f"  r1: {r1.item() if not check_for_nan(r1, 'r1', logger) else 'NaN'}")
             logger.error(
-                f"  d_hinge_cond: {d_hinge_cond.item() if not check_for_nan(d_hinge_cond, 'd_hinge_cond', logger) else 'NaN'}"
-            )
-            logger.error(
-                f"  d_hinge_uncond: {d_hinge_uncond.item() if not check_for_nan(d_hinge_uncond, 'd_hinge_uncond', logger) else 'NaN'}"
+                f"  d_hinge: {d_hinge.item() if not check_for_nan(d_hinge, 'd_hinge', logger) else 'NaN'}"
             )
             logger.error(
                 f"  real_logits stats: min={real_logits.min().item():.4f}, max={real_logits.max().item():.4f}"
             )
             logger.error(
                 f"  fake_logits stats: min={fake_logits.min().item():.4f}, max={fake_logits.max().item():.4f}"
-            )
-            logger.error(
-                f"  fake_uncond_logits stats: min={fake_uncond_logits.min().item():.4f}, max={fake_uncond_logits.max().item():.4f}"
             )
             return {"d_loss": 0.0, "_optimizer_stepped": False}
 
@@ -1692,10 +1640,20 @@ class VAETrainer:
             else:
                 gen_ctx = None if spade_active else ctx_vec_rec
                 # Discriminator is read-only during generator update
+                # and its params must not collect G-loss grads (they would leak into
+                # the next accumulated D micro-batch).
+                d_params = list(self._get_unwrapped_model(self.discriminator).parameters())
+                d_flags = [p.requires_grad for p in d_params]
                 self.discriminator.eval()
-                with self._autocast():
-                    g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
-                self.discriminator.train()
+                try:
+                    for p in d_params:
+                        p.requires_grad_(False)
+                    with self._autocast():
+                        g_real_logits = self.discriminator(out_imgs_gan, gen_ctx)
+                finally:
+                    for p, flag in zip(d_params, d_flags):
+                        p.requires_grad_(flag)
+                    self.discriminator.train()
 
                 # Check discriminator output
                 if check_for_nan(g_real_logits, "g_real_logits", logger):

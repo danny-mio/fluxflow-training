@@ -5,6 +5,7 @@ loss-threshold transitions, and checkpoint management.
 """
 
 import gc
+from itertools import chain
 import math
 from dataclasses import asdict
 from typing import Any, Optional
@@ -790,7 +791,7 @@ class TrainingPipelineOrchestrator:
 
     def _create_step_optimizers(self, step, models, args):
         """Create optimizers for current step from inline config or defaults."""
-        from ..training.optimizer_factory import create_optimizer
+        from ..training.optimizer_factory import create_optimizer, split_weight_decay_groups
 
         optimizers = {}
 
@@ -814,8 +815,11 @@ class TrainingPipelineOrchestrator:
             # Create VAE optimizer if training VAE/GAN/LPIPS
             needs_vae_trainer = step.train_vae or step.gan_training or step.use_lpips
             if needs_vae_trainer:
-                vae_params = list(models["compressor"].parameters()) + list(
-                    models["expander"].parameters()
+                vae_params = split_weight_decay_groups(
+                    chain(
+                        models["compressor"].named_parameters(),
+                        models["expander"].named_parameters(),
+                    )
                 )
                 optimizers["vae"] = create_optimizer(vae_params, default_opt_config)
                 logger.info(
@@ -871,8 +875,11 @@ class TrainingPipelineOrchestrator:
 
             # Determine which parameters to optimize
             if name == "vae":
-                params = list(models["compressor"].parameters()) + list(
-                    models["expander"].parameters()
+                params = split_weight_decay_groups(
+                    chain(
+                        models["compressor"].named_parameters(),
+                        models["expander"].named_parameters(),
+                    )
                 )
             elif name == "discriminator":
                 params = models["D_img"].parameters()

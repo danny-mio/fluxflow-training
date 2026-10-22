@@ -12,9 +12,8 @@ composed and scaled by ``gradient_accumulation_steps`` (and before
 
 - Detect NaN/Inf in ``d_img_loss`` via the existing ``check_for_nan`` helper.
 - Log an error-level diagnostic mirroring ``_train_generator``'s NaN block:
-  ``r1`` (only if ``do_r1`` was true this step), ``d_hinge_cond``,
-  ``d_hinge_uncond``, and min/max stats for ``real_logits``, ``fake_logits``,
-  ``fake_uncond_logits``.
+  ``r1`` (only if ``do_r1`` was true this step), ``d_hinge``,
+  and min/max stats for ``real_logits`` and ``fake_logits``.
 - Skip the batch: never call ``accelerator.backward(...)`` or
   ``discriminator_optimizer.step()``.
 - Return ``{"d_loss": 0.0, "_optimizer_stepped": False}`` -- matching the
@@ -200,11 +199,9 @@ class TestTrainDiscriminatorNanGuardSkip:
                 trainer._train_discriminator(real_imgs, global_step=1)
 
         text = caplog.text.lower()
-        assert "d_hinge_cond" in text
-        assert "d_hinge_uncond" in text
+        assert "d_hinge" in text
         assert "real_logits" in text
         assert "fake_logits" in text
-        assert "fake_uncond_logits" in text
 
 
 class TestTrainDiscriminatorNanGuardDoR1False:

@@ -757,3 +757,35 @@ class TestInitializeModelsAttentionBackendPrecedence:
             yaml_activation_type="pade",
         )
         assert model_config.activation_type == "pade"
+
+
+class TestGradientCheckpointingFlag:
+    """--use_gradient_checkpointing must be switchable off and respect config precedence."""
+
+    def _parse(self, extra, monkeypatch_argv=None):
+        train = import_script_module("train")
+        argv = ["train.py", "--data_path", "/tmp/i", "--captions_file", "/tmp/c.tsv"] + extra
+        with patch.object(sys, "argv", argv):
+            return train.parse_args()
+
+    def test_default_true(self):
+        assert self._parse([]).use_gradient_checkpointing is True
+
+    def test_explicit_on_and_off(self):
+        assert self._parse(["--use_gradient_checkpointing"]).use_gradient_checkpointing is True
+        assert self._parse(["--no-use_gradient_checkpointing"]).use_gradient_checkpointing is False
+
+    def _cfg(self, tmp_path, value):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"model:\n  use_gradient_checkpointing: {value}\n")
+        return ["--config", str(cfg)]
+
+    def test_config_applies_when_cli_absent(self, tmp_path):
+        args = self._parse(self._cfg(tmp_path, "false"))
+        assert args.use_gradient_checkpointing is False
+
+    def test_cli_overrides_config_both_ways(self, tmp_path):
+        on = self._parse(self._cfg(tmp_path, "false") + ["--use_gradient_checkpointing"])
+        off = self._parse(self._cfg(tmp_path, "true") + ["--no-use_gradient_checkpointing"])
+        assert on.use_gradient_checkpointing is True
+        assert off.use_gradient_checkpointing is False

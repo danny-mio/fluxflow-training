@@ -20,7 +20,19 @@ from torch import nn
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler  # type: ignore[attr-defined]
 
+from .optimizer_factory import remap_optimizer_state
+
 logger = get_logger(__name__)
+
+
+def _fit_scheduler_state(sched: Any, state: dict) -> dict:
+    """Replicate single-group per-group lists (old checkpoints) across current groups."""
+    n = len(sched.optimizer.param_groups)
+    fitted = dict(state)
+    for key in ("base_lrs", "_last_lr"):
+        if isinstance(fitted.get(key), list) and len(fitted[key]) == 1 and n > 1:
+            fitted[key] = fitted[key] * n
+    return fitted
 
 
 def _move_to_cpu(obj):
@@ -410,13 +422,20 @@ class CheckpointManager:
                 if "optimizers" in training_states:
                     for name, opt in optimizers.items():
                         if name in training_states["optimizers"]:
-                            opt.load_state_dict(training_states["optimizers"][name])
+                            saved = remap_optimizer_state(opt, training_states["optimizers"][name])
+                            if saved is None:
+                                logger.warning(
+                                    f"Optimizer '{name}': param-group mismatch with "
+                                    "checkpoint, skipping optimizer state"
+                                )
+                                continue
+                            opt.load_state_dict(saved)
                     logger.debug("✓ Optimizer states restored")
 
                 if "schedulers" in training_states:
                     for name, sched in schedulers.items():
                         if name in training_states["schedulers"]:
-                            sched.load_state_dict(training_states["schedulers"][name])  # type: ignore[arg-type]
+                            sched.load_state_dict(_fit_scheduler_state(sched, training_states["schedulers"][name]))  # type: ignore[arg-type]
                     logger.debug("✓ Scheduler states restored")
 
                 if "ema" in training_states:

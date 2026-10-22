@@ -3,11 +3,16 @@ Optimizer factory for creating optimizers based on configuration.
 Supports per-model optimizer selection with customizable hyperparameters.
 """
 
-from typing import Any, Dict, Iterator, Optional, cast
+import logging
+from typing import Any, Dict, Iterable, Iterator, Optional, Union, cast
 
 import torch.nn as nn
 import torch.optim as optim
 from lion_pytorch import Lion
+
+logger = logging.getLogger(__name__)
+
+GATING_SCALE_SUFFIX = "_scale"
 
 SUPPORTED_OPTIMIZERS = {
     "Lion": Lion,
@@ -68,14 +73,76 @@ def validate_optimizer_config(optimizer_config: Dict[str, Any]) -> None:
             raise ValueError(f"Alpha must be in (0, 1], got {alpha}")
 
 
+def split_weight_decay_groups(
+    named_params: Iterable[tuple[str, nn.Parameter]],
+) -> list[Dict[str, Any]]:
+    """Split params into decay / no-decay groups.
+
+    Zero-/identity-gating scalars (name ends with ``_scale``, numel()==1) get
+    ``weight_decay=0`` so decay does not pull them toward "off". Each group keeps
+    ``orig_idx`` (positions in the input order) so single-group optimizer state
+    from older checkpoints can be remapped (see ``remap_optimizer_state``).
+    Empty groups are dropped.
+    """
+    decay: list[tuple[int, nn.Parameter]] = []
+    no_decay: list[tuple[int, nn.Parameter]] = []
+    for i, (name, p) in enumerate(named_params):
+        gated = name.endswith(GATING_SCALE_SUFFIX) and p.numel() == 1
+        (no_decay if gated else decay).append((i, p))
+    groups: list[Dict[str, Any]] = []
+    for items, extra in ((decay, {}), (no_decay, {"weight_decay": 0.0})):
+        if items:
+            groups.append(
+                {"params": [p for _, p in items], "orig_idx": [i for i, _ in items], **extra}
+            )
+    return groups
+
+
+def remap_optimizer_state(
+    optimizer: optim.Optimizer, saved: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Make ``saved`` loadable into ``optimizer`` when group counts differ.
+
+    Returns ``saved`` unchanged if group counts match; a remapped copy if a
+    single-group state can be spread over groups carrying ``orig_idx``; ``None``
+    if the mismatch cannot be resolved.
+    """
+    groups = optimizer.param_groups
+    if len(saved["param_groups"]) == len(groups):
+        return saved
+    if len(saved["param_groups"]) != 1 or any("orig_idx" not in g for g in groups):
+        return None
+    old_group = saved["param_groups"][0]
+    old_ids = old_group["params"]
+    if sorted(i for g in groups for i in g["orig_idx"]) != list(range(len(old_ids))):
+        return None
+    state: Dict[int, Any] = {}
+    new_groups: list[Dict[str, Any]] = []
+    k = 0
+    for g in groups:
+        ids = []
+        for oi in g["orig_idx"]:
+            if old_ids[oi] in saved["state"]:
+                state[k] = saved["state"][old_ids[oi]]
+            ids.append(k)
+            k += 1
+        new_groups.append(
+            {**old_group, "params": ids, "orig_idx": g["orig_idx"]}
+            | ({"weight_decay": g["weight_decay"]} if "weight_decay" in g else {})
+        )
+    return {"state": state, "param_groups": new_groups}
+
+
 def create_optimizer(
-    parameters: Iterator[nn.Parameter], optimizer_config: Dict[str, Any]
+    parameters: Union[Iterator[nn.Parameter], Iterable[nn.Parameter], list[Dict[str, Any]]],
+    optimizer_config: Dict[str, Any],
 ) -> optim.Optimizer:
     """
     Create an optimizer based on configuration.
 
     Args:
-        parameters: Model parameters to optimize
+        parameters: Model parameters, or param-group dicts (per-group
+            ``weight_decay`` overrides the config value)
         optimizer_config: Dictionary containing optimizer configuration
             - type: Optimizer type (Lion, AdamW, Adam, SGD, RMSprop)
             - lr: Learning rate

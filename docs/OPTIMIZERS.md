@@ -195,6 +195,14 @@ Root mean square propagation optimizer. Adapts learning rates per parameter.
 
 ---
 
+## VAE Weight-Decay Exemption (v0.10.0+)
+
+The VAE optimizer always places identity-gating scalars (parameters named
+`*_scale` with a single element, e.g. `conv1_scale`, SPADE `beta_scale` /
+`gamma_scale`, `ctx_zinject_*_scale`) in a `weight_decay=0` param group; the
+configured `weight_decay` applies to everything else. Decay would otherwise
+pull these gates toward their "off" value. Not configurable.
+
 ## Split Text Encoder Optimizers (v0.10.0+)
 
 `BertTextEncoder` has two trainable sub-components:

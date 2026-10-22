@@ -135,6 +135,17 @@ Not yet released — work in progress toward v0.10.0.
   override); default unchanged.
 
 ### Changed
+- **VAE optimizer weight decay**: identity-gating scalars (`*_scale` params
+  with one element: `conv1_scale`, SPADE `beta_scale`/`gamma_scale`,
+  `ctx_zinject_*_scale`) are now in a `weight_decay=0` param group so decay no
+  longer pulls them toward "off". Old single-group optimizer/scheduler state is
+  remapped on resume (warning + skip if it cannot be).
+- **Discriminator loss**: the unconditional-fake term (`expander(..., use_context=False)`,
+  weighted 0.5) is removed; D loss is the conditional hinge only. Expect
+  shifted D dynamics on resumed runs.
+- `--use_gradient_checkpointing` is now a `BooleanOptionalAction`
+  (`--no-use_gradient_checkpointing` disables it; previously impossible from
+  the CLI).
 - The per-step `empty_cache()` before the generator backward now only runs
   when free device memory is below 15%; unconditional release forced the
   backward to re-allocate every block from the driver.
@@ -187,6 +198,15 @@ Both legacy keys still load via `_parse_step_config` and emit a
   resuming one also changes effective `ctx_shrinkage` (see Fixed).
 
 ### Fixed
+- **Latent-cycle loss trained the "frozen" expander** under gradient
+  checkpointing (reentrant recompute ignored the `requires_grad` toggle).
+  Fixed in fluxflow-core's `_ProgressiveUpscaler`; requires the matching core.
+- **Generator loss leaked gradients into the discriminator**: D params kept
+  `requires_grad` during the G forward, so with `gradient_accumulation_steps > 1`
+  the next micro-batch's D step accumulated opposite-sign G gradients. D is now
+  frozen for the G forward.
+- Removed an unused `context_predictor` forward (and `torch.randn` fallback)
+  from every discriminator step.
 - `ctx_shrinkage` regularized the wrong tensor whenever a secondary
   compressor forward ran inside the generator step: the capture hook
   overwrote the real-image ctx features. Secondary forwards now run with

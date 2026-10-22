@@ -7,6 +7,7 @@ import random
 import sys
 import time
 import warnings
+from itertools import chain
 from functools import partial
 from pathlib import Path
 
@@ -54,6 +55,7 @@ from fluxflow_training.training import (
 )
 from fluxflow_training.training.optimizer_factory import (
     create_optimizer,
+    split_weight_decay_groups,
     get_default_optimizer_config,
 )
 from fluxflow_training.training.rocm_compat import disable_broken_rocm_sdpa
@@ -1116,7 +1118,9 @@ def train_legacy(args):
     print(f"Flow: {optimizer_configs['flow']['type']} (lr={optimizer_configs['flow']['lr']:.2e})")
 
     optimizer_Diff = create_optimizer(
-        list(diffuser.compressor.parameters()) + list(diffuser.expander.parameters()),
+        split_weight_decay_groups(
+            chain(diffuser.compressor.named_parameters(), diffuser.expander.named_parameters())
+        ),
         optimizer_configs["vae"],
     )
     print(f"VAE: {optimizer_configs['vae']['type']} (lr={optimizer_configs['vae']['lr']:.2e})")
@@ -1810,7 +1814,7 @@ def parse_args():
     )
     parser.add_argument(
         "--use_gradient_checkpointing",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Use gradient checkpointing in VAE (saves VRAM during forward, costs VRAM during backward)",
     )

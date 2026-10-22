@@ -342,3 +342,150 @@ class TestSupportedOptimizers:
         """All optimizer classes should be callable."""
         for opt_name, opt_class in SUPPORTED_OPTIMIZERS.items():
             assert callable(opt_class), f"{opt_name} is not callable"
+
+
+class _Gated(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = nn.Linear(2, 2)
+        self.conv1_scale = nn.Parameter(torch.zeros(1))
+        self.spade = nn.Module()
+        self.spade.beta_scale = nn.Parameter(torch.zeros(1))
+        self.vec_scale = nn.Parameter(torch.zeros(3))  # numel != 1 -> decay
+        self.other = nn.Parameter(torch.zeros(1))  # name mismatch -> decay
+
+
+class TestWeightDecayGroups:
+    def test_split_groups(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _Gated()
+        decay, no_decay = split_weight_decay_groups(m.named_parameters())
+        names = dict(m.named_parameters())
+        assert {id(p) for p in no_decay["params"]} == {
+            id(names["conv1_scale"]),
+            id(names["spade.beta_scale"]),
+        }
+        assert no_decay["weight_decay"] == 0.0
+        assert "weight_decay" not in decay
+        assert len(decay["params"]) == 4
+
+    def test_no_gating_params_gives_single_group(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        groups = split_weight_decay_groups(nn.Linear(2, 2).named_parameters())
+        assert len(groups) == 1
+
+    @pytest.mark.parametrize("typ", ["AdamW", "Lion"])
+    def test_create_optimizer_applies_group_decay(self, typ):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _Gated()
+        opt = create_optimizer(
+            split_weight_decay_groups(m.named_parameters()),
+            {"type": typ, "lr": 1e-3, "weight_decay": 0.1},
+        )
+        assert [g["weight_decay"] for g in opt.param_groups] == [0.1, 0.0]
+        # zero gating scalar stays untouched by decay when grad is zero
+        m.conv1_scale.data.fill_(1.0)
+        for p in m.parameters():
+            p.grad = torch.zeros_like(p)
+        opt.step()
+        if typ == "AdamW":
+            assert m.conv1_scale.item() == 1.0
+            assert m.other.item() == 0.0
+
+    def test_scheduler_updates_every_group(self):
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _Gated()
+        opt = create_optimizer(
+            split_weight_decay_groups(m.named_parameters()), {"type": "AdamW", "lr": 1.0}
+        )
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=4)
+        for _ in range(2):
+            opt.step()
+            sched.step()
+        assert opt.param_groups[0]["lr"] == opt.param_groups[1]["lr"] < 1.0
+
+
+class TestResumeOldSingleGroupState:
+    def _old_opt_state(self, m):
+        old = torch.optim.AdamW(list(m.parameters()), lr=0.5, weight_decay=0.1)
+        for p in old.param_groups[0]["params"]:
+            p.grad = torch.full_like(p, float(id(p) % 7 + 1))
+        old.step()
+        return old, old.state_dict()
+
+    def test_remap_preserves_per_param_state(self):
+        from fluxflow_training.training.optimizer_factory import (
+            remap_optimizer_state,
+            split_weight_decay_groups,
+        )
+
+        m = _Gated()
+        old, saved = self._old_opt_state(m)
+        opt = create_optimizer(
+            split_weight_decay_groups(m.named_parameters()),
+            {"type": "AdamW", "lr": 1e-3, "weight_decay": 0.1},
+        )
+        remapped = remap_optimizer_state(opt, saved)
+        assert remapped is not None
+        opt.load_state_dict(remapped)
+        for p in m.parameters():
+            assert torch.equal(opt.state[p]["exp_avg"], old.state[p]["exp_avg"])
+        assert [g["weight_decay"] for g in opt.param_groups] == [0.1, 0.0]
+        assert opt.param_groups[0]["lr"] == 0.5
+
+    def test_matching_group_count_unchanged(self):
+        from fluxflow_training.training.optimizer_factory import remap_optimizer_state
+
+        m = nn.Linear(2, 2)
+        opt = torch.optim.AdamW(m.parameters())
+        saved = opt.state_dict()
+        assert remap_optimizer_state(opt, saved) is saved
+
+    def test_unmappable_returns_none(self, caplog):
+        from fluxflow_training.training.optimizer_factory import remap_optimizer_state
+
+        m = _Gated()
+        opt = torch.optim.AdamW([{"params": [m.lin.weight]}, {"params": [m.lin.bias]}])
+        saved = torch.optim.AdamW(m.parameters()).state_dict()
+        assert remap_optimizer_state(opt, saved) is None
+
+    def test_checkpoint_manager_resume(self, tmp_path):
+        from fluxflow_training.training.checkpoint_manager import CheckpointManager
+        from fluxflow_training.training.optimizer_factory import split_weight_decay_groups
+
+        m = _Gated()
+        old, saved = self._old_opt_state(m)
+        sched_old = torch.optim.lr_scheduler.CosineAnnealingLR(old, T_max=10)
+        old.step()
+        sched_old.step()
+        mgr = CheckpointManager(output_dir=tmp_path)
+        torch.save(
+            {
+                "optimizers": {"vae": old.state_dict()},
+                "schedulers": {"vae": sched_old.state_dict()},
+            },
+            mgr.training_states_path,
+        )
+        # new-format optimizer groups contain orig_idx list; torch.save handles it
+        opt = create_optimizer(
+            split_weight_decay_groups(m.named_parameters()),
+            {"type": "AdamW", "lr": 1.0, "weight_decay": 0.1},
+        )
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10)
+        try:
+            mgr.load_optimizer_scheduler_ema_states({"vae": opt}, {"vae": sched}, _NoEma())
+        finally:
+            pass
+        assert torch.equal(opt.state[m.lin.weight]["exp_avg"], old.state[m.lin.weight]["exp_avg"])
+        assert len(sched.base_lrs) == 2 and len(sched._last_lr) == 2
+        sched.step()
+        assert opt.param_groups[0]["lr"] == opt.param_groups[1]["lr"]
+
+
+class _NoEma:
+    def load_state_dict(self, _):
+        raise AssertionError("no ema in checkpoint")
