@@ -52,6 +52,12 @@ training:
         use_lpips: true
         use_ema: false  # Disable EMA to save ~14GB VRAM (optional, but recommended)
 
+        # v0.10.0 z-vs-ctx balance (training only): ctx_dropout_frac = batch fraction decoded
+        # z-only (0 = off); ctx_noise_sigma = noise on ctx as sigma*std(token), capacity
+        # ~0.5*log2(1+1/sigma^2) bits/dim (0 = off).
+        ctx_dropout_frac: 0.5
+        ctx_noise_sigma: 0.5
+
         # Hyperparameters
         batch_size: 2
         workers: 1  # Reduced from 4 to save memory

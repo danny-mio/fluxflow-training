@@ -1206,6 +1206,8 @@ class TrainingPipelineOrchestrator:
                 latent_cycle_start_step=getattr(step, "latent_cycle_start_step", 0),
                 latent_cycle_warmup_steps=getattr(step, "latent_cycle_warmup_steps", 0),
                 latent_cycle_every=getattr(step, "latent_cycle_every", 1),
+                ctx_dropout_frac=getattr(step, "ctx_dropout_frac", 0.5),
+                ctx_noise_sigma=getattr(step, "ctx_noise_sigma", 0.5),
                 latent_cycle_batch_frac=getattr(step, "latent_cycle_batch_frac", 1.0),
                 latent_cycle_crop_frac=getattr(step, "latent_cycle_crop_frac", 1.0),
                 latent_cycle_posterior_frac=getattr(step, "latent_cycle_posterior_frac", 0.0),
@@ -1757,6 +1759,9 @@ class TrainingPipelineOrchestrator:
                 ctx_shrinkage_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 ctx_aux_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 latent_cycle_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                # Plain L1 of ctx-decoded / z-only halves (z-only absent when frac=0).
+                recon_l1_ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                recon_l1_zonly_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 cycle_reject_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 # SPADE gamma/beta drift from init (0 at init) — first real signal of
                 # whether SPADE conditioning is learning anything.
@@ -1840,6 +1845,10 @@ class TrainingPipelineOrchestrator:
                                 ctx_shrinkage_errors.add_item(vae_losses["ctx_shrinkage_loss"])
                             if "ctx_aux_loss" in vae_losses:
                                 ctx_aux_errors.add_item(vae_losses["ctx_aux_loss"])
+                            if "recon_l1_ctx" in vae_losses:
+                                recon_l1_ctx_errors.add_item(vae_losses["recon_l1_ctx"])
+                            if "recon_l1_zonly" in vae_losses:
+                                recon_l1_zonly_errors.add_item(vae_losses["recon_l1_zonly"])
                             if "latent_cycle_loss" in vae_losses:
                                 latent_cycle_errors.add_item(vae_losses["latent_cycle_loss"])
                             if "latent_cycle_reject_frac" in vae_losses:
@@ -1960,6 +1969,10 @@ class TrainingPipelineOrchestrator:
                                 log_msg += f" | CtxShrink: {ctx_shrinkage_errors.average:.4f}"
                             if len(ctx_aux_errors._items) > 0:
                                 log_msg += f" | CtxAux: {ctx_aux_errors.average:.4f}"
+                            if len(recon_l1_ctx_errors._items) > 0:
+                                log_msg += f" | L1ctx: {recon_l1_ctx_errors.average:.4f}"
+                            if len(recon_l1_zonly_errors._items) > 0:
+                                log_msg += f" | L1z: {recon_l1_zonly_errors.average:.4f}"
                             if len(latent_cycle_errors._items) > 0:
                                 log_msg += f" | LatentCycle: {latent_cycle_errors.average:.4f}"
                             if len(cycle_reject_errors._items) > 0:
@@ -2014,6 +2027,10 @@ class TrainingPipelineOrchestrator:
                                 metrics["ctx_shrinkage_loss"] = ctx_shrinkage_errors.average
                             if len(ctx_aux_errors._items) > 0:
                                 metrics["ctx_aux_loss"] = ctx_aux_errors.average
+                            if len(recon_l1_ctx_errors._items) > 0:
+                                metrics["recon_l1_ctx"] = recon_l1_ctx_errors.average
+                            if len(recon_l1_zonly_errors._items) > 0:
+                                metrics["recon_l1_zonly"] = recon_l1_zonly_errors.average
                             if len(latent_cycle_errors._items) > 0:
                                 metrics["latent_cycle_loss"] = latent_cycle_errors.average
                             if len(cycle_reject_errors._items) > 0:

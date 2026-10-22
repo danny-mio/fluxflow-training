@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Not yet released — work in progress toward v0.10.0.
 
+### Added
+- **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
+  that batch fraction with `use_context=False` (z-only; both halves get recon pressure,
+  GAN/latent-cycle/plateau use the ctx half only) and `ctx_noise_sigma` (0.5) adds
+  scale-invariant noise `sigma*std(token)` to ctx before decode. New diagnostics
+  `recon_l1_ctx` / `recon_l1_zonly` (log `L1ctx` / `L1z`). Pipeline step keys and legacy
+  `--ctx_dropout_frac` / `--ctx_noise_sigma` (+ YAML `training:`); 0 disables each.
+
 ### Added (Experimental)
 - **AMD ROCm/gfx1151 support (experimental, unvalidated)**: `get_device()`
   now delegates to `fluxflow.utils.device` (distinguishes ROCm from real

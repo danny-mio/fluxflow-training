@@ -146,6 +146,13 @@ training:
   # default is 1000.0; omitting this key uses that.
   ctx_shrinkage_max_mean_sq: 1000.0
 
+  # v0.10.0: make z carry content, ctx only the residual (training only, v0.10.0 VAE).
+  # ctx_dropout_frac: fraction of each batch decoded z-only (use_context=False); 0 = off.
+  # ctx_noise_sigma: ctx tokens get noise sigma*std(token); capacity of ctx is
+  #   ~0.5*log2(1+1/sigma^2) bits/dim (0.5 -> ~1.16); 0 = off.
+  ctx_dropout_frac: 0.5
+  ctx_noise_sigma: 0.5
+
   # Discriminator update-frequency knob (opt-in efficiency tuning, additive only).
   # Runs discriminator forward+backward every N global steps. 1 (default) = every
   # step, exactly matching current behavior. Increase to reduce discriminator

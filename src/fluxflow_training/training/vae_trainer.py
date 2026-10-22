@@ -48,6 +48,7 @@ _STD_FLOOR = 0.05
 # Fallbacks / bounds for the adaptive GAN weight and the HF-ramp run length.
 _DEFAULT_TOTAL_STEPS = 100000
 _ADAPTIVE_GAN_EPS = 1e-4
+_CTX_DROP_SEED = 0x2D7
 _ADAPTIVE_GAN_MAX = 1e4
 
 
@@ -259,6 +260,14 @@ class VAETrainer:
         # then ramps (cosine) to lambda_adv over gan_warmup_steps.
         gan_start_step: int = 0,
         gan_warmup_steps: int = 1000,
+        # v0.10.0 z-vs-ctx balance (training only, v100 compressors only):
+        # ctx_dropout_frac: fraction of each batch decoded with use_context=False
+        #   (exact GroupNorm, z only) so z must carry content; 0 disables.
+        # ctx_noise_sigma: ctx tokens get N(0, (sigma*std_token)^2) noise before decode;
+        #   scale-invariant, so shrinking ctx cannot escape it. Capacity of ctx is
+        #   ~0.5*log2(1+1/sigma^2) bits/dim. 0 disables.
+        ctx_dropout_frac: float = 0.5,
+        ctx_noise_sigma: float = 0.5,
     ):
         """
         Initialize VAE trainer.
@@ -363,6 +372,11 @@ class VAETrainer:
         self.ctx_shrinkage_warmup_start_step = ctx_shrinkage_warmup_start_step
         self.ctx_shrinkage_warmup_steps = ctx_shrinkage_warmup_steps
         self.ctx_shrinkage_max_mean_sq = ctx_shrinkage_max_mean_sq
+        self.ctx_dropout_frac = ctx_dropout_frac
+        self.ctx_noise_sigma = ctx_noise_sigma
+        # Dedicated CPU generator: B==1 z-only draws are reproducible and leave the
+        # global RNG (data order, dropout, noise) untouched.
+        self._ctx_drop_gen = torch.Generator().manual_seed(_CTX_DROP_SEED)
         # Hook state: last captured ctx_features (pre-norm, pre-attention).
         self._ctx_features_cache: Optional[torch.Tensor] = None
         self._ctx_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
@@ -887,6 +901,65 @@ class VAETrainer:
 
         return loss / 3.0
 
+    def _has_ctx_half(self, packed: torch.Tensor) -> bool:
+        """True for v0.10.0 packed tokens (z||ctx, even width) with SPADE context active."""
+        model = self._get_unwrapped_model(self.compressor)
+        model = getattr(model, "_orig_mod", model)
+        return getattr(model, "ctx_zinject_norm", None) is not None and packed.size(-1) % 2 == 0
+
+    def _ctx_dropout_count(self, batch: int) -> int:
+        """Number of trailing samples decoded z-only (use_context=False).
+
+        B >= 2: clamp(round(frac*B), 1, B-1), i.e. both halves non-empty. B == 1: all
+        (1) with probability frac, drawn from the dedicated generator.
+        """
+        frac = self.ctx_dropout_frac
+        if frac <= 0:
+            return 0
+        if batch == 1:
+            return int(torch.rand(1, generator=self._ctx_drop_gen).item() < frac)
+        return min(max(round(frac * batch), 1), batch - 1)
+
+    def _add_ctx_noise(self, packed: torch.Tensor) -> torch.Tensor:
+        """ctx += sigma * std_token(ctx) * eps on image tokens; z half and HW row untouched.
+
+        The per-token std is detached: noise stays proportional to ctx's own scale (so
+        rescaling ctx cannot escape it) without a gradient path that would reward
+        lowering std to shrink the noise itself. Uses the global RNG (no reproducibility
+        contract needed for noise).
+        """
+        half = packed.size(-1) // 2
+        tokens = packed[:, :-1]
+        z, ctx = tokens[..., :half], tokens[..., half:]
+        std = ctx.detach().float().std(dim=-1, keepdim=True).to(ctx.dtype)
+        ctx = ctx + self.ctx_noise_sigma * std * torch.randn_like(ctx)
+        return torch.cat([torch.cat([z, ctx], dim=-1), packed[:, -1:]], dim=1)
+
+    def _decode_split(self, packed: torch.Tensor, use_context: bool) -> tuple[torch.Tensor, int]:
+        """Decode ``packed``; returns ``(images, n_ctx)`` (first n_ctx are ctx-decoded)."""
+        B = packed.size(0)
+        v100 = use_context and self._has_ctx_half(packed)
+        n_z = self._ctx_dropout_count(B) if v100 else 0
+        n_ctx = B - n_z
+        outs = []
+        if n_ctx:
+            ctx_in = packed[:n_ctx]
+            if self.ctx_noise_sigma > 0 and v100:
+                ctx_in = self._add_ctx_noise(ctx_in)
+            outs.append(self.expander(ctx_in, use_context=use_context))
+        if n_z:
+            outs.append(self.expander(packed[n_ctx:], use_context=False))
+        return (outs[0] if len(outs) == 1 else torch.cat(outs)), n_ctx
+
+    @staticmethod
+    def _recon_l1_halves(out: torch.Tensor, real: torch.Tensor, n_ctx: int) -> dict[str, float]:
+        """Detached plain L1 of the ctx-decoded / z-only halves (key absent when empty)."""
+        diag = {}
+        for key, sl in (("recon_l1_ctx", slice(0, n_ctx)), ("recon_l1_zonly", slice(n_ctx, None))):
+            if out[sl].shape[0]:
+                diag[key] = float(F.l1_loss(out[sl].detach().float(), real[sl].float()).item())
+        return diag
+
     def _expander_last_weight(self) -> Optional[torch.Tensor]:
         """Weight of the expander's last (RGB) conv, or None when it cannot be found."""
         model = self._get_unwrapped_model(self.expander)
@@ -1027,7 +1100,9 @@ class VAETrainer:
                         "VAETrainer.use_gan=True but discriminator_optimizer is None. "
                         "This should have been caught in __init__. Please report this bug."
                     )
-                d_result = self._train_discriminator(real_imgs, global_step, fake_imgs)
+                d_result = self._train_discriminator(
+                    real_imgs[: fake_imgs.shape[0]], global_step, fake_imgs
+                )
                 discriminator_was_stepped = bool(d_result["_optimizer_stepped"])
                 if discriminator_was_stepped:
                     d_loss = d_result["d_loss"]
@@ -1046,6 +1121,10 @@ class VAETrainer:
             )
         else:
             losses["kl_beta"] = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
+
+        for key in ("recon_l1_ctx", "recon_l1_zonly"):  # absent when that half is empty
+            if key in gen_losses:
+                losses[key] = gen_losses[key]
 
         if self.use_gan:
             losses["generator"] = gen_losses["generator"]
@@ -1305,7 +1384,8 @@ class VAETrainer:
     ) -> tuple[torch.Tensor, float]:
         """Image-space G.E idempotence loss. Returns ``(loss, reject_frac)``.
 
-        Targets x_s (no grad): C1a = cropped detached main-path recon, C1b = expander
+        Targets x_s (no grad): C1a = cropped detached main-path recon (``out_imgs_rec`` must
+        hold ctx-decoded samples only; a shortfall is filled with C1b), C1b = expander
         decode of a fresh posterior sample of the cropped real images. The compressor
         re-encodes x_s (with grad); the expander, frozen for this call only, decodes it
         to x_hat. Loss = L1(x_hat, x_s) + lpips_weight * LPIPS. Non-finite -> 0.
@@ -1315,7 +1395,8 @@ class VAETrainer:
         B, _, H, W = real_imgs.shape
         n = min(max(math.ceil(self.latent_cycle_batch_frac * B), 1), B)
         n_post = min(int(self.latent_cycle_posterior_frac * n + 0.5), n)
-        n_rec = n - n_post
+        n_rec = min(n - n_post, out_imgs_rec.shape[0])  # only ctx-half recons are valid targets
+        n_post = n - n_rec
         unit = 2 ** getattr(self._get_unwrapped_model(self.compressor), "downscales", 0)
         top, left, h, w = self._latent_cycle_crop_window(H, W, unit)
         rows, cols = slice(top, top + h), slice(left, left + w)
@@ -1431,8 +1512,8 @@ class VAETrainer:
             }
 
         with self._autocast():
-            out_imgs_rec = self.expander(
-                packed_rec, use_context=self._get_effective_spade_usage(global_step)
+            out_imgs_rec, n_ctx = self._decode_split(
+                packed_rec, self._get_effective_spade_usage(global_step)
             )
 
         # Early NaN detection after expansion
@@ -1453,9 +1534,13 @@ class VAETrainer:
                 "_optimizer_stepped": False,
             }
 
+        B_total = real_imgs.shape[0]
+
         # Reconstruction loss (skip if train_reconstruction=False)
         recon_loss = torch.tensor(0.0, device=real_imgs.device)
         perceptual_loss = torch.tensor(0.0, device=real_imgs.device)
+        lpips_per_sample: Optional[torch.Tensor] = None
+        progressive_alpha: Any = 1.0
 
         if self.train_reconstruction:
             # Progressive frequency weighting: start low to prevent over-sharpening, increase over time
@@ -1477,9 +1562,13 @@ class VAETrainer:
         # Plateau-scheduler metric: fixed-alpha L1, detached (no HF ramp, no LPIPS), so
         # the LR scheduler does not see a loss whose definition drifts over training.
         with torch.no_grad():
+            n_m = n_ctx or B_total  # ctx half; whole (z-only) batch if it has no ctx samples
             plateau_metric = float(
-                self._frequency_weighted_loss(out_imgs_rec.detach(), real_imgs, alpha=1.0).item()
+                self._frequency_weighted_loss(
+                    out_imgs_rec[:n_m].detach(), real_imgs[:n_m], alpha=1.0
+                ).item()
             )
+            recon_diag = self._recon_l1_halves(out_imgs_rec, real_imgs, n_ctx)
 
         # LPIPS perceptual anchor — independent of train_reconstruction, has its own use_lpips flag.
         # When train_reconstruction is also active, fold into recon_loss (single backward pass).
@@ -1499,7 +1588,8 @@ class VAETrainer:
             # tensor's already-realized dtype once you leave the context.
             device = out_imgs_rec.device
             lpips_fn = self.lpips_fn.to(device)
-            perceptual_loss = lpips_fn(out_imgs_rec.float(), real_imgs.float()).mean()
+            lpips_per_sample = lpips_fn(out_imgs_rec.float(), real_imgs.float()).flatten()
+            perceptual_loss = lpips_per_sample.mean()
             if self.train_reconstruction:
                 # Fold into recon_loss so the adaptive weight already covers it
                 recon_loss = recon_loss + self.lambda_lpips * perceptual_loss
@@ -1562,7 +1652,7 @@ class VAETrainer:
         if latent_cycle_lambda > 0 and global_step % self.latent_cycle_every == 0:
             try:
                 latent_cycle_loss, latent_cycle_reject_frac = self._compute_latent_cycle(
-                    real_imgs, out_imgs_rec, global_step
+                    real_imgs, out_imgs_rec[:n_ctx], global_step
                 )
             except Exception as exc:
                 # Non-fatal by design, but loud -- see ctx_aux_loss above.
@@ -1627,10 +1717,12 @@ class VAETrainer:
         gan_factor = self._gan_factor(global_step) if self.use_gan else 0.0
         w_gan = 0.0
         spade_active = self._get_effective_spade_usage(global_step)
-        if self.use_gan and self.discriminator is not None and gan_factor > 0:
+        # z-only decodes (blurrier by design) never reach D: adversarial terms see ctx-half only.
+        gan_on = self.use_gan and gan_factor > 0 and n_ctx > 0
+        if gan_on and self.discriminator is not None:
             # Reuse already-decoded images for generator loss (gradients flow into encoder/decoder)
-            out_imgs_gan = out_imgs_rec
-            ctx_vec_rec = packed_rec[:, :-1, :].contiguous().mean(dim=1).detach()
+            out_imgs_gan = out_imgs_rec[:n_ctx]
+            ctx_vec_rec = packed_rec[:n_ctx, :-1, :].contiguous().mean(dim=1).detach()
 
             # Validate context vector dimension for ctx-conditioned discriminators only
             # (ctx_dim == 0 / no ctx_proj: unconditional D, nothing to validate).
@@ -1694,11 +1786,21 @@ class VAETrainer:
 
         # GAN weight: VQGAN adaptive ratio at the expander's last layer (or fixed
         # lambda_adv), times the warmup factor. Needs a recon-type loss to compare with.
-        if self.use_gan and gan_factor > 0:
+        if gan_on:
+            # Like with like: the GAN gradient comes from ctx samples only, so the rec
+            # gradient in the ratio uses the ctx-half loss (LPIPS reused per-sample).
+            lp_ctx = None if lpips_per_sample is None else lpips_per_sample[:n_ctx].mean()
+            rec_for_weight: Optional[torch.Tensor] = None
             if self.train_reconstruction:
-                rec_for_weight: Optional[torch.Tensor] = recon_loss
-            elif self.use_lpips:
-                rec_for_weight = self.lambda_lpips * perceptual_loss
+                rec_for_weight = recon_loss
+                if n_ctx < B_total:
+                    rec_for_weight = self._frequency_weighted_loss(
+                        out_imgs_rec[:n_ctx], real_imgs[:n_ctx], alpha=progressive_alpha
+                    )
+                    if lp_ctx is not None:
+                        rec_for_weight = rec_for_weight + self.lambda_lpips * lp_ctx
+            elif lp_ctx is not None:
+                rec_for_weight = self.lambda_lpips * lp_ctx
             else:
                 rec_for_weight = None
             w_adapt = None
@@ -1761,7 +1863,7 @@ class VAETrainer:
         elif self.use_lpips:
             # GAN-only mode: LPIPS not folded into recon_loss, add it standalone here
             total_loss = total_loss + self.lambda_lpips * perceptual_loss
-        if self.use_gan:
+        if self.use_gan and n_ctx > 0:
             total_loss = total_loss + w_gan * G_img_loss
 
         # v0.10.0: auxiliary context reconstruction loss (plan §4.1 / DP-1).
@@ -1876,7 +1978,7 @@ class VAETrainer:
         should_step = (self._accumulation_step + 1) % self.gradient_accumulation_steps == 0
         self._accumulation_step += 1
 
-        result = {
+        result: dict[str, Any] = {
             "vae": float(recon_loss.detach().item()),
             "kl": float(kl.detach().item()),
             "generator": float(G_img_loss.detach().item()) if self.use_gan else 0.0,
@@ -1902,8 +2004,9 @@ class VAETrainer:
             "_optimizer_stepped": False,
             "_plateau_metric": plateau_metric,
         }
-        if self.use_gan:
-            result["_fake_imgs"] = out_imgs_rec.detach()
+        result.update(recon_diag)
+        if self.use_gan and n_ctx > 0:
+            result["_fake_imgs"] = out_imgs_rec[:n_ctx].detach()
 
         if not should_step:
             # Mid-accumulation-window: gradients stay accumulated in .grad,

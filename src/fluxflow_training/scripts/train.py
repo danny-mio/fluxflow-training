@@ -238,6 +238,8 @@ _YAML_TRAINING_KEYS = (
     "ctx_shrinkage_warmup_start_step",
     "ctx_shrinkage_warmup_steps",
     "ctx_shrinkage_max_mean_sq",
+    "ctx_dropout_frac",
+    "ctx_noise_sigma",
     "gan_start_step",
     "gan_warmup_steps",
     "instance_noise_std",
@@ -1244,6 +1246,8 @@ def train_legacy(args):
             ctx_shrinkage_warmup_start_step=args.ctx_shrinkage_warmup_start_step,
             ctx_shrinkage_warmup_steps=args.ctx_shrinkage_warmup_steps,
             ctx_shrinkage_max_mean_sq=args.ctx_shrinkage_max_mean_sq,
+            ctx_dropout_frac=args.ctx_dropout_frac,
+            ctx_noise_sigma=args.ctx_noise_sigma,
             gradient_clip_norm=args.initial_clipping_norm,
             accelerator=accelerator,
         )
@@ -2084,6 +2088,18 @@ def parse_args():
         type=float,
         default=1000.0,
         help="Clamp on mean(ctx_features**2) inside the shrinkage term.",
+    )
+    parser.add_argument(
+        "--ctx_dropout_frac",
+        type=float,
+        default=0.5,
+        help="Fraction of each batch decoded z-only (use_context=False); 0 disables.",
+    )
+    parser.add_argument(
+        "--ctx_noise_sigma",
+        type=float,
+        default=0.5,
+        help="Scale-invariant noise on ctx tokens (x per-token std); 0 disables.",
     )
     parser.add_argument(
         "--gan_start_step",

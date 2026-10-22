@@ -143,6 +143,8 @@ def _build(
     accum: int = 1,
     **cycle,
 ):
+    cycle.setdefault("ctx_dropout_frac", 0.0)  # z-only split has its own tests
+    cycle.setdefault("ctx_noise_sigma", 0.0)
     torch.manual_seed(seed)
     compressor = _FakeCompressor(downscales)
     expander = _FakeExpander(downscales)

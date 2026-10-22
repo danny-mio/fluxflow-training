@@ -147,6 +147,10 @@ class PipelineStepConfig:
     train_latent_cycle: bool = False
     # Fixed weight (outside adaptive weighting); ramps 0 -> lambda over
     # latent_cycle_warmup_steps (cosine) once latent_cycle_start_step is reached.
+    # v0.10.0 z-vs-ctx balance (VAETrainer): fraction of each batch decoded z-only, in [0, 1)
+    # (0 = off), and scale-invariant noise on ctx tokens (>= 0, 0 = off).
+    ctx_dropout_frac: float = 0.5
+    ctx_noise_sigma: float = 0.5
     lambda_latent_cycle: float = 1.0
     latent_cycle_lpips_weight: float = 0.0
     latent_cycle_start_step: int = 0
@@ -519,13 +523,17 @@ class PipelineConfigValidator:
             "latent_cycle_posterior_frac": (0, True, 1, True),
             "latent_cycle_reject_range": (0, False, None, True),
             "latent_cycle_reject_frac": (0, True, 1, True),
+            "ctx_dropout_frac": (0, True, 1, False),
+            "ctx_noise_sigma": (0, True, None, True),
         }
         for key, (lo, lo_incl, hi, hi_incl) in rules.items():
             val = getattr(step, key)
-            ok = (val >= lo if lo_incl else val > lo) and (hi is None or val <= hi)
+            ok = (val >= lo if lo_incl else val > lo) and (
+                hi is None or (val <= hi if hi_incl else val < hi)
+            )
             if not ok:
                 lo_br = "[" if lo_incl else "("
-                hi_s = "inf)" if hi is None else f"{hi}]"
+                hi_s = "inf)" if hi is None else f"{hi}{']' if hi_incl else ')'}"
                 self.errors.append(
                     f"Step '{step_name}' (step {step_index + 1}): "
                     f"{key}={val} out of range {lo_br}{lo}, {hi_s}"
@@ -826,6 +834,8 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         latent_cycle_start_step=step_dict.get("latent_cycle_start_step", 0),
         latent_cycle_warmup_steps=step_dict.get("latent_cycle_warmup_steps", 0),
         latent_cycle_every=step_dict.get("latent_cycle_every", 1),
+        ctx_dropout_frac=step_dict.get("ctx_dropout_frac", 0.5),
+        ctx_noise_sigma=step_dict.get("ctx_noise_sigma", 0.5),
         latent_cycle_batch_frac=step_dict.get("latent_cycle_batch_frac", 1.0),
         latent_cycle_crop_frac=step_dict.get("latent_cycle_crop_frac", 1.0),
         latent_cycle_posterior_frac=step_dict.get("latent_cycle_posterior_frac", 0.0),
