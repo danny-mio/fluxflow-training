@@ -7,6 +7,8 @@ import torch
 from diffusers import DPMSolverMultistepScheduler
 from fluxflow.utils import get_logger
 
+from .utils import encode_latent
+
 logger = get_logger(__name__)
 
 
@@ -65,7 +67,8 @@ def generate_with_cfg(
 
     # Initialize latent from random noise
     z_img = (torch.rand((batch_size, 3, img_size, img_size), device=device) * 2) - 1
-    latent_z = diffuser.compressor(z_img)
+    # Deterministic (mean) encode: only the hw context vector is used; noise replaces img_seq.
+    latent_z = encode_latent(diffuser.compressor, z_img, sample=False)
 
     img_seq = latent_z[:, :-1, :].contiguous()
     hw_vec = latent_z[:, -1:, :].contiguous()

@@ -1,5 +1,6 @@
 """Training utilities for FluxFlow (EMA, buffers, device detection)."""
 
+import inspect
 import logging
 import time
 from contextlib import contextmanager
@@ -489,3 +490,22 @@ def create_robust_dataloader_iterator(
         max_retries=max_retries,
         retry_delay=retry_delay,
     )
+
+
+def _accepts_sample(compressor: Any) -> bool:
+    """True if ``compressor.forward`` explicitly declares ``sample`` (v100)."""
+    try:
+        params = inspect.signature(getattr(compressor, "forward", compressor)).parameters
+    except (TypeError, ValueError):
+        return False
+    return "sample" in params
+
+
+def encode_latent(compressor: Any, imgs: torch.Tensor, sample: bool) -> torch.Tensor:
+    """Encode ``imgs``; pass ``sample`` only to compressors supporting it.
+
+    Legacy (v060/v070) compressors lack ``sample`` and are called as ``compressor(imgs)``.
+    """
+    if _accepts_sample(compressor):
+        return compressor(imgs, sample=sample)  # type: ignore[no-any-return]
+    return compressor(imgs)  # type: ignore[no-any-return]

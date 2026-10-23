@@ -15,6 +15,7 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
 from .schedulers import sample_t
+from .utils import encode_latent
 
 # v0.10.0: dispatcher to detect per-token-text flow processors. Lets the
 # trainer feed (text_seq, text_mask) to the new flow signature while staying
@@ -308,7 +309,8 @@ class FlowTrainer:
         original_checkpoint = self.compressor.use_gradient_checkpointing
         self.compressor.use_gradient_checkpointing = False
         with torch.no_grad(), self._autocast():
-            latent_packet = self.compressor(real_imgs)
+            # Flow trains on SAMPLED latents (standard LDM practice); legacy compressors ignore.
+            latent_packet = encode_latent(self.compressor, real_imgs, sample=True)
         if check_for_nan(latent_packet, "latent_packet", logger):
             logger.error("NaN detected in compressor output - skipping batch")
             return {"flow_loss": 0.0, "diff_loss": 0.0, "align_loss": 0.0}

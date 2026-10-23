@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Not yet released — work in progress toward v0.10.0.
 
+### Changed
+- **Flow targets use sampled latents**: `FlowTrainer` encodes via new
+  `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`
+  `sample` kwarg; the z half is now raw ~N(0,I), no LayerNorm). Legacy v060/v070
+  compressors without a `sample` parameter are called unchanged.
+- `generate_with_cfg` encodes its init image deterministically (`sample=False`, mean);
+  only the hw context vector is used there.
+
 ### Added
 - **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
   that batch fraction with `use_context=False` (z-only; both halves get recon pressure,
