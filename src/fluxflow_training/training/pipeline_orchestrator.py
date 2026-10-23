@@ -82,7 +82,7 @@ def compute_total_global_steps(
     """Number of global steps (one per batch) a pipeline step will run.
 
     ``max_steps`` caps batches per epoch (mirrors ``epoch_total_batches`` in ``run``).
-    This is the budget for ``VAETrainer.total_training_steps`` and, divided by
+    This is the budget, divided by
     ``gradient_accumulation_steps`` for gated schedulers, for scheduler ``T_max``:
     VAETrainer steps its schedulers at most once per distinct global_step (and only
     when the optimizer stepped), however many resolution groups a batch contains.
@@ -1038,14 +1038,8 @@ class TrainingPipelineOrchestrator:
         )
         models["D_img"] = rebuild_discriminator(old, want).to(self.device)
 
-    def _create_step_trainers(
-        self, step, models, optimizers, schedulers, ema, args, total_steps=None
-    ):
-        """Create trainers for current step.
-
-        ``total_steps``: global steps this pipeline step runs (VAETrainer
-        ``total_training_steps``); omitted from the trainer call when None.
-        """
+    def _create_step_trainers(self, step, models, optimizers, schedulers, ema, args):
+        """Create trainers for current step."""
         import torch.nn as nn
 
         from ..training import FlowTrainer, VAETrainer
@@ -1152,7 +1146,6 @@ class TrainingPipelineOrchestrator:
             except (AttributeError, TypeError):
                 pass  # legacy compressor; VAETrainer will auto-detect
 
-            extra_kwargs = {} if total_steps is None else {"total_training_steps": total_steps}
             trainers["vae"] = VAETrainer(
                 compressor=models["compressor"],
                 expander=models["expander"],
@@ -1174,6 +1167,7 @@ class TrainingPipelineOrchestrator:
                 kl_beta=step.kl_beta if hasattr(step, "kl_beta") else 0.0001,
                 kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
                 kl_z_warmup_steps=getattr(step, "kl_z_warmup_steps", 10000),
+                hf_ramp_steps=getattr(step, "hf_ramp_steps", 30000),
                 kl_free_bits=step.kl_free_bits if hasattr(step, "kl_free_bits") else 0.0,
                 use_gan=step.gan_training,
                 discriminator=models["D_img"] if step.gan_training else None,
@@ -1240,7 +1234,6 @@ class TrainingPipelineOrchestrator:
                 # optimizers now share one accumulation-boundary counter -- see
                 # VAETrainer.gradient_accumulation_steps / _accumulation_step.
                 gradient_accumulation_steps=step.gradient_accumulation_steps,
-                **extra_kwargs,
             )
 
             # Build descriptive message about what's being trained
@@ -1674,9 +1667,7 @@ class TrainingPipelineOrchestrator:
                     )
 
             # Create trainers for this step
-            trainers = self._create_step_trainers(
-                step, models, optimizers, schedulers, ema, args, total_steps=total_steps
-            )
+            trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
 
             # Training loop for this step
             step_start_time = time.time()
@@ -1941,6 +1932,8 @@ class TrainingPipelineOrchestrator:
                         # Console logging (show metrics if VAE trainer ran)
                         if len(vae_errors._items) > 0:
                             log_msg += f" | VAE: {vae_errors.average:.4f}"
+                            if len(recon_l1_ctx_errors._items) > 0:
+                                log_msg += f" | L1ctx: {recon_l1_ctx_errors.average:.4f}"
                             if step.train_kl and len(kl_errors._items) > 0:
                                 log_msg += f" | KL: {kl_errors.average:.4f}"
                             # Add GAN losses if active
@@ -1969,8 +1962,6 @@ class TrainingPipelineOrchestrator:
                                 log_msg += f" | CtxShrink: {ctx_shrinkage_errors.average:.4f}"
                             if len(ctx_aux_errors._items) > 0:
                                 log_msg += f" | CtxAux: {ctx_aux_errors.average:.4f}"
-                            if len(recon_l1_ctx_errors._items) > 0:
-                                log_msg += f" | L1ctx: {recon_l1_ctx_errors.average:.4f}"
                             if len(recon_l1_zonly_errors._items) > 0:
                                 log_msg += f" | L1z: {recon_l1_zonly_errors.average:.4f}"
                             if len(latent_cycle_errors._items) > 0:

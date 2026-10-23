@@ -24,7 +24,7 @@ class TestNewConfigDefaults:
 
     def test_kl_z_weight_default(self):
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.kl_z_weight == 0.5
+        assert step.kl_z_weight == 1e-3
 
     def test_kl_z_warmup_steps_default(self):
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)

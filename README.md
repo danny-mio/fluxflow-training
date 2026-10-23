@@ -69,8 +69,9 @@ for the full cross-package walkthrough):
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `kl_z_weight` | `0.5` | Final KL weight on the clean Gaussian latent. |
-| `kl_z_warmup_steps` | `10000` | Cosine warmup length for `kl_z_weight`. |
+| `kl_z_weight` | `0.001` | Final KL weight on the clean Gaussian latent. |
+| `kl_z_warmup_steps` | `10000` | Cosine warmup length for `kl_z_weight`, in OPTIMIZER steps (scaled by `gradient_accumulation_steps`). |
+| `hf_ramp_steps` | `30000` | HF-loss alpha ramp (0.3 to 1.2) length, micro-batch global steps. |
 | `ctx_shrinkage_weight` | `0.001` | β-VAE-style L2 on deterministic ctx features. |
 | `ctx_shrinkage_warmup_start_step` | `5000` | Step at which ctx-shrinkage warmup begins. |
 | `ctx_shrinkage_warmup_steps` | `5000` | Warmup length once `start_step` is reached. |

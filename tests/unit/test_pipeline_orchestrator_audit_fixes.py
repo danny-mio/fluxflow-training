@@ -81,14 +81,12 @@ class TestComputeTotalGlobalSteps:
 
 
 class TestVaeTrainerKwargWiring:
-    def _kwargs(self, step, total_steps=123):
+    def _kwargs(self, step):
         comp = _V100Comp()
         models = {"compressor": comp, "expander": nn.Linear(1, 1), "D_img": None}
         opts = {"vae": MagicMock(), "discriminator": MagicMock()}
         with patch("fluxflow_training.training.VAETrainer") as vt:
-            _orch([step])._create_step_trainers(
-                step, models, opts, {}, None, _args(), total_steps=total_steps
-            )
+            _orch([step])._create_step_trainers(step, models, opts, {}, None, _args())
         return vt.call_args.kwargs
 
     def test_previously_dropped_keys_reach_trainer(self):
@@ -107,7 +105,6 @@ class TestVaeTrainerKwargWiring:
         assert kw["ctx_shrinkage_warmup_steps"] == 22
         assert kw["ctx_shrinkage_max_mean_sq"] == 33.0
         assert (kw["gan_start_step"], kw["gan_warmup_steps"]) == (3, 4)
-        assert kw["total_training_steps"] == 123
 
     def test_new_defaults(self):
         kw = self._kwargs(_gan_step())

@@ -86,7 +86,7 @@ def _count(obj, name):
 class TestContract:
     def test_new_kwargs_and_defaults(self):
         p = inspect.signature(VAETrainer.__init__).parameters
-        assert p["total_training_steps"].default is None
+        assert "total_training_steps" not in p
         assert p["gan_start_step"].default == 0
         assert p["gan_warmup_steps"].default == 1000
         assert p["train_ctx_aux"].default is False
@@ -206,22 +206,12 @@ class TestSchedulers:
             def step(self, metric=None):
                 seen.append(metric)
 
-        t = _mk(scheduler=_W(), total_training_steps=100000)
+        t = _mk(scheduler=_W())
         imgs = _imgs()
         t.optimizer.param_groups[0]["lr"] = 0.0  # keep weights fixed between calls
         t.train_step(imgs, global_step=1)
         t.train_step(imgs, global_step=60000)
         assert seen[0] == pytest.approx(seen[1], rel=1e-4)
-
-    def test_ramp_uses_total_training_steps(self):
-        imgs = _imgs()
-
-        def recon(total):
-            torch.manual_seed(0)
-            return _mk(total_training_steps=total)._train_generator(imgs, 3)["recon"]
-
-        a, b, c = recon(10), recon(None), recon(100000)
-        assert b == pytest.approx(c) and a != pytest.approx(b)
 
 
 class TestDiscriminatorAccumulation:

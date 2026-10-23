@@ -75,7 +75,7 @@ class TestLegacyVaeTrainerWiring:
             "instance_noise_decay=args.instance_noise_decay",
             "train_ctx_aux=args.train_ctx_aux",
             "lambda_ctx_aux=args.lambda_ctx_aux",
-            "total_training_steps=total_global_steps",
+            "hf_ramp_steps=args.hf_ramp_steps",
         ],
     )
     def test_kwarg_passed(self, kw):

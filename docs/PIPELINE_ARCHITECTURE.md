@@ -146,8 +146,8 @@ either the whole-encoder key or the split keys, not both.
 
 ```yaml
 # v0.10.0 (preferred):
-kl_z_weight: 0.5          # Final KL weight on the clean Gaussian latent
-kl_z_warmup_steps: 10000  # Cosine warmup steps to reach kl_z_weight
+kl_z_weight: 0.001          # Final KL weight on the clean Gaussian latent
+kl_z_warmup_steps: 10000  # OPTIMIZER steps (x grad accum internally)
 kl_free_bits: 0.0         # Free bits threshold (nats)
 ctx_shrinkage_weight: 0.001              # β-VAE-style L2 on ctx features
 ctx_shrinkage_warmup_start_step: 5000    # Delay before ctx shrinkage warmup

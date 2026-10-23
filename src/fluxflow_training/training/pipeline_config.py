@@ -204,8 +204,11 @@ class PipelineStepConfig:
     # - ``kl_z_warmup_steps`` (was ``kl_warmup_steps``)
     # The legacy names continue to load with a DeprecationWarning emitted
     # by the YAML parser. When both forms appear, the v0.10.0 form wins.
-    kl_z_weight: float = 0.5
+    kl_z_weight: float = 1e-3
+    # Counts OPTIMIZER steps (trainer scales by gradient_accumulation_steps).
     kl_z_warmup_steps: int = 10000
+    # HF-frequency alpha ramp 0.3 -> 1.2 length, in micro-batch global steps.
+    hf_ramp_steps: int = 30000
     # Kept as a backward-compat shadow so direct PipelineStepConfig instantiation
     # (e.g. via tests) still accepts the old keyword names. The parser keeps
     # these in sync with the new fields whenever possible.
@@ -493,6 +496,7 @@ class PipelineConfigValidator:
         "gan_start_step",
         "gan_warmup_steps",
         "kl_z_warmup_steps",
+        "hf_ramp_steps",
         "instance_noise_std",
     )
 
@@ -857,8 +861,9 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         initial_clipping_norm=step_dict.get("initial_clipping_norm", 1.0),
         kl_beta=step_dict.get("kl_beta", 0.0001),
         kl_warmup_steps=step_dict.get("kl_warmup_steps", 5000),
-        kl_z_weight=step_dict.get("kl_z_weight", 0.5),
+        kl_z_weight=step_dict.get("kl_z_weight", 1e-3),
         kl_z_warmup_steps=step_dict.get("kl_z_warmup_steps", 10000),
+        hf_ramp_steps=step_dict.get("hf_ramp_steps", 30000),
         ctx_shrinkage_weight=step_dict.get("ctx_shrinkage_weight", 0.001),
         ctx_shrinkage_warmup_start_step=step_dict.get("ctx_shrinkage_warmup_start_step", 5000),
         ctx_shrinkage_warmup_steps=step_dict.get("ctx_shrinkage_warmup_steps", 5000),

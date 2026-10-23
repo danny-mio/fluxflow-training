@@ -23,7 +23,7 @@ bezier-coupled architecture. The relevant schedules live in
 ### KL warmup on the clean Gaussian latent
 
 KL is annealed from `0` to `kl_z_weight` with a cosine ramp over
-`kl_z_warmup_steps` global steps (`losses.cosine_warmup_weight`). Legacy
+`kl_z_warmup_steps` OPTIMIZER steps (x `gradient_accumulation_steps` micro-batches; `losses.cosine_warmup_weight`). `VAE` / `vae_loss` is the HF-frequency-weighted recon over the whole batch, including the z-only half (`ctx_dropout_frac`), and rises while `hf_ramp_steps` ramps alpha 0.3 to 1.2; read `L1ctx` (`recon_l1_ctx`) for the plain ctx-path L1. Legacy
 `kl_beta` / `kl_warmup_steps` keys still load and emit a
 `DeprecationWarning`; when both forms appear, the v0.10.0 form wins.
 
@@ -64,7 +64,7 @@ training:
     steps:
       - name: vae_warmup
         train_vae: true
-        kl_z_weight: 0.5
+        kl_z_weight: 0.001
         kl_z_warmup_steps: 10000
         ctx_shrinkage_weight: 0.001
         ctx_shrinkage_warmup_start_step: 5000
@@ -972,7 +972,7 @@ training:
         train_vae: true
         gan_training: false
         lr: 2e-5
-        kl_z_weight: 0.5
+        kl_z_weight: 0.001
         kl_z_warmup_steps: 10000
         transition_on:
           mode: "loss_threshold"
@@ -987,7 +987,7 @@ training:
         gan_training: true
         lr: 1e-5
         lambda_adv: 0.9
-        kl_z_weight: 0.5
+        kl_z_weight: 0.001
         optimization:
           optimizers:
             vae:

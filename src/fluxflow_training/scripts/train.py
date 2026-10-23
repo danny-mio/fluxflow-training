@@ -235,6 +235,7 @@ def _sd_weight(state_dict: dict, prefix: str):
 # Plain scalar training.* YAML keys that map 1:1 onto CLI args (CLI wins over YAML).
 _YAML_TRAINING_KEYS = (
     "kl_z_warmup_steps",
+    "hf_ramp_steps",
     "ctx_shrinkage_warmup_start_step",
     "ctx_shrinkage_warmup_steps",
     "ctx_shrinkage_max_mean_sq",
@@ -1239,7 +1240,7 @@ def train_legacy(args):
             instance_noise_decay=args.instance_noise_decay,
             train_ctx_aux=args.train_ctx_aux,
             lambda_ctx_aux=args.lambda_ctx_aux,
-            total_training_steps=total_global_steps,
+            hf_ramp_steps=args.hf_ramp_steps,
             discriminator_update_freq=args.discriminator_update_freq,
             kl_z_weight=args.kl_z_weight,
             ctx_shrinkage_weight=args.ctx_shrinkage_weight,
@@ -2069,7 +2070,14 @@ def parse_args():
         "--kl_z_warmup_steps",
         type=int,
         default=10000,
-        help="Cosine warmup length of kl_z_weight (used when --kl_z_weight > 0).",
+        help="Cosine warmup length of kl_z_weight in OPTIMIZER steps "
+        "(scaled by gradient accumulation; used when --kl_z_weight > 0).",
+    )
+    parser.add_argument(
+        "--hf_ramp_steps",
+        type=int,
+        default=30000,
+        help="Length (micro-batch steps) of the HF-loss alpha ramp 0.3 -> 1.2.",
     )
     parser.add_argument(
         "--ctx_shrinkage_warmup_start_step",

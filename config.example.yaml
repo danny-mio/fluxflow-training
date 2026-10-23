@@ -125,8 +125,9 @@ training:
   # in both --kl_z_weight and legacy-script YAML) means kl_beta/kl_warmup_steps stays
   # active. kl_z_weight > 0 takes priority over kl_beta (cosine warmup over
   # kl_z_warmup_steps instead of kl_warmup_steps). NOTE: in pipeline-mode configs,
-  # PipelineStepConfig's own field default is 0.5 (design doc default) — omitting
-  # this key from a pipeline step's YAML uses 0.5, not 0.0. Set it explicitly (as
+  # PipelineStepConfig's own field default is 0.001 — omitting
+  # this key from a pipeline step's YAML uses 0.001, not 0.0. KL is a per-element
+  # mean with a fixed weight: keep it ~1e-3 (> 0.05 collapses z; a warning is logged). Set it explicitly (as
   # here) to opt out and keep the legacy kl_beta path.
   kl_z_weight: 0.0
 
@@ -183,9 +184,13 @@ training:
   # MSE only taxes the ctx head). Same default in --train_ctx_aux and pipeline steps.
   train_ctx_aux: false
 
-  # KL_z cosine warmup length (used when kl_z_weight > 0). Legacy kl_warmup_steps
+  # KL_z cosine warmup length in OPTIMIZER steps (trainer multiplies by
+  # gradient_accumulation_steps; used when kl_z_weight > 0). Legacy kl_warmup_steps
   # is the remapped fallback in pipeline configs. Wired into both drivers.
   kl_z_warmup_steps: 10000
+
+  # HF-loss alpha ramp (0.3 -> 1.2) length in micro-batch global steps.
+  hf_ramp_steps: 30000
 
   # ctx shrinkage schedule (see ctx_shrinkage_weight above): off before the start
   # step, cosine ramp over warmup_steps. Wired into both drivers.

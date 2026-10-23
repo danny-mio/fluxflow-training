@@ -20,7 +20,9 @@ training-side glue for the five locked decisions:
    `t_txt` (text-token max length, default 32) are exposed in the YAML config.
 
 New config keys (see `config.example.yaml`):
-- `kl_z_weight` — final KL weight on the clean Gaussian latent.
+- `kl_z_weight` — final KL weight on the clean Gaussian latent (default 1e-3; per-element KL). `kl_z_warmup_steps` counts optimizer steps.
+- `hf_ramp_steps` — HF-loss alpha ramp length (default 30000 micro-batch steps).
+- Logs: `VAE`/`vae_loss` is HF-weighted recon over the whole batch incl. the z-only half (rises as alpha ramps); watch `L1ctx` (plain ctx-path L1).
 - `ctx_shrinkage_weight` — L2-like pressure on `ctx` to prevent runaway scale.
 - `t_txt` — DistilBERT max text length (32 for v0.10.0, was 512).
 

@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Not yet released — work in progress toward v0.10.0.
 
+### Fixed
+- **KL collapse**: default `kl_z_weight` 0.5 -> 1e-3 (pipeline config; KL is a per-element
+  mean with fixed weight, 0.5 gave ~27x recon gradient and collapsed z). One-time warning
+  when v100 runs with `kl_z_weight > 0.05`. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
+- `kl_z_warmup_steps` now counts OPTIMIZER steps (trainer scales by
+  `gradient_accumulation_steps`). Other warmups (`gan_*`, `ctx_shrinkage_*`, legacy
+  `kl_warmup_steps`) still count micro-batches.
+- Console: `L1ctx` printed right after `VAE`. `VAE`/`vae_loss` = HF-weighted recon over the
+  whole batch incl. z-only half; it rises while alpha ramps.
+
+### Changed
+- HF alpha ramp (0.3 -> 1.2) is a fixed length again: new step key / `--hf_ramp_steps`
+  (default 30000 micro-batch steps, = pre-bbc5a16) replaces 30% of run length. Removed
+  `VAETrainer(total_training_steps=)` (was only used by the ramp).
+
 ### Changed
 - **Flow targets use sampled latents**: `FlowTrainer` encodes via new
   `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`

@@ -45,8 +45,8 @@ _BEZIER_REG_WEIGHT = 0.05
 # Std floor for the contrast log-ratio (keeps it bounded on flat targets).
 _STD_FLOOR = 0.05
 
-# Fallbacks / bounds for the adaptive GAN weight and the HF-ramp run length.
-_DEFAULT_TOTAL_STEPS = 100000
+# Fallbacks / bounds for the adaptive GAN weight and the KL warning threshold.
+_KL_WARN_WEIGHT = 0.05  # kl_z_weight above this is almost certainly too large (per-element KL)
 _ADAPTIVE_GAN_EPS = 1e-4
 _CTX_DROP_SEED = 0x2D7
 _ADAPTIVE_GAN_MAX = 1e4
@@ -234,6 +234,7 @@ class VAETrainer:
         # When > 0 the trainer uses the wide-range schedule per design §5.5.
         kl_z_weight: float = 0.0,
         kl_z_warmup_steps: int = 10000,
+        hf_ramp_steps: int = 30000,
         lambda_lpips: float = 0.1,
         instance_noise_std: float = 0.05,
         instance_noise_decay: float = 0.9999,
@@ -254,8 +255,6 @@ class VAETrainer:
         # _accumulation_step / should_step pattern (flow_trainer.py). Default 1
         # reproduces the historical every-micro-batch-steps behavior.
         gradient_accumulation_steps: int = 1,
-        # Total run length (HF-loss ramp). None -> 100000.
-        total_training_steps: Optional[int] = None,
         # Adversarial weight is 0 before gan_start_step (D is not trained either),
         # then ramps (cosine) to lambda_adv over gan_warmup_steps.
         gan_start_step: int = 0,
@@ -299,8 +298,11 @@ class VAETrainer:
                 VQGAN-style ratio ||grad L_rec|| / ||grad L_gan|| at the expander's last layer;
                 otherwise it is the fixed weight. Both are multiplied by the warmup factor.
             adaptive_weights: Adaptive GAN weight only; KL and recon are never adaptively weighted.
-            total_training_steps: Run length used by the progressive HF-loss ramp
-                (None -> 100000).
+            kl_z_warmup_steps: Cosine warmup length of ``kl_z_weight`` in OPTIMIZER steps;
+                the trainer scales it by ``gradient_accumulation_steps`` since ``global_step``
+                counts micro-batches.
+            hf_ramp_steps: Length (micro-batch global steps) of the HF-loss alpha ramp
+                0.3 -> 1.2. 0 disables the ramp (alpha = 1.2 from the start).
             gan_start_step: Step before which the adversarial loss is off (and D untrained).
             gan_warmup_steps: Cosine ramp length 0 -> lambda_adv after gan_start_step.
             r1_interval: R1 gradient penalty interval
@@ -424,7 +426,8 @@ class VAETrainer:
         self.gradient_accumulation_steps = max(1, gradient_accumulation_steps)
         self._accumulation_step = 0
         self._d_accumulation_step = 0
-        self.total_training_steps = total_training_steps
+        self.hf_ramp_steps = hf_ramp_steps
+        self._kl_warned = False
         self.gan_start_step = gan_start_step
         self.gan_warmup_steps = gan_warmup_steps
         self._last_vae_sched_step = -1
@@ -901,6 +904,23 @@ class VAETrainer:
 
         return loss / 3.0
 
+    def _kl_z_beta(self, global_step: int) -> float:
+        """KL_z weight at micro-batch ``global_step``; warmup is in optimizer steps."""
+        warmup = self.kl_z_warmup_steps * self.gradient_accumulation_steps
+        return cosine_warmup_weight(global_step, warmup, self.kl_z_weight)
+
+    def _warn_large_kl_once(self, packed: torch.Tensor) -> None:
+        """One-time warning: v100 KL is a per-element mean with fixed weight."""
+        if self._kl_warned or not self.train_kl or self.kl_z_weight <= _KL_WARN_WEIGHT:
+            return
+        if self._has_ctx_half(packed):
+            self._kl_warned = True
+            logger.warning(
+                f"kl_z_weight={self.kl_z_weight} is large: KL is a per-element mean with a "
+                f"fixed weight (no adaptive balancing); values > {_KL_WARN_WEIGHT} can "
+                "collapse z toward the prior. Typical: 1e-3."
+            )
+
     def _has_ctx_half(self, packed: torch.Tensor) -> bool:
         """True for v0.10.0 packed tokens (z||ctx, even width) with SPADE context active."""
         model = self._get_unwrapped_model(self.compressor)
@@ -1116,9 +1136,7 @@ class VAETrainer:
         losses["kl"] = gen_losses["kl"]
         # Report whichever schedule is active so dashboards see the live coefficient.
         if self.kl_z_weight > 0:
-            losses["kl_beta"] = cosine_warmup_weight(
-                global_step, self.kl_z_warmup_steps, self.kl_z_weight
-            )
+            losses["kl_beta"] = self._kl_z_beta(global_step)
         else:
             losses["kl_beta"] = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
 
@@ -1511,6 +1529,7 @@ class VAETrainer:
                 "_optimizer_stepped": False,
             }
 
+        self._warn_large_kl_once(packed_rec)
         with self._autocast():
             out_imgs_rec, n_ctx = self._decode_split(
                 packed_rec, self._get_effective_spade_usage(global_step)
@@ -1545,10 +1564,9 @@ class VAETrainer:
         if self.train_reconstruction:
             # Progressive frequency weighting: start low to prevent over-sharpening, increase over time
             # This allows the model to learn basic structure first, then focus on sharp edges
-            total_training_steps = self.total_training_steps or _DEFAULT_TOTAL_STEPS
-            alpha_progress = min(
-                1.0, global_step / (total_training_steps * 0.3)
-            )  # Ramp over first 30%
+            alpha_progress = (
+                min(1.0, global_step / self.hf_ramp_steps) if self.hf_ramp_steps > 0 else 1.0
+            )
             alpha_start = 0.3  # Start with lower weighting to prevent early over-sharpening
             alpha_end = 1.2  # End with higher weighting for sharp edges
             progressive_alpha = alpha_start + (alpha_end - alpha_start) * alpha_progress
@@ -1601,7 +1619,7 @@ class VAETrainer:
         beta = 0.0
         if self.train_kl:
             if self.kl_z_weight > 0:
-                beta = cosine_warmup_weight(global_step, self.kl_z_warmup_steps, self.kl_z_weight)
+                beta = self._kl_z_beta(global_step)
             else:
                 beta = cosine_anneal_beta(global_step, self.kl_warmup_steps, self.kl_beta)
             kl = kl_standard_normal(
