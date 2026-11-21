@@ -149,8 +149,8 @@ class PipelineStepConfig:
     # latent_cycle_warmup_steps (cosine) once latent_cycle_start_step is reached.
     # v0.10.0 z-vs-ctx balance (VAETrainer): fraction of each batch decoded z-only, in [0, 1)
     # (0 = off), and scale-invariant noise on ctx tokens (>= 0, 0 = off).
-    ctx_dropout_frac: float = 0.5
-    ctx_noise_sigma: float = 0.5
+    ctx_dropout_frac: float = 0.15
+    ctx_noise_sigma: float = 0.15
     lambda_latent_cycle: float = 1.0
     latent_cycle_lpips_weight: float = 0.0
     latent_cycle_start_step: int = 0
@@ -216,7 +216,7 @@ class PipelineStepConfig:
     kl_warmup_steps: int = 5000
     kl_free_bits: float = 0.5
     lambda_adv: float = 0.5
-    lambda_lpips: float = 0.1
+    lambda_lpips: float = 0.5
     mse_weight: float = 0.1
     # v0.10.0 flow text-conditioning shape.
     # ``t_txt`` is DEPRECATED and ignored: the text token length is the
@@ -881,8 +881,8 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         latent_cycle_start_step=step_dict.get("latent_cycle_start_step", 0),
         latent_cycle_warmup_steps=step_dict.get("latent_cycle_warmup_steps", 0),
         latent_cycle_every=step_dict.get("latent_cycle_every", 1),
-        ctx_dropout_frac=step_dict.get("ctx_dropout_frac", 0.5),
-        ctx_noise_sigma=step_dict.get("ctx_noise_sigma", 0.5),
+        ctx_dropout_frac=step_dict.get("ctx_dropout_frac", 0.15),
+        ctx_noise_sigma=step_dict.get("ctx_noise_sigma", 0.15),
         latent_cycle_batch_frac=step_dict.get("latent_cycle_batch_frac", 1.0),
         latent_cycle_crop_frac=step_dict.get("latent_cycle_crop_frac", 1.0),
         latent_cycle_posterior_frac=step_dict.get("latent_cycle_posterior_frac", 0.0),
@@ -911,7 +911,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         null_prompt=step_dict.get("null_prompt", ""),
         kl_free_bits=step_dict.get("kl_free_bits", 0.5),
         lambda_adv=step_dict.get("lambda_adv", 0.5),
-        lambda_lpips=step_dict.get("lambda_lpips", 0.1),
+        lambda_lpips=step_dict.get("lambda_lpips", 0.5),
         mse_weight=step_dict.get("mse_weight", 0.1),
         r1_interval=step_dict.get("r1_interval", 16),
         r1_gamma=step_dict.get("r1_gamma", 5.0),

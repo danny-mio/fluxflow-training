@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Not yet released — work in progress toward v0.10.0.
 
 ### Changed
+- **Resume guard**: resuming a `train_diff`/`train_diff_full` step on an uncalibrated
+  VAE raises (VAE weights not loaded; set `model_checkpoint`) instead of calibrating and
+  exporting over the trained VAE.
+- **VAE-only steps reset latent stats to identity** at step start, so a later flow step
+  recalibrates on the newly trained VAE.
+- **Recipe defaults**: `ctx_noise_sigma` / `ctx_dropout_frac` 0.5 -> 0.15, `lambda_lpips`
+  0.1 -> 0.5 (pipeline, VAETrainer, legacy CLI).
 - **KL**: free bits are now per channel (mean over batch+spatial dims floored at
   `kl_free_bits` nats/element; floored channels get no gradient). Pipeline defaults
   `kl_z_weight` 1e-3 -> 1e-5, `kl_free_bits` 0.0 -> 0.5 (1e-3 collapsed 11/16 z channels:
@@ -146,9 +153,9 @@ Not yet released — work in progress toward v0.10.0.
   the model checkpoint is exported right after. Standalone:
   `fluxflow-calibrate-latents --checkpoint CKPT --config CFG --out OUT` (see
   `docs/TRAINING_GUIDE.md`).
-- **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
+- **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.15) decodes
   that batch fraction with `use_context=False` (z-only; both halves get recon pressure,
-  GAN/latent-cycle/plateau use the ctx half only) and `ctx_noise_sigma` (0.5) adds
+  GAN/latent-cycle/plateau use the ctx half only) and `ctx_noise_sigma` (0.15) adds
   scale-invariant noise `sigma*std(token)` to ctx before decode. New diagnostics
   `recon_l1_ctx` / `recon_l1_zonly` (log `L1ctx` / `L1z`). Pipeline step keys and legacy
   `--ctx_dropout_frac` / `--ctx_noise_sigma` (+ YAML `training:`); 0 disables each.

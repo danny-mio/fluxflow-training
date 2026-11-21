@@ -225,7 +225,7 @@ class VAETrainer:
         kl_z_weight: float = 0.0,
         kl_z_warmup_steps: int = 10000,
         hf_ramp_steps: int = 30000,
-        lambda_lpips: float = 0.1,
+        lambda_lpips: float = 0.5,
         instance_noise_std: float = 0.05,
         instance_noise_decay: float = 0.9999,
         adaptive_weights: bool = True,
@@ -255,8 +255,8 @@ class VAETrainer:
         # ctx_noise_sigma: ctx tokens get N(0, (sigma*std_token)^2) noise before decode;
         #   scale-invariant, so shrinking ctx cannot escape it. Capacity of ctx is
         #   ~0.5*log2(1+1/sigma^2) bits/dim. 0 disables.
-        ctx_dropout_frac: float = 0.5,
-        ctx_noise_sigma: float = 0.5,
+        ctx_dropout_frac: float = 0.15,
+        ctx_noise_sigma: float = 0.15,
     ):
         """
         Initialize VAE trainer.
@@ -279,7 +279,8 @@ class VAETrainer:
             train_coarseness: Compute coarseness distribution loss (default: True)
             kl_beta: Final KL divergence weight
             kl_warmup_steps: Steps to warmup KL beta
-            kl_free_bits: Free bits for KL divergence
+            kl_free_bits: Per-channel KL floor (nats/element). 0.0 = legacy/direct-use
+                fallback; pipeline steps default to 0.5 (PipelineStepConfig).
             use_gan: Enable GAN training
             discriminator: Discriminator model (required if use_gan=True)
             discriminator_optimizer: Discriminator optimizer
@@ -299,7 +300,7 @@ class VAETrainer:
             r1_gamma: R1 penalty strength
             gradient_clip_norm: Gradient clipping norm
             use_lpips: Enable LPIPS perceptual loss (default: True)
-            lambda_lpips: LPIPS loss weight (default: 0.1)
+            lambda_lpips: LPIPS loss weight (default: 0.5)
             ctx_input_dim: Explicit input dim for context_predictor (v0.10.0). Pass
                 compressor.get_context_dims() * 2 from the orchestrator. None triggers
                 legacy runtime detection from a test forward pass (v0.8.0 and earlier).

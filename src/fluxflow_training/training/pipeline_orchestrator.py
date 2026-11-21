@@ -12,6 +12,7 @@ import math
 from dataclasses import asdict
 from typing import Any, Optional
 
+import torch
 import torch.nn as nn
 from fluxflow.utils import get_logger, safe_vae_sample, save_sample_images
 
@@ -1186,6 +1187,7 @@ class TrainingPipelineOrchestrator:
                 kl_warmup_steps=step.kl_warmup_steps if hasattr(step, "kl_warmup_steps") else 5000,
                 kl_z_warmup_steps=getattr(step, "kl_z_warmup_steps", 10000),
                 hf_ramp_steps=getattr(step, "hf_ramp_steps", 30000),
+                # 0.0 = legacy fallback (non-PipelineStepConfig); pipeline default is 0.5.
                 kl_free_bits=step.kl_free_bits if hasattr(step, "kl_free_bits") else 0.0,
                 use_gan=step.gan_training,
                 discriminator=models["D_img"] if step.gan_training else None,
@@ -1193,7 +1195,7 @@ class TrainingPipelineOrchestrator:
                 discriminator_scheduler=schedulers.get("discriminator"),
                 lambda_adv=step.lambda_adv if hasattr(step, "lambda_adv") else 0.5,
                 use_lpips=step.use_lpips,
-                lambda_lpips=step.lambda_lpips if hasattr(step, "lambda_lpips") else 0.1,
+                lambda_lpips=step.lambda_lpips if hasattr(step, "lambda_lpips") else 0.5,
                 # GAN-specific parameters (read from config, with safe defaults)
                 r1_gamma=step.r1_gamma if hasattr(step, "r1_gamma") else 5.0,
                 r1_interval=step.r1_interval if hasattr(step, "r1_interval") else 16,
@@ -1218,8 +1220,8 @@ class TrainingPipelineOrchestrator:
                 latent_cycle_start_step=getattr(step, "latent_cycle_start_step", 0),
                 latent_cycle_warmup_steps=getattr(step, "latent_cycle_warmup_steps", 0),
                 latent_cycle_every=getattr(step, "latent_cycle_every", 1),
-                ctx_dropout_frac=getattr(step, "ctx_dropout_frac", 0.5),
-                ctx_noise_sigma=getattr(step, "ctx_noise_sigma", 0.5),
+                ctx_dropout_frac=getattr(step, "ctx_dropout_frac", 0.15),
+                ctx_noise_sigma=getattr(step, "ctx_noise_sigma", 0.15),
                 latent_cycle_batch_frac=getattr(step, "latent_cycle_batch_frac", 1.0),
                 latent_cycle_crop_frac=getattr(step, "latent_cycle_crop_frac", 1.0),
                 latent_cycle_posterior_frac=getattr(step, "latent_cycle_posterior_frac", 0.0),
@@ -1371,6 +1373,35 @@ class TrainingPipelineOrchestrator:
         )
         return True
 
+    def _reset_latent_stats_for_vae_step(self, step: PipelineStepConfig, models: dict) -> bool:
+        """Reset calibrated latent stats to identity at the start of a VAE-only step.
+
+        Calibrated stats describe the VAE they were computed on; once the VAE trains again
+        they are stale, and ``latent_stats_calibrated`` staying True would stop a later
+        flow step from recalibrating. Identity is harmless during VAE training (the
+        compressor -> expander round trip is exact) and idempotent on resume. Joint
+        VAE+flow steps are left alone: their flow trains on the current stats.
+
+        Returns:
+            True if the stats were reset.
+        """
+        if not self._step_needs_vae_trainer(step) or step.train_diff or step.train_diff_full:
+            return False
+        mods: list[Any] = [
+            m
+            for m in (models.get("compressor"), models.get("expander"))
+            if m is not None and hasattr(m, "latent_stats_calibrated")
+        ]
+        if not any(m.latent_stats_calibrated for m in mods):
+            return False
+        for m in mods:
+            m.set_latent_stats(torch.zeros_like(m.latent_shift), torch.ones_like(m.latent_scale))
+        logger.info(
+            f"VAE-training step '{step.name}': reset latent stats to identity "
+            "(a later flow step recalibrates on the newly trained VAE)"
+        )
+        return True
+
     def _maybe_calibrate_latents(
         self,
         step: PipelineStepConfig,
@@ -1378,8 +1409,15 @@ class TrainingPipelineOrchestrator:
         dataloader: Any,
         batch_size: int,
         sampler: Any = None,
+        resuming: bool = False,
     ) -> bool:
         """Calibrate VAE latent stats when a flow step starts on an uncalibrated VAE.
+
+        ``resuming`` (first call of the resumed step, before the resume state load): every
+        flow export carries calibrated stats, so an uncalibrated VAE here means the trained
+        VAE weights were not loaded; raise instead of calibrating (and exporting over) a
+        random VAE. The post-load recheck passes ``resuming=False``: a calibrated VAE
+        reverted to identity by ``ema_raw`` may still recalibrate on the loaded weights.
 
         Runs only for ``train_diff`` / ``train_diff_full`` steps whose compressor exposes
         ``latent_stats_calibrated`` (v0.10.0) and is uncalibrated, and only when
@@ -1404,6 +1442,12 @@ class TrainingPipelineOrchestrator:
         if compressor.latent_stats_calibrated:
             logger.info("latent stats already calibrated")
             return False
+        if resuming:
+            raise ValueError(
+                f"Resuming flow step '{step.name}' but the VAE latent stats are "
+                "uncalibrated: the trained VAE weights were not loaded. Set model_checkpoint "
+                "to the run's flxflow_final.safetensors."
+            )
         n_images = getattr(step, "calibration_images", 2000)
         if n_images <= 0:
             logger.warning(
@@ -1772,8 +1816,16 @@ class TrainingPipelineOrchestrator:
 
             # v0.10.0: calibrate VAE latent stats on the VAE -> flow transition. Must run
             # before the VAE EMA snapshot and before FlowTrainer (its guard would raise).
+            # A VAE-only step first drops stale stats so a later flow step recalibrates.
+            resuming_step = step_idx == start_step and (start_epoch > 0 or start_batch > 0)
+            self._reset_latent_stats_for_vae_step(step, models)
             self._maybe_calibrate_latents(
-                step, models, dataloader, current_batch_size, sampler=sampler
+                step,
+                models,
+                dataloader,
+                current_batch_size,
+                sampler=sampler,
+                resuming=resuming_step,
             )
 
             # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)

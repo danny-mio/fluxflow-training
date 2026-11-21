@@ -20,8 +20,9 @@ def _parse(**kw):
 class TestPipelineConfig:
     def test_defaults(self):
         s = PipelineStepConfig(name="s", n_epochs=1)
-        assert (s.ctx_dropout_frac, s.ctx_noise_sigma) == (0.5, 0.5)
-        assert (_parse().steps[0].ctx_dropout_frac, _parse().steps[0].ctx_noise_sigma) == (0.5, 0.5)
+        assert (s.ctx_dropout_frac, s.ctx_noise_sigma) == (0.15, 0.15)
+        p = _parse().steps[0]
+        assert (p.ctx_dropout_frac, p.ctx_noise_sigma) == (0.15, 0.15)
 
     def test_yaml_values_load(self):
         s = _parse(ctx_dropout_frac=0.25, ctx_noise_sigma=0.0).steps[0]
@@ -51,7 +52,7 @@ class TestPipelineConfig:
 class TestOrchestrator:
     @pytest.mark.parametrize("key", ["ctx_dropout_frac", "ctx_noise_sigma"])
     def test_passed_to_vae_trainer(self, key):
-        assert f'{key}=getattr(step, "{key}", 0.5)' in _ORCH
+        assert f'{key}=getattr(step, "{key}", 0.15)' in _ORCH
 
     def test_logs_diagnostics(self):
         assert "L1ctx" in _ORCH and "L1z" in _ORCH
@@ -90,7 +91,7 @@ class TestLegacyParse:
 
     def test_defaults(self):
         a = self._parse()
-        assert (a.ctx_dropout_frac, a.ctx_noise_sigma) == (0.5, 0.5)
+        assert (a.ctx_dropout_frac, a.ctx_noise_sigma) == (0.15, 0.15)
 
     def test_yaml_and_cli_wins(self, tmp_path):
         cfg = tmp_path / "c.yaml"
@@ -99,3 +100,35 @@ class TestLegacyParse:
         assert (a.ctx_dropout_frac, a.ctx_noise_sigma) == (0.25, 0.1)
         a = self._parse("--ctx_noise_sigma", "0", config=cfg)
         assert (a.ctx_dropout_frac, a.ctx_noise_sigma) == (0.25, 0.0)
+
+
+class TestRecipeDefaults:
+    """Final review M3: Decision 6 recipe (ctx noise/dropout 0.15, LPIPS 0.5) is the default
+    on every path: PipelineStepConfig, YAML parse, VAETrainer, legacy CLI."""
+
+    def test_pipeline_step_and_parse(self):
+        s = PipelineStepConfig(name="s", n_epochs=1)
+        p = _parse().steps[0]
+        for cfg in (s, p):
+            assert (cfg.ctx_noise_sigma, cfg.ctx_dropout_frac, cfg.lambda_lpips) == (
+                0.15,
+                0.15,
+                0.5,
+            )
+
+    def test_vae_trainer_constructor(self):
+        import inspect
+
+        from fluxflow_training.training.vae_trainer import VAETrainer
+
+        params = inspect.signature(VAETrainer.__init__).parameters
+        assert params["ctx_noise_sigma"].default == 0.15
+        assert params["ctx_dropout_frac"].default == 0.15
+        assert params["lambda_lpips"].default == 0.5
+        assert params["kl_free_bits"].default == 0.0  # legacy fallback (M2), pipeline 0.5
+
+    def test_legacy_cli(self):
+        from tests.unit.test_train_script_audit_fixes import _parse as _cli
+
+        a = _cli()
+        assert (a.ctx_noise_sigma, a.ctx_dropout_frac, a.lambda_lpips) == (0.15, 0.15, 0.5)

@@ -434,3 +434,153 @@ class TestResumeCannotRevertStats:
         monkeypatch.setattr(orch, "_create_step_trainers", lambda *a, **k: {"flow": _FakeFlow()})
         with pytest.raises(ValueError, match="not calibrated"):
             orch.run(models, _Loader(), None, _tokenizer(), MagicMock(), _run_args(), {})
+
+
+class TestResumeUncalibratedFlowRaises:
+    """Final review I1: a resumed flow step on an uncalibrated VAE means weights were not
+    loaded (every flow export is calibrated) -- raise instead of calibrating a random VAE."""
+
+    def test_resume_flow_step_with_uncalibrated_vae_raises(self, tmp_path, monkeypatch):
+        import fluxflow_training.training.pipeline_orchestrator as po
+
+        orch = _orch(tmp_path, [_flow_step("flow_pretrain")])
+        models = _models()
+        _write_resume_state(orch, 0, 2, None)
+
+        def _no_calibrate(*a, **k):
+            raise AssertionError("must not calibrate a VAE whose weights were not loaded")
+
+        _patch_run_scaffolding(monkeypatch, orch)
+        monkeypatch.setattr(po, "calibrate_models", _no_calibrate)
+        monkeypatch.setattr(orch, "_create_step_trainers", lambda *a, **k: {})
+        with pytest.raises(
+            ValueError,
+            match=r"Resuming flow step 'flow_pretrain' but the VAE latent stats are "
+            r"uncalibrated: the trained VAE weights were not loaded\. "
+            r"Set model_checkpoint to the run's flxflow_final\.safetensors\.",
+        ):
+            orch.run(models, _Loader(), None, _tokenizer(), MagicMock(), _run_args(), {})
+        assert not orch.checkpoint_manager.model_path.exists()
+
+    def test_direct_call_resuming_raises(self, tmp_path):
+        step = _flow_step("f")
+        orch = _orch(tmp_path, [step])
+        with pytest.raises(ValueError, match="Resuming flow step 'f'"):
+            orch._maybe_calibrate_latents(step, _models(), _Loader(), 2, resuming=True)
+
+    def test_resuming_calibrated_is_noop(self, tmp_path):
+        from tests.conftest import mark_latents_calibrated
+
+        step = _flow_step("f")
+        orch = _orch(tmp_path, [step])
+        models = _models()
+        mark_latents_calibrated(models["compressor"], models["expander"])
+        assert orch._maybe_calibrate_latents(step, models, _Loader(), 2, resuming=True) is False
+
+    def test_resuming_vae_step_not_affected(self, tmp_path):
+        step = _vae_step()
+        orch = _orch(tmp_path, [step])
+        assert orch._maybe_calibrate_latents(step, _models(), _Loader(), 2, resuming=True) is False
+
+    def test_fresh_transition_still_calibrates(self, tmp_path, monkeypatch):
+        orch = _orch(tmp_path, [_flow_step()])
+        models = _models()
+        seen: dict = {}
+
+        def _trainers(step_, models_, *a, **k):
+            seen["calibrated"] = models_["diffuser"].latent_stats_calibrated
+            raise _Stop
+
+        _patch_run_scaffolding(monkeypatch, orch)
+        monkeypatch.setattr(orch, "_create_step_trainers", _trainers)
+        with pytest.raises(_Stop):
+            orch.run(models, _Loader(), None, _tokenizer(), MagicMock(), _run_args(), {})
+        assert seen["calibrated"] is True
+
+
+class TestVaeStepResetsLatentStats:
+    """Final review M5: a VAE-training step resets calibrated stats to identity so a later
+    flow step recalibrates on the newly trained VAE."""
+
+    @pytest.mark.parametrize(
+        "kw", [{"train_vae": True}, {"gan_training": True}, {"use_lpips": True}]
+    )
+    def test_reset_on_vae_step_start(self, tmp_path, monkeypatch, caplog, kw):
+        from tests.conftest import mark_latents_calibrated
+
+        step = PipelineStepConfig(name="vae2", n_epochs=1, use_ema=False, **kw)
+        orch = _orch(tmp_path, [step])
+        models = _models()
+        comp, exp = models["compressor"], models["expander"]
+        mark_latents_calibrated(comp, exp)
+        seen: dict = {}
+
+        def _trainers(step_, models_, *a, **k):
+            seen["calibrated"] = (comp.latent_stats_calibrated, exp.latent_stats_calibrated)
+            raise _Stop
+
+        _patch_run_scaffolding(monkeypatch, orch)
+        monkeypatch.setattr(orch, "_create_step_trainers", _trainers)
+        with caplog.at_level(logging.INFO), pytest.raises(_Stop):
+            orch.run(models, _Loader(), None, _tokenizer(), MagicMock(), _run_args(), {})
+        assert seen["calibrated"] == (False, False)
+        for mod in (comp, exp):
+            assert torch.equal(mod.latent_shift, torch.zeros_like(mod.latent_shift))
+            assert torch.equal(mod.latent_scale, torch.ones_like(mod.latent_scale))
+        assert "reset latent stats to identity" in caplog.text
+
+    def test_reset_then_later_flow_step_recalibrates(self, tmp_path):
+        from tests.conftest import mark_latents_calibrated
+
+        steps = [_vae_step(), _flow_step()]
+        orch = _orch(tmp_path, steps)
+        models = _models()
+        comp, exp = models["compressor"], models["expander"]
+        mark_latents_calibrated(comp, exp)
+        assert orch._reset_latent_stats_for_vae_step(steps[0], models) is True
+        assert not models["diffuser"].latent_stats_calibrated
+        assert orch._maybe_calibrate_latents(steps[1], models, _Loader(), 2) is True
+
+    def test_noop_when_identity_flow_or_joint_or_legacy(self, tmp_path):
+        from tests.conftest import mark_latents_calibrated
+
+        orch = _orch(tmp_path, [_vae_step()])
+        models = _models()
+        assert orch._reset_latent_stats_for_vae_step(_vae_step(), models) is False
+        mark_latents_calibrated(models["compressor"], models["expander"])
+        assert orch._reset_latent_stats_for_vae_step(_flow_step(), models) is False
+        joint = PipelineStepConfig(name="j", n_epochs=1, train_vae=True, train_diff=True)
+        assert orch._reset_latent_stats_for_vae_step(joint, models) is False
+        assert models["diffuser"].latent_stats_calibrated
+        legacy = {"compressor": nn.Linear(2, 2), "expander": nn.Linear(2, 2)}
+        assert orch._reset_latent_stats_for_vae_step(_vae_step(), legacy) is False
+
+    def test_resume_into_vae_step_resets_and_runs(self, tmp_path, monkeypatch):
+        from tests.conftest import mark_latents_calibrated
+
+        from fluxflow_training.training.utils import EMA
+
+        step = _vae_step()
+        orch = _orch(tmp_path, [step])
+        models = _models()
+        comp, exp = models["compressor"], models["expander"]
+        _write_resume_state(orch, 0, 2, EMA(nn.ModuleList([comp, exp])))
+        mark_latents_calibrated(comp, exp)
+        seen: dict = {}
+
+        def _trainers(step_, models_, optimizers, schedulers, ema, args):
+            seen["ema"] = ema
+            return {}
+
+        _patch_run_scaffolding(monkeypatch, orch)
+        monkeypatch.setattr(orch, "_create_step_trainers", _trainers)
+
+        def _load(**k):
+            seen["loaded_ema"] = k["ema"]
+            raise _Stop  # resume load reached; the training loop is not under test
+
+        monkeypatch.setattr(orch.checkpoint_manager, "load_optimizer_scheduler_ema_states", _load)
+        with pytest.raises(_Stop):
+            orch.run(models, _Loader(), None, _tokenizer(), MagicMock(), _run_args(), {})
+        assert seen["loaded_ema"] is seen["ema"] and seen["ema"] is not None
+        assert not comp.latent_stats_calibrated and not exp.latent_stats_calibrated

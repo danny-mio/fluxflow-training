@@ -90,10 +90,10 @@ channel below the floor gets no KL gradient.
 ### z-vs-ctx balance
 
 The deterministic ctx half can let the decoder ignore z. Two training-only
-knobs (v0.10.0 VAE; 0 disables each): `ctx_dropout_frac` (default 0.5) decodes
+knobs (v0.10.0 VAE; 0 disables each): `ctx_dropout_frac` (default 0.15) decodes
 that fraction of each batch with `use_context=False` (z-only; GAN, latent-cycle
 targets and the LR-plateau metric use the ctx-decoded half only), and
-`ctx_noise_sigma` (default 0.5) adds `sigma * std(token)` noise to ctx before
+`ctx_noise_sigma` (default 0.15) adds `sigma * std(token)` noise to ctx before
 decoding, so shrinking ctx cannot escape it (capacity ≈ 0.5·log2(1+1/σ²)
 bits/dim). Logged as `L1ctx` / `L1z`; a large `L1z` gap means z carries little.
 

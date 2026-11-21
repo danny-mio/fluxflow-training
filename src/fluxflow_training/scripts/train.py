@@ -2081,7 +2081,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--lambda_lpips",
         type=float,
-        default=0.1,
+        default=0.5,
         help="LPIPS perceptual loss weight (lower=sharper, higher=smoother)",
     )
     parser.add_argument(
@@ -2108,13 +2108,13 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument(
         "--ctx_dropout_frac",
         type=float,
-        default=0.5,
+        default=0.15,
         help="Fraction of each batch decoded z-only (use_context=False); 0 disables.",
     )
     parser.add_argument(
         "--ctx_noise_sigma",
         type=float,
-        default=0.5,
+        default=0.15,
         help="Scale-invariant noise on ctx tokens (x per-token std); 0 disables.",
     )
     parser.add_argument(
