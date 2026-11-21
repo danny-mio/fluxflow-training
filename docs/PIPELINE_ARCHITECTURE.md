@@ -157,10 +157,10 @@ calibration_images: 2000  # Auto-calibrate VAE latent stats when a flow step sta
 train_latent_cycle: false # Image-space G.E idempotence, frozen expander (VAE only); logs latent_cycle_loss, latent_cycle_reject_frac
 ```
 
-The pre-v0.10.0 `kl_beta` / `kl_warmup_steps` keys still load and emit a
-`DeprecationWarning`. When both forms appear in the same step, the
-v0.10.0 form wins. See [TRAINING_GUIDE.md](TRAINING_GUIDE.md#v0100-loss-schedule)
-for the full loss schedule.
+Legacy `kl_beta` / `kl_warmup_steps` aliases and the full loss schedule:
+[TRAINING_GUIDE.md](TRAINING_GUIDE.md#v0100-loss-schedule). VAE→flow latent
+calibration (`calibration_images`, `fluxflow-calibrate-latents`):
+[Training workflow (v0.10.0)](TRAINING_GUIDE.md#training-workflow-v0100).
 
 #### Optimization (Per-Step)
 
@@ -518,18 +518,33 @@ The latent is **NOT detached** when `train_reconstruction=false`, allowing encod
 
 ### EMA Handling
 
-EMA (Exponential Moving Average) is created when any of these are true:
+**VAE EMA** (compressor + expander, decay `0.999`) is created when the step has
+`use_ema: true` (default) and any of these are true:
 - `train_vae: true`
 - `gan_training: true`
 - `use_lpips: true`
 
-This ensures EMA exists even in GAN-only mode. SPADE is always-on in v0.10.0 and no longer contributes to the EMA trigger.
+This ensures EMA exists even in GAN-only mode. SPADE is always-on in v0.10.0 and no
+longer contributes to the EMA trigger.
 
-EMA weights (decay 0.999) are what you get out: sample generation and the saved model
-files (`save_models`) use them, and the raw weights are always restored afterwards
+VAE EMA weights are what you get out: sample generation and the saved model files
+(`save_models`) use them, and the raw weights are always restored afterwards
 (try/finally). The training-state checkpoint stores the raw weights next to the EMA
 state (`ema_raw`), so resume continues from the exact raw weights. `use_ema: false`
 exports raw weights.
+
+**Flow EMA** (`FlowTrainer`, flow + text encoder, decay `0.9999`) is saved as
+`ema_flow` in `training_states.pt`, restored on resume and used for samples; flow
+exports stay raw.
+
+**Warmup**: both use effective decay `min(decay, (1+n)/(10+n))` at update `n`;
+`num_updates` is saved in the EMA state. EMA averages parameters only; buffers (e.g.
+latent stats) stay live.
+
+**VAE→flow transition**: before a step that does not train the VAE, the VAE EMA
+parameters are copied into the live compressor/expander, so the flow step trains,
+calibrates and exports on the EMA VAE. See
+[Training workflow (v0.10.0)](TRAINING_GUIDE.md#training-workflow-v0100).
 
 ### GAN Schedule and Discriminator
 

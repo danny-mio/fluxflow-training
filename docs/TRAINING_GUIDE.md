@@ -4,16 +4,71 @@ A comprehensive guide to configuring and running training for FluxFlow text-to-i
 
 ## Table of Contents
 
-- [v0.10.0 Loss Schedule](#v0100-loss-schedule)
 - [Training workflow (v0.10.0)](#training-workflow-v0100)
+- [v0.10.0 Loss Schedule](#v0100-loss-schedule)
 - [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 - [Overview](#overview)
+- [Configuration Methods](#configuration-methods)
 - [Quick Start](#quick-start)
 - [Training Command Reference](#training-command-reference)
 - [Parameter Details](#parameter-details)
+- [Pipeline Training Mode](#pipeline-training-mode)
 - [Training Strategies](#training-strategies)
 - [Configuration Examples](#configuration-examples)
+- [Monitoring Training Progress](#monitoring-training-progress)
 - [Troubleshooting](#troubleshooting)
+- [Performance Benchmarks](#performance-benchmarks)
+- [Additional Resources](#additional-resources)
+
+## Training workflow (v0.10.0)
+
+Train the VAE, calibrate its latent statistics, then train the flow.
+
+v0.10.0 models are built from the YAML `model:` block (`model_type` set,
+`model_version: "0.10.0"`). Without `model_type` (e.g. CLI-only runs) the trainer
+builds the legacy v0.6.0 VAE.
+
+**Pre-rework checkpoints are invalid.** Pre-rework v0.10.0 VAE checkpoints raise
+`IncompatibleCheckpointError` (affine `ctx_final_norm`, or stage widths that differ
+from the model config); flow checkpoints trained on pre-rework latents are invalid.
+Retrain the VAE, calibrate, then retrain the flow.
+
+1. **Train the VAE** (`train_vae` steps). VAE steps keep an EMA (`use_ema`, default
+   `true`, decay `0.999`); samples and exported models use the EMA weights. EMA
+   warmup: effective decay `min(decay, (1+n)/(10+n))` at update `n` (flow EMA:
+   decay `0.9999`, same warmup). To reuse a trained discriminator without
+   `model_checkpoint`, set top-level `discriminator_checkpoint` (or
+   `--discriminator_checkpoint`): a `D_img` `.safetensors` (`D_img.` prefix
+   optional) that overrides the checkpoint's D_img; a missing file raises, an
+   incompatible one reinitialises D with a warning.
+2. **Calibrate.** The flow's noise schedule assumes ~N(0, I) per channel. Calibration
+   encodes training images, measures each latent channel's mean and std, and stores
+   them as `latent_shift` / `latent_scale` on both compressor and expander. Encoding
+   then normalizes and decoding denormalizes, so reconstruction is unchanged.
+   - **In a pipeline**: at the transition to a VAE-frozen flow step, the VAE EMA
+     parameters (if the VAE step kept an EMA) replace the live VAE weights; buffers
+     (latent stats) stay live. The flow step therefore trains, calibrates and
+     exports on the EMA VAE. If the VAE is
+     then uncalibrated, the `train_diff` / `train_diff_full` step encodes
+     `calibration_images` images (default `2000`), logs a per-channel table and
+     exports the model checkpoint. Resume repeats the check.
+   - **Standalone** (e.g. the VAE was trained elsewhere):
+
+     ```bash
+     fluxflow-calibrate-latents --checkpoint outputs/run/flxflow_final.safetensors \
+         --config config.yaml --out outputs/run/flxflow_calibrated.safetensors
+     ```
+
+     It uses the config's `default_dataset` (or its first dataset) at its training
+     resolutions. Options: `--num-images` (default `2000`), `--batch-size` (default
+     `8`), `--force` (allow `--out` to equal `--checkpoint`).
+3. **Train the flow** from the calibrated checkpoint. `FlowTrainer` raises
+   `ValueError` on an uncalibrated v0.10.0 VAE, so set `calibration_images: 0` only
+   when the checkpoint is already calibrated.
+
+Automatic calibration only runs on an uncalibrated VAE. After further VAE training,
+recalibrate with `fluxflow-calibrate-latents` and retrain the flow: flow checkpoints are
+tied to the latent statistics they were trained on.
 
 ## v0.10.0 Loss Schedule
 
@@ -82,43 +137,12 @@ training:
 Datasets accept a matching `max_text_length` (default `128`); see
 `data/datasets.py`.
 
-## Training workflow (v0.10.0)
-
-Train the VAE, calibrate its latent statistics, then train the flow.
-
-1. **Train the VAE** (`train_vae` steps).
-2. **Calibrate.** The flow's noise schedule assumes ~N(0, I) per channel. Calibration
-   encodes training images, measures each latent channel's mean and std, and stores
-   them as `latent_shift` / `latent_scale` on both compressor and expander. Encoding
-   then normalizes and decoding denormalizes, so reconstruction is unchanged.
-   - **In a pipeline**: at the transition to a VAE-frozen flow step, the VAE EMA
-     weights (if the VAE step kept an EMA) replace the live VAE weights. If the VAE is
-     then uncalibrated, the `train_diff` / `train_diff_full` step encodes
-     `calibration_images` images (default `2000`), logs a per-channel table and
-     exports the model checkpoint. Resume repeats the check.
-   - **Standalone** (e.g. the VAE was trained elsewhere):
-
-     ```bash
-     fluxflow-calibrate-latents --checkpoint outputs/run/flxflow_final.safetensors \
-         --config config.yaml --out outputs/run/flxflow_calibrated.safetensors
-     ```
-
-     It uses the config's `default_dataset` (or its first dataset) at its training
-     resolutions. Options: `--num-images` (default `2000`), `--batch-size` (default
-     `8`), `--force` (allow `--out` to equal `--checkpoint`).
-3. **Train the flow** from the calibrated checkpoint. `FlowTrainer` raises
-   `ValueError` on an uncalibrated v0.10.0 VAE, so set `calibration_images: 0` only
-   when the checkpoint is already calibrated.
-
-Automatic calibration only runs on an uncalibrated VAE. After further VAE training,
-recalibrate with `fluxflow-calibrate-latents` and retrain the flow: flow checkpoints are
-tied to the latent statistics they were trained on.
-
 ---
 
 ## Memory Requirements & OOM Prevention
 
-**Critical Information** (empirically measured, December 2025):
+All figures in this section were measured in December 2025 on the pre-rework
+(narrow) VAE; v0.10.0 wide-VAE numbers will differ.
 
 ### VRAM Usage by Configuration
 
@@ -161,32 +185,28 @@ train_vae: false
 gan_training: true
 ```
 
-**5. Reduce Dimensions** (saves ~5-10GB):
+**5. Reduce Widths**:
 ```yaml
-vae_dim: 64              # instead of 128
-feature_maps_dim: 64
-feature_maps_dim_disc: 8
+model:
+  vae_encoder_channels: [32, 64, 128, 128]   # default [32, 64, 128, 256]
+  feature_maps_dim: 64
+  feature_maps_dim_disc: 8
 ```
+v0.10.0 VAE widths are set by `vae_encoder_channels` / `vae_decoder_channels` /
+`vae_spade_hidden`, not `vae_dim` (see [Understanding VAE Dimensions](#understanding-vae-dimensions)).
 
-**6. Use FP16** (saves ~20-30% if GPU supports Tensor Cores):
+**6. Use mixed precision** (saves ~20-30%):
 ```yaml
-use_fp16: true  # RTX 3090/4090 recommended
-precision: fp16  # or "bf16" — same range as fp32, avoids fp16 overflow-to-Inf on large activations at some cost to precision
+use_fp16: true
+precision: bf16  # supported mixed precision for v0.10.0 (default "fp16")
 ```
 
 > SPADE is always-on in v0.10.0; the `train_spade` field is deprecated and ignored by the parser, so disabling it is no longer a memory lever.
 
-### Recent Optimizations (v0.2.1)
-
-FluxFlow v0.2.1 includes critical memory optimizations:
-- Removed LPIPS gradient checkpointing (caused OOM spikes)
-- Removed dataloader prefetch_factor (reduced memory overhead)
-- CUDA cache clearing between batches
-- R1 gradient penalty fix (prevented memory leaks)
-
-**If still hitting OOM after v0.2.1**, apply strategies 1-6 above.
-
 ### Hardware Recommendations
+
+Pre-rework (narrow VAE); `dim` is `vae_dim`, which set the VAE widths then.
+v0.10.0 numbers will differ.
 
 | GPU VRAM | Recommended Config | Max Quality Config |
 |----------|-------------------|-------------------|
@@ -329,7 +349,7 @@ fluxflow-train \
   --n_epochs 5 \
   --batch_size 2 \
   --lr 1e-5 \
-  --vae_dim 64  # Reduced for speed
+  --vae_dim 64
 ```
 
 When you're ready for serious training, switch to Path B (YAML Config).
@@ -453,17 +473,15 @@ If not set, prompts are used exactly as provided in the dataset.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `--model_checkpoint` | str | - | Path to checkpoint for resuming training |
-| `--vae_dim` | int | 128 | VAE latent dimension (higher = more detail, more VRAM) |
+| `--discriminator_checkpoint` | str | None | `D_img` `.safetensors` to load (`D_img.` prefix optional); overrides `model_checkpoint`'s D_img. YAML: top-level `discriminator_checkpoint` |
+| `--vae_dim` | int | 128 | Latent channels per token (v0.10.0: not a width lever, see below) |
 | `--text_embedding_dim` | int | 1024 | Text embedding dimension from BERT |
 | `--feature_maps_dim` | int | 128 | Flow model feature dimension |
 | `--feature_maps_dim_disc` | int | 8 | Discriminator feature dimension |
 | `--pretrained_bert_model` | str | - | Path to pretrained BERT checkpoint (optional) |
 
-**Dimension Guidelines:**
-- **Limited VRAM (8GB)**: `vae_dim=32, feature_maps_dim=32, feature_maps_dim_disc=32`
-- **Mid VRAM (12-16GB)**: `vae_dim=64, feature_maps_dim=64, feature_maps_dim_disc=8`
-- **High VRAM (24GB+)**: `vae_dim=128, feature_maps_dim=128, feature_maps_dim_disc=8`
-- **Maximum Quality**: `vae_dim=256, feature_maps_dim=256, feature_maps_dim_disc=16`
+**Dimension Guidelines:** VAE widths: see [Understanding VAE Dimensions](#understanding-vae-dimensions).
+`feature_maps_dim` / `feature_maps_dim_disc` set flow and discriminator capacity.
 
 **Example:**
 ```bash
@@ -487,7 +505,7 @@ If not set, prompts are used exactly as provided in the dataset.
 | `--optim_sched_config` | str | - | Path to JSON file with optimizer/scheduler configurations |
 | `--training_steps` | int | 1 | Inner training steps per batch (gradient accumulation) |
 | `--use_fp16` | flag | False | Use mixed precision training |
-| `--precision` | str | `fp16` | Mixed-precision dtype when `--use_fp16` is set: `fp16` or `bf16`. bf16 avoids fp16's overflow-to-Inf on large activations (same exponent range as fp32) at the cost of mantissa precision. |
+| `--precision` | str | `fp16` | Mixed-precision dtype when `--use_fp16` is set: `fp16` or `bf16`. Use `bf16` for v0.10.0 (see [Mixed Precision Training](#mixed-precision-training)). |
 | `--initial_clipping_norm` | float | 1.0 | Gradient clipping norm for stability |
 | `--compile_activations` | flag | False | `torch.compile` the Padé activation math (`activation_type: pade`), fusing its elementwise ops into one kernel. YAML: `training.compile_activations`. One-time compile cost at startup. |
 
@@ -609,29 +627,34 @@ training:
 
 ### Understanding VAE Dimensions
 
-The `vae_dim` parameter controls the size of the latent space:
-- **Higher values** (128, 256): More detail preserved, better quality, more VRAM
-- **Lower values** (32, 64): Less detail, faster training, less VRAM
+`vae_dim` is the number of latent channels per token (z; the packed latent is
+`2*vae_dim`, z‖ctx).
+
+v0.10.0 VAE widths are separate `model:` keys (each 4 stages, every width >= 8 and
+divisible by 8):
+
+| Key | Default |
+|-----|---------|
+| `vae_encoder_channels` | `[32, 64, 128, 256]` |
+| `vae_decoder_channels` | `[256, 128, 64, 32]` |
+| `vae_spade_hidden` | `[128, 128, 64, 32]` |
+
+A smaller encoder, e.g. `vae_encoder_channels: [32, 64, 128, 128]`, is the fallback
+when the defaults do not fit. Checkpoints load at their own widths (inferred from
+the weights). The legacy (non-v0.10.0) VAE still derives its widths from `vae_dim`.
 
 ### Understanding Feature Map Dimensions
 
 - `feature_maps_dim`: Controls the flow model's capacity
 - `feature_maps_dim_disc`: Controls the discriminator's capacity
 
-For best results, keep `feature_maps_dim` equal to `vae_dim`.
-
 ### Mixed Precision Training
 
-Using `--use_fp16` enables mixed precision:
-- **Pros**: ~40% faster, ~40% less VRAM, same quality
-- **Cons**: Requires NVIDIA GPU with Tensor Cores (RTX series)
-- **Recommendation**: Always use on RTX 3090/4090 for 2-4x speedup
-
-`--precision {fp16,bf16}` (default `fp16`) selects the dtype used when
-`--use_fp16` is set. fp16's ~65504 max can overflow to Inf as activations
-grow during training; bf16 shares fp32's exponent range (no overflow) at
-the cost of mantissa precision. Prefer `bf16` if a run hits NaN/Inf losses
-under fp16 and the hardware supports it.
+`--use_fp16` enables mixed precision; `--precision {fp16,bf16}` (YAML
+`training.precision`, default `fp16`) selects the dtype. bf16 is the supported mixed
+precision for v0.10.0: it shares fp32's exponent range, while fp16's ~65504 max can
+overflow to Inf as activations grow (the Padé fp16 input clamps were removed in the
+v0.10.0 rework).
 
 ### Gradient Accumulation
 
@@ -653,105 +676,14 @@ The training script automatically saves:
 - `training_states.pt`: Optimizer, scheduler, EMA states
 - `sampler_state.pt`: Data sampler state
 
-### KL Divergence Normalization (v0.3.0+)
+### KL normalization (history)
 
-**BREAKING CHANGE**: KL divergence is now normalized by dimensions (resolution-invariant).
-
-#### What Changed?
-
-**Before (v0.2.x and earlier)**:
-- KL divergence was computed by **summing** over all spatial and channel dimensions
-- This caused KL to scale with image resolution:
-  - 512×512 images: KL ≈ 150,000 (weighted: 0.0001 × 150K = 15.0)
-  - 1024×1024 images: KL ≈ 600,000 (weighted: 0.0001 × 600K = 60.0)
-- The weighted KL dominated training, causing latent collapse and high contrast reconstructions
-- Different `kl_beta` values needed for different resolutions
-
-**After (v0.3.0+)**:
-- KL divergence is computed by **averaging** over all dimensions
-- KL is now resolution-invariant:
-  - Any resolution: KL ≈ 1.2 (weighted: 0.001 × 1.2 = 0.0012)
-- Same `kl_beta` works across all resolutions
-- Better balance with reconstruction and perceptual losses
-
-#### Migration Guide
-
-If you're upgrading from v0.2.x to v0.3.0+:
-
-1. **Increase `kl_beta` by 10×**:
-   ```yaml
-   # OLD (v0.2.x)
-   kl_beta: 0.0001
-
-   # NEW (v0.3.0+)
-   kl_beta: 0.001  # Increased 10× to compensate for normalized scale
-   ```
-
-2. **Start training from scratch** (do NOT resume from old checkpoints):
-   - Old checkpoints were trained with unnormalized KL
-   - Resuming with normalized KL will cause training instability
-   - You must train fresh VAE weights from scratch
-
-3. **Update monitoring expectations**:
-   ```
-   # OLD: Expected KL values
-   KL (raw): 100,000 - 200,000
-   KL (weighted): 10.0 - 20.0
-
-   # NEW: Expected KL values
-   KL (raw): 1.0 - 2.0
-   KL (weighted): 0.001 - 0.002
-   ```
-
-#### New Contrast Regularization Loss
-
-v0.3.0 also adds explicit contrast regularization to prevent over-saturation:
-
-```python
-# Component 1: Global contrast (per-channel std matching)
-# Component 2: Local contrast (per-sample std preservation)
-contrast_loss = 0.0
-
-for c in [R, G, B]:
-    std_ratio = pred_std / target_std
-    contrast_loss += (std_ratio - 1.0)²
-
-contrast_loss += MSE(pred_std_per_sample, target_std_per_sample)
-```
-
-**Expected values**: 0.001 - 0.01 (logged as `Contrast`)
-
-**Training logs before**:
-```
-VAE: 0.0523 | KL: 126562.6031 | Bezier: 0.5020 | ColorStats: 0.0015 | Hist: 0.0199
-```
-
-**Training logs after**:
-```
-VAE: 0.0523 | KL: 1.2665 | Bezier: 0.0520 | ColorStats: 0.0015 | Hist: 0.0199 | Contrast: 0.0012
-```
-
-#### Why This Change Matters
-
-The old KL computation caused **high contrast** and **over-saturation** because:
-1. Massive KL loss (15.0) vs tiny reconstruction loss (0.05) → 300× imbalance
-2. Encoder learned to output near-zero latents (minimizing KL)
-3. Decoder forced to use extreme Bezier curves to extract any signal
-4. Result: High contrast, oversaturated reconstructions
-
-With normalized KL:
-- KL (0.0012) is properly balanced with reconstruction (0.05)
-- Encoder learns meaningful latent representations
-- Decoder uses moderate Bezier curves
-- Result: Natural contrast and saturation
-
-#### Backward Compatibility
-
-Legacy (unnormalized) KL behavior is no longer exposed via configuration. If you need to reproduce a pre-v0.3.0 experiment, pin the corresponding training package version; the v0.3.0+ normalized KL is the only supported path in current releases.
+Since v0.3.0 KL is a per-element mean (resolution-invariant), not a sum. Current KL
+settings: [v0.10.0 Loss Schedule](#v0100-loss-schedule).
 
 ## Pipeline Training Mode
 
-**New in v0.2.0**: Multi-step pipeline training allows you to define sequential training phases with different configurations.
+Multi-step pipeline training allows you to define sequential training phases with different configurations.
 
 ### What is Pipeline Training?
 
@@ -777,7 +709,7 @@ Pipeline training breaks your training workflow into multiple sequential steps, 
 
 ### Pipeline Resilience Features
 
-**Auto-Create Missing Models** (v0.2.0+):
+**Auto-Create Missing Models**:
 
 When transitioning between pipeline steps (e.g., VAE → Flow), required models are automatically created:
 
@@ -1123,7 +1055,7 @@ outputs/full_pipeline/
 
 ### Recommended 3-Stage Training
 
-> The CLI examples in this section target pre-v0.10.0 flags (`--kl_beta`, `--kl_warmup_steps`, `--train_spade`). For v0.10.0+, use the YAML-based pipeline approach above; the legacy KL CLI flags are accepted with a deprecation warning and `--train_spade` is ignored.
+> CLI-only runs build the legacy v0.6.0 VAE (see [Training workflow (v0.10.0)](#training-workflow-v0100)). For v0.10.0 use a YAML `model:` block; the CLI flags below then override YAML values.
 
 #### Stage 1: VAE Pretraining (50-100 epochs)
 
@@ -1135,7 +1067,6 @@ fluxflow-train \
   --captions_file /path/to/captions.txt \
   --output_path outputs/stage1_vae \
   --train_vae \
-  --train_spade \
   --n_epochs 50 \
   --batch_size 2 \
   --lr 1e-5 \
@@ -1144,8 +1075,9 @@ fluxflow-train \
   --feature_maps_dim 128 \
   --feature_maps_dim_disc 8 \
   --lambda_adv 0.9 \
-  --kl_beta 0.0001 \
-  --kl_warmup_steps 5000 \
+  --kl_z_weight 1e-5 \
+  --kl_z_warmup_steps 10000 \
+  --kl_free_bits 0.5 \
   --checkpoint_save_interval 50 \
   --gan_training \
   --workers 8
@@ -1153,8 +1085,8 @@ fluxflow-train \
 
 **Monitoring:**
 - Watch `loss_recon` (reconstruction loss): Should decrease to < 0.01
-- Watch `loss_kl` (KL divergence): Should stabilize around 1.0-2.0 (v0.3.0+ normalized)
-- Watch `contrast_loss`: Should stabilize around 0.001-0.01
+- Watch `kl`: logged after the per-channel free-bits floor, so it never drops below
+  `kl_free_bits` (0.5); a value at the floor means every z channel is at the floor
 - Check sample images: Should look similar to input images
 
 **Checkpoint**: `outputs/stage1_vae/flxflow_final.safetensors`
@@ -1201,7 +1133,6 @@ fluxflow-train \
   --output_path outputs/stage3_joint \
   --model_checkpoint outputs/stage2_flow/flxflow_final.safetensors \
   --train_vae \
-  --train_spade \
   --train_diff_full \
   --n_epochs 20 \
   --batch_size 2 \
@@ -1211,7 +1142,8 @@ fluxflow-train \
   --feature_maps_dim 128 \
   --feature_maps_dim_disc 8 \
   --lambda_adv 0.5 \
-  --kl_beta 0.001 \
+  --kl_z_weight 1e-5 \
+  --kl_free_bits 0.5 \
   --sample_captions \
     "a photo of a cat sitting on a couch" \
     "an illustration of mountains at sunset" \
@@ -1236,7 +1168,6 @@ fluxflow-train \
   --captions_file /path/to/captions.txt \
   --output_path outputs/low_vram \
   --train_vae \
-  --train_spade \
   --n_epochs 100 \
   --batch_size 1 \
   --training_steps 4 \
@@ -1268,7 +1199,6 @@ fluxflow-train \
   --webdataset_caption_key prompt \
   --output_path outputs/webdataset_training \
   --train_vae \
-  --train_spade \
   --n_epochs 1 \
   --batch_size 4 \
   --lr 1e-5 \
@@ -1330,7 +1260,6 @@ fluxflow-train \
   --captions_file /data/captions.txt \
   --output_path outputs/high_quality_vae \
   --train_vae \
-  --train_spade \
   --n_epochs 100 \
   --batch_size 4 \
   --lr 2e-5 \
@@ -1339,8 +1268,9 @@ fluxflow-train \
   --feature_maps_dim 256 \
   --feature_maps_dim_disc 16 \
   --lambda_adv 0.9 \
-  --kl_beta 0.001 \
-  --kl_warmup_steps 10000 \
+  --kl_z_weight 1e-5 \
+  --kl_z_warmup_steps 10000 \
+  --kl_free_bits 0.5 \
   --use_fp16 \
   --workers 16 \
   --checkpoint_save_interval 100 \
@@ -1401,7 +1331,6 @@ fluxflow-train \
   --captions_file "$CAPTIONS_FILE" \
   --output_path "$OUTPUT_PATH" \
   --train_vae \
-  --train_spade \
   --n_epochs $EPOCHS \
   --batch_size $BATCH_SIZE \
   --lr $LR \
@@ -1423,7 +1352,7 @@ Training metrics are automatically logged to `OUTPUT_FOLDER/graph/training_metri
 
 **Automatic diagram generation** (on each checkpoint save):
 ```bash
-python train.py --generate_diagrams ...
+fluxflow-train --generate_diagrams ...
 ```
 
 **Manual diagram generation**:
@@ -1433,7 +1362,7 @@ python src/fluxflow_training/scripts/generate_training_graphs.py outputs/
 
 Generated diagrams in `outputs/graph/`:
 - `training_losses.png` - VAE, Flow, Discriminator, Generator, LPIPS losses
-- `kl_loss.png` - KL divergence with beta warmup schedule
+- `kl_loss.png` - KL divergence and its weight (`kl_z_weight` cosine warmup; KL logged after the per-channel free-bits floor)
 - `learning_rates.png` - Learning rate schedules over time
 - `batch_times.png` - Training speed (seconds/batch)
 - `training_overview.png` - Combined overview with all metrics
@@ -1450,12 +1379,12 @@ See [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 **Causes & Solutions:**
 - **High learning rate**: Reduce `--lr` by 10x
 - **Unstable GAN**: Reduce `--lambda_adv` or disable `--gan_training`
-- **High KL beta**: Reduce `--kl_beta` or increase `--kl_warmup_steps`
+- **High KL weight**: Reduce `kl_z_weight` or increase `kl_z_warmup_steps`
 - **Gradient explosion**: Reduce `--initial_clipping_norm` to 0.5
 
 **Example fix:**
 ```bash
---lr 1e-6 --lambda_adv 0.3 --initial_clipping_norm 0.5 --kl_beta 0.0001
+--lr 1e-6 --lambda_adv 0.3 --initial_clipping_norm 0.5
 ```
 
 ### Mode Collapse (GAN)
@@ -1471,19 +1400,19 @@ See [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 
 **Solutions:**
 1. Train VAE longer: `--n_epochs 100`
-2. Increase dimensions: `--vae_dim 256`
+2. Widen the VAE: `vae_encoder_channels` / `vae_decoder_channels` (see [Understanding VAE Dimensions](#understanding-vae-dimensions))
 3. Increase GAN weight: `--lambda_adv 0.9`
-4. Reduce KL beta: `--kl_beta 0.0001`
+4. Reduce KL weight: `kl_z_weight`
 5. Check sample images during training
 
 ### Slow Training Speed
 
 **Solutions:**
-1. Enable FP16: `--use_fp16`
+1. Enable mixed precision: `--use_fp16 --precision bf16`
 2. Increase workers: `--workers 16`
 3. Increase batch size: `--batch_size 4`
 4. Reduce sample frequency: `--checkpoint_save_interval 200` or `--samples_per_checkpoint 5`
-5. Use TTI-2M streaming: `--use_tt2m`
+5. Use WebDataset streaming: `--use_webdataset`
 
 ### Text Conditioning Not Working
 
@@ -1495,6 +1424,8 @@ See [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 5. Increase text embedding: `--text_embedding_dim 1024`
 
 ## Performance Benchmarks
+
+Pre-rework (narrow VAE; `dim` is `vae_dim`). v0.10.0 numbers will differ.
 
 ### Training Times (NVIDIA RTX 3090, 24GB)
 

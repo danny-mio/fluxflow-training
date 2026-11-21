@@ -5,19 +5,11 @@ this repo. This file holds Claude-specific notes layered on top of that.
 
 ## v0.10.0 Bezier-Coupled Redesign (in progress on feature/model-v0.10.0)
 
-The v0.10.0 redesign coordinates with `fluxflow-core` v0.10.0 and ships the
-training-side glue for the five locked decisions:
-
-1. **Per-token text** — flow trainer consumes `(text_seq, text_mask)` from
-   `BertTextEncoder` instead of pooled vectors.
-2. **Conditional ctx coupling** — the VAE trains ctx with `ctx_dropout_frac` /
-   `ctx_noise_sigma` (the `ctx_shrinkage_weight` term was removed as inert).
-3. **Full flow modernization** — flow trainer wires 2D RoPE + dual FiLM
-   downstream of `FluxFlowProcessor_v100`.
-4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology with
-   no config changes required beyond the latent-dim drop.
-5. **Clean Gaussian z** — `kl_z_weight` (cosine warmup) and `data.max_text_length` (text-token length, default 128 via
-   `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`) are exposed in the YAML config.
+The v0.10.0 redesign coordinates with `fluxflow-core` v0.10.0. Five locked
+decisions: fluxflow-core `docs/ARCHITECTURE.md` § "v0.10.0: Bezier-Coupled
+Architecture". Training workflow: `docs/TRAINING_GUIDE.md` § "Training workflow
+(v0.10.0)". Text length: `data.max_text_length` (default 128 via
+`fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`). `ctx_shrinkage_*` removed (inert).
 
 New config keys (see `config.example.yaml`):
 - `kl_z_weight` — final KL weight on the clean Gaussian latent (default 1e-5; per-element KL). `kl_z_warmup_steps` counts optimizer steps.

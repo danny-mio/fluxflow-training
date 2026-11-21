@@ -115,24 +115,20 @@ Not yet released — work in progress toward v0.10.0.
   `fluxflow.utils.visualization.build_cfg_null_pair` and cached on the text
   encoder, keeping train- and inference-time CFG distributions aligned.
 - **Loss helpers** in `training/losses.py`:
-  - `compute_ctx_shrinkage(ctx_features, alpha)` — β-VAE-style L2 pressure on
-    deterministic ctx features at the bottleneck (v0.10.0 redesign §5.5).
   - `cosine_warmup_weight(step, warmup_steps, max_weight)` — KL_z warmup.
   - `delayed_cosine_warmup_weight(step, start_step, warmup_steps, max_weight)`
-    — ctx-shrinkage delayed cosine warmup.
-- **VAE trainer wiring**: a forward hook on `ctx_zinject_norm` captures the
-  pre-attention ctx tensor each step; the trainer applies a delayed cosine
-  warmup of `ctx_shrinkage_weight` and adds the term to the total VAE loss.
-  KL_z uses `cosine_warmup_weight` over `kl_z_warmup_steps` toward
-  `kl_z_weight`.
+    — delayed cosine ramp (drives the GAN and latent-cycle warmups).
+  - `compute_ctx_shrinkage` (removed, see Removed).
+- **VAE trainer wiring**: KL_z uses `cosine_warmup_weight` over
+  `kl_z_warmup_steps` toward `kl_z_weight`. (The ctx-shrinkage hook on
+  `ctx_zinject_norm` was removed, see Removed.)
 - **Flow trainer wiring**: consumes `(text_seq, text_mask)` per-token from
   `BertTextEncoder`. CFG dropout now routes through
   `apply_cfg_null_substitution` instead of zero-out. Polymorphic dispatch
   keeps v060/v070 legacy pooled-vector flows working.
 - **New `PipelineStepConfig` keys** (see `config.example.yaml`):
   - `kl_z_weight` / `kl_z_warmup_steps` (clean Gaussian latent KL).
-  - `ctx_shrinkage_weight` / `ctx_shrinkage_warmup_start_step` /
-    `ctx_shrinkage_warmup_steps`.
+  - `ctx_shrinkage_*` (removed: accepted but ignored, see Removed).
   - `t_txt` (deprecated, ignored; see Deprecated).
   - `null_prompt` (empty-prompt string cached as the CFG null context).
   - `freeze_context_branch` — freeze `ctx_encoder_first_step`, `ctx_encoder_z`,
@@ -165,9 +161,9 @@ Not yet released — work in progress toward v0.10.0.
 - **`discriminator_update_freq` config knob** (default `1`, matching current
   every-step behavior) for the VAE/GAN pipeline step.
 - **SPADE γ/β drift-from-init logging** (`spade_gamma_drift`,
-  `spade_beta_drift`) and **`ctx_shrinkage_loss`/`ctx_aux_loss` logging**
-  alongside the renamed ctx probe metric (see Fixed) — these two do carry
-  gradient to SPADE, unlike the probe.
+  `spade_beta_drift`) and **`ctx_aux_loss` logging** alongside the renamed
+  ctx probe metric (see Fixed); it carries gradient to SPADE, unlike the probe.
+  (`ctx_shrinkage_loss` logging was removed, see Removed.)
 - **Prompt-truncation diagnostics**: sampled (1-in-50) truncation-rate and
   caption-length-percentile logging across all three dataset classes.
   `max_text_length` is now a real `--max_text_length` CLI flag /
@@ -246,11 +242,10 @@ Not yet released — work in progress toward v0.10.0.
 - **KL_z schedule**: KL warmup is now a cosine ramp over `kl_z_warmup_steps`
   toward `kl_z_weight` (legacy `kl_beta` / `kl_warmup_steps` still load with
   a deprecation warning; v0.10.0 keys win when both are present).
-- **`ctx_loss_weight` default**: changed from `1.0` (v0.8.1) to `0.5` per
-  the v0.10.0 DP-1 decision balancing ctx-dim and VAE-dim v-prediction
-  losses in `FlowTrainer`.
+- **`ctx_loss_weight` default**: changed from `1.0` (v0.8.1) to `0.5`,
+  balancing ctx-dim and VAE-dim v-prediction losses in `FlowTrainer`.
 - **`lambda_ctx_aux` default**: `0.01` (auxiliary stop-grad MSE on ctx vs
-  `z_tokens` during VAE training, per plan §4.1 DP-1).
+  `z_tokens` during VAE training).
 - **`fluxflow` dependency bumped to `>=0.10.0`**: required for
   `fluxflow.utils.visualization.build_cfg_null_pair` and the v0.10.0 model
   architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).
@@ -261,16 +256,14 @@ Not yet released — work in progress toward v0.10.0.
   weight_decay than AdamW). Decay is coupled (`lr * weight_decay`;
   `decoupled_weight_decay` defaults to false, see Fixed). The observed plateau
   was mainly the scheduler-pacing bug (see Fixed).
-- **`kl_z_weight`/`ctx_shrinkage_weight` now actually wired into
-  `VAETrainer`** (`pipeline_orchestrator.py`, `scripts/train.py`) — these
-  `PipelineStepConfig` fields existed but were previously never passed
-  through, so setting them had zero effect. **Behavior change**: any
-  pipeline-mode step with `train_vae: true` that doesn't explicitly
-  override these two keys now switches from the prior real behavior
-  (legacy `kl_beta` KL path, inactive ctx-shrinkage) to the ratified
-  v0.10.0 defaults actually taking effect (cosine-warmup KL_z at the
-  `kl_z_weight` default, now 1e-3 (see Fixed); `ctx_shrinkage_weight=0.001`
-  active ctx-shrinkage). The legacy
+- **`kl_z_weight` now actually wired into `VAETrainer`**
+  (`pipeline_orchestrator.py`, `scripts/train.py`) — the `PipelineStepConfig`
+  field existed but was never passed through, so setting it had zero effect.
+  **Behavior change**: any pipeline-mode step with `train_vae: true` that
+  doesn't override it switches from the legacy `kl_beta` KL path to the
+  cosine-warmup KL_z at the pipeline `kl_z_weight` default (1e-3 at the time;
+  now 1e-5, see the KL entry at the top of Unreleased). The same change wired
+  `ctx_shrinkage_weight`, since removed (see Removed). The legacy
   `scripts/train.py` CLI driver's new flags default to `0.0` instead, so
   that path has no behavior change unless explicitly opted in.
 
@@ -288,8 +281,7 @@ Both legacy keys still load via `_parse_step_config` and emit a
   latent-space MSE/cosine against random N(0,I) targets was ill-posed.
   Replaced by the latent cycle loss. Old keys are silently ignored by the
   step parser -- remove them from configs and set `train_latent_cycle`.
-  Checkpoints trained with it may carry shifted latent/ctx statistics, and
-  resuming one also changes effective `ctx_shrinkage` (see Fixed).
+  Checkpoints trained with it may carry shifted latent/ctx statistics.
 
 ### Fixed
 - **Lion weight decay collapsed flow training**: `decoupled_weight_decay` now
@@ -307,15 +299,15 @@ Both legacy keys still load via `_parse_step_config` and emit a
   1e-5 with a 1e-3 warning threshold (see Changed). Trainer/CLI/orchestrator fallbacks
   stay 0.0 (legacy opt-in).
 - `kl_z_warmup_steps` now counts OPTIMIZER steps (trainer scales by
-  `gradient_accumulation_steps`). Other warmups (`gan_*`, `ctx_shrinkage_*`, legacy
-  `kl_warmup_steps`) still count micro-batches.
+  `gradient_accumulation_steps`). Other warmups (`gan_*`, legacy `kl_warmup_steps`)
+  still count micro-batches.
 - Console: `L1ctx` printed right after `VAE`. `VAE`/`vae_loss` = HF-weighted recon over the
   whole batch incl. z-only half; it rises while alpha ramps.
 - Latent cycle froze the expander by toggling `requires_grad`, which
   disabled decoder checkpointing (+14% peak VRAM). It now calls the expander
   via `torch.func.functional_call` with detached params; checkpointing stays
   on and no gradient reaches the expander.
-- `kl_z_warmup_steps` and `ctx_shrinkage_warmup_*` were silently dropped
+- `kl_z_warmup_steps` (and the since-removed `ctx_shrinkage_warmup_*`) were silently dropped
   (always defaults); legacy logging reported the wrong KL schedule.
 - LR schedulers stepped once per resolution group; now at most once per
   global step, with budgets from `compute_total_global_steps` (honours
@@ -340,7 +332,7 @@ Both legacy keys still load via `_parse_step_config` and emit a
   frozen for the G forward.
 - Removed an unused `context_predictor` forward (and `torch.randn` fallback)
   from every discriminator step.
-- `ctx_shrinkage` regularized the wrong tensor whenever a secondary
+- `ctx_shrinkage` (since removed) regularized the wrong tensor whenever a secondary
   compressor forward ran inside the generator step: the capture hook
   overwrote the real-image ctx features. Secondary forwards now run with
   capture suspended.

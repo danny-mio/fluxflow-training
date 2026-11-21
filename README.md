@@ -13,7 +13,7 @@ pip install fluxflow-training
 **What gets installed:**
 - `fluxflow-training` - Training scripts and configuration tools
 - `fluxflow` core package (automatically installed as dependency)
-- CLI commands: `fluxflow-train`, `fluxflow-generate`
+- CLI commands: `fluxflow-train`, `fluxflow-generate`, `fluxflow-calibrate-latents`
 
 ### Development Install
 
@@ -42,30 +42,12 @@ pip install -e ".[dev]"
 
 ## v0.10.0 Bezier-Coupled Redesign
 
-The v0.10.0 release coordinates with `fluxflow-core` v0.10.0 and rewires the
-training-side glue around five locked decisions (see the migration notes in
-[fluxflow-core](https://github.com/danny-mio/fluxflow-core/blob/main/docs/MIGRATION-v0.10.0-redesign.md)
-for the full cross-package walkthrough):
+The v0.10.0 release coordinates with `fluxflow-core` v0.10.0.
 
-1. **Per-token text** — the flow trainer now consumes
-   `(text_seq [B, T_txt, D], text_mask [B, T_txt])` from `BertTextEncoder`
-   instead of the pooled vector. Legacy v060/v070 checkpoints still load via
-   polymorphic dispatch.
-2. **Full flow modernization** — 2D RoPE + dual FiLM downstream of the
-   v0.10.0 flow processor; no extra config beyond the new keys below.
-   See the
-   [v0.10.0 flow processor source in fluxflow-core](https://github.com/danny-mio/fluxflow-core/blob/develop/src/fluxflow/models/v100/flow.py)
-   for the model-side wiring.
-3. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
-   with no config change beyond the latent-dim drop.
-4. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
-   `kl_z_warmup_steps`, with per-channel free bits (`kl_free_bits`). Caption
-   length is `data.max_text_length` (default `128`); step-level `t_txt` is
-   deprecated and ignored.
-5. **Latent calibration** — flow training needs a VAE whose per-channel latent
-   statistics are calibrated. Pipeline runs do this automatically at the
-   VAE→flow transition; otherwise run `fluxflow-calibrate-latents`. See
-   [Training workflow (v0.10.0)](docs/TRAINING_GUIDE.md#training-workflow-v0100).
+- Redesign decisions: [fluxflow-core `ARCHITECTURE.md`](https://github.com/danny-mio/fluxflow-core/blob/feature/model-v0.10.0/docs/ARCHITECTURE.md#v0100-bezier-coupled-architecture)
+- Upgrade path: [`MIGRATION-v0.10.0-redesign.md`](https://github.com/danny-mio/fluxflow-core/blob/feature/model-v0.10.0/docs/MIGRATION-v0.10.0-redesign.md)
+- Train VAE, calibrate latent stats, train flow:
+  [Training workflow (v0.10.0)](docs/TRAINING_GUIDE.md#training-workflow-v0100)
 
 ### New config keys (`PipelineStepConfig`)
 
@@ -74,38 +56,21 @@ for the full cross-package walkthrough):
 | `kl_z_weight` | `1e-5` | Final KL weight on the clean Gaussian latent. |
 | `kl_z_warmup_steps` | `10000` | Cosine warmup length for `kl_z_weight`, in OPTIMIZER steps (scaled by `gradient_accumulation_steps`). |
 | `kl_free_bits` | `0.5` | Per-channel KL floor, nats/element; channels below it get no KL gradient. `0` disables. |
-| `calibration_images` | `2000` | Images encoded to calibrate latent stats when a flow step starts on an uncalibrated VAE. `0` disables (the flow step then fails). |
-| `ctx_shrinkage_*` | — | Removed; accepted but ignored with a warning. |
+| `calibration_images` | `2000` | Images encoded to calibrate latent stats when a flow step starts on an uncalibrated VAE. `0` disables auto-calibration; the flow step then fails only if the VAE is uncalibrated. |
 | `hf_ramp_steps` | `30000` | HF-loss alpha ramp (0.3 to 1.2) length, micro-batch global steps. |
 | `t_txt` | — | Deprecated, ignored; use `data.max_text_length`. |
 | `null_prompt` | `""` | String encoded into the cached CFG null context. |
 | `freeze_context_branch` | `false` | Freeze the ctx encoder branch while leaving z-path trainable. |
 
-The v0.8.1 keys `lambda_ctx_aux` (aux ctx vs `z_tokens` MSE during VAE
-training) and `ctx_loss_weight` (relative weight of ctx-dim vs VAE-dim
-v-prediction loss in `FlowTrainer`) get new v0.10.0 defaults: `0.01` and
-`0.5` respectively, per the DP-1 decision.
+Removed: `ctx_shrinkage_*` (accepted but ignored, with a warning).
 
-Datasets accept a configurable `max_text_length` (default `128`).
+New v0.10.0 defaults for v0.8.1 keys: `lambda_ctx_aux` `0.01` (aux ctx vs
+`z_tokens` MSE during VAE training), `ctx_loss_weight` `0.5` (ctx-dim vs VAE-dim
+v-prediction loss in `FlowTrainer`). Caption length: `data.max_text_length`
+(default `128`).
 
-### CFG empty-prompt substitution
-
-CFG dropout at flow-train time goes through
-`fluxflow_training.training.cfg_utils.apply_cfg_null_substitution`, which
-swaps a random `cfg_dropout_prob` fraction of samples for the encoded null
-pair returned by `fluxflow.utils.visualization.build_cfg_null_pair`. The
-pair is cached on the text encoder so train and sample see the *same*
-unconditional distribution. Tune `null_prompt` if you need a non-empty
-default null.
-
-### Legacy alias warnings
-
-The pre-v0.10.0 keys still load and emit `DeprecationWarning`:
-
-- `kl_beta` → `kl_z_weight`
-- `kl_warmup_steps` → `kl_z_warmup_steps`
-
-When both forms appear in the same step, the v0.10.0 form wins.
+CFG null substitution, legacy `kl_beta` / `kl_warmup_steps` aliases: see
+[v0.10.0 Loss Schedule](docs/TRAINING_GUIDE.md#v0100-loss-schedule).
 
 ### Freeze-list components
 
@@ -125,7 +90,8 @@ Tested on NVIDIA A6000 (48GB VRAM); A100 (40GB/80GB) also supported.
 - Local: 1× RTX 4090 (24GB) or 2× RTX 3090 (24GB each)
 - Cloud: AWS p3.2xlarge (V100 16GB), GCP A100 (40GB)
 
-**Memory Requirements by Training Mode** (empirical measurements, Dec 2025):
+**Memory Requirements by Training Mode** (measured Dec 2025, pre-rework narrow VAE;
+v0.10.0 wide-VAE numbers will differ):
 - **VAE Training** (batch_size=4, vae_dim=128, img_size=1024):
   - **Without GAN**: ~18-22GB VRAM
   - **With GAN + LPIPS**: ~28-35GB VRAM
@@ -141,7 +107,7 @@ Tested on NVIDIA A6000 (48GB VRAM); A100 (40GB/80GB) also supported.
 - Reduce batch size: `batch_size: 2` or `1`
 - Disable LPIPS: `use_lpips: false` (saves ~6-8GB)
 - Reduce image size: `img_size: 512` (saves ~10-15GB)
-- Use FP16 (if supported): `use_fp16: true` (saves ~20-30%); add `precision: bf16` if fp16 hits NaN/Inf from activation overflow
+- Mixed precision: `use_fp16: true` + `precision: bf16` (bf16 is the supported mixed precision for v0.10.0; saves ~20-30%)
 - See [TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) "Limited VRAM Strategy"
 
 **Experimental: AMD ROCm** — gfx1151 (Strix Halo APU) support is
@@ -185,7 +151,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Variational autoencoders with GAN losses
   - LPIPS perceptual loss support (adds ~6-8GB VRAM)
   - SPADE spatial conditioning
-  - KL divergence with beta warmup and free bits
+  - KL on z: `kl_z_weight` cosine warmup, per-channel free bits (`kl_free_bits`)
 
 - **Flow Training**
   - Flow-based diffusion transformers
@@ -207,7 +173,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
 - **Training Visualization**: Automatic diagram generation for loss curves and metrics
 - **Optimizers**: Multiple optimizer support (AdamW, Adam, SGD, RMSprop)
 - **Schedulers**: Various learning rate schedulers (CosineAnnealing, StepLR, ExponentialLR, ReduceLROnPlateau)
-- **Mixed Precision**: Accelerate training with automatic mixed precision (fp16)
+- **Mixed Precision**: `use_fp16` + `precision` (`fp16` default, `bf16` supported for v0.10.0)
 
 ### Monitoring & Logging
 
@@ -313,7 +279,7 @@ training:
     steps:
       # Stage 1-2: VAE training (see config.cfg.example.yaml)
 
-      # Stage 3: Flow with CFG ✨
+      # Stage 3: Flow with CFG
       - name: "flow_cfg"
         n_epochs: 100
         train_diff: true
@@ -375,7 +341,7 @@ python src/fluxflow_training/scripts/generate_training_graphs.py outputs/
 
 # Diagrams are saved to outputs/graph/:
 # - training_losses.png (VAE, Flow, Discriminator, Generator, LPIPS)
-# - kl_loss.png (KL divergence with beta warmup)
+# - kl_loss.png (KL divergence and its weight: kl_z_weight cosine warmup)
 # - learning_rates.png (LR schedules)
 # - batch_times.png (training speed)
 # - training_overview.png (combined overview)
