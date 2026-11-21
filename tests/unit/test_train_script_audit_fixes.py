@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 import torch
 from fluxflow.models import PatchDiscriminator
+from fluxflow_training.training.utils import has_spectral_norm
 
 from tests.unit.test_scripts import import_script_module
 
@@ -150,3 +151,98 @@ class TestLegacySchedulerBudgetAndEma:
 
     def test_exports_and_samples_use_ema(self):
         assert "ema.applied()" in SRC
+
+
+class TestDiscriminatorCheckpoint:
+    """--discriminator_checkpoint: explicit D_img file, independent of model_checkpoint."""
+
+    @staticmethod
+    def _disc(sn=True):
+        return PatchDiscriminator(3, 4, 3, ctx_dim=0, use_spectral_norm=sn)
+
+    @staticmethod
+    def _args(path, sn=True):
+        return SimpleNamespace(
+            channels=3,
+            feature_maps_dim_disc=4,
+            discriminator_use_spectral_norm=sn,
+            discriminator_checkpoint=path,
+        )
+
+    @staticmethod
+    def _save(tmp_path, state, name="D_img.safetensors"):
+        from safetensors.torch import save_file
+
+        p = tmp_path / name
+        save_file({k: v.contiguous() for k, v in state.items()}, str(p))
+        return str(p)
+
+    def test_prefixed_file_loads_without_model_checkpoint(self, tmp_path):
+        from fluxflow_training.scripts import train
+
+        saved = self._disc()
+        path = self._save(tmp_path, {f"D_img.{k}": v for k, v in saved.state_dict().items()})
+        state = train._resolve_discriminator_state(self._args(path), None)
+        d = train._make_discriminator(self._args(path), 0, state)
+        assert torch.equal(d.head.weight_orig, saved.head.weight_orig)
+
+    def test_unprefixed_file_loads(self, tmp_path):
+        from fluxflow_training.scripts import train
+
+        saved = self._disc()
+        path = self._save(tmp_path, saved.state_dict())
+        state = train._resolve_discriminator_state(self._args(path), {})
+        d = train._make_discriminator(self._args(path), 0, state)
+        assert torch.equal(d.head.weight_orig, saved.head.weight_orig)
+
+    def test_wins_over_checkpoint_manager_state(self, tmp_path, capsys):
+        from fluxflow_training.scripts import train
+
+        explicit = self._disc()
+        path = self._save(tmp_path, {f"D_img.{k}": v for k, v in explicit.state_dict().items()})
+        other = self._disc().state_dict()
+        state = train._resolve_discriminator_state(self._args(path), {"D_img": other})
+        assert torch.equal(state["head.weight_orig"], explicit.head.weight_orig)
+        assert path in capsys.readouterr().out
+
+    def test_unset_falls_back_to_checkpoint_state(self):
+        from fluxflow_training.scripts import train
+
+        other = self._disc().state_dict()
+        assert train._resolve_discriminator_state(self._args(None), {"D_img": other}) is other
+        assert train._resolve_discriminator_state(self._args(None), None) is None
+
+    def test_missing_file_raises(self, tmp_path):
+        from fluxflow_training.scripts import train
+
+        with pytest.raises(FileNotFoundError, match="discriminator_checkpoint"):
+            train._resolve_discriminator_state(self._args(str(tmp_path / "nope.safetensors")), None)
+
+    def test_incompatible_file_reinitialises_with_warning(self, tmp_path, caplog, capsys):
+        from fluxflow_training.scripts import train
+
+        saved = self._disc(sn=False)
+        path = self._save(tmp_path, {f"D_img.{k}": v for k, v in saved.state_dict().items()})
+        state = train._resolve_discriminator_state(self._args(path, True), None)
+        with caplog.at_level("WARNING"):
+            d = train._make_discriminator(self._args(path, True), 0, state)
+        assert has_spectral_norm(d)
+        assert "incompatible" in capsys.readouterr().out.lower()
+        assert "Saved D_img incompatible" in caplog.text
+
+    def _parse(self, extra):
+        from fluxflow_training.scripts import train
+
+        argv = ["train.py", "--data_path", "/tmp/i", "--captions_file", "/tmp/c.tsv"] + extra
+        with patch.object(sys, "argv", argv):
+            return train.parse_args()
+
+    def test_yaml_key_parsed_and_cli_overrides(self, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("discriminator_checkpoint: /yaml/D_img.safetensors\n")
+        assert self._parse(["--config", str(cfg)]).discriminator_checkpoint == (
+            "/yaml/D_img.safetensors"
+        )
+        args = self._parse(["--config", str(cfg), "--discriminator_checkpoint", "/cli/D.st"])
+        assert args.discriminator_checkpoint == "/cli/D.st"
+        assert self._parse([]).discriminator_checkpoint is None

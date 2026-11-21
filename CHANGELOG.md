@@ -36,6 +36,9 @@ Not yet released — work in progress toward v0.10.0.
   one-time warning.
 
 ### Added
+- **`discriminator_checkpoint`** (config key / `--discriminator_checkpoint`): load an existing
+  `D_img.safetensors` (`D_img.` prefix optional) without `model_checkpoint`; overrides the
+  checkpoint's D_img; missing file raises; incompatible file reinitialises with a warning.
 - **Latent calibration** (v0.10.0): per-channel mean/std of the compressor's token
   rows, written to compressor and expander via `FluxPipeline.set_latent_stats` so the
   flow sees ~N(0, I) latents. Automatic when a `train_diff`/`train_diff_full` step

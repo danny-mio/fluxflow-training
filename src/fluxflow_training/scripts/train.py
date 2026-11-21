@@ -266,6 +266,30 @@ def _kl_schedule(args) -> tuple[int, float]:
     return args.kl_warmup_steps, args.kl_beta
 
 
+def _resolve_discriminator_state(args, loaded_states):
+    """Pick the D_img state dict: ``args.discriminator_checkpoint`` wins over the checkpoint's.
+
+    The explicit file may hold ``D_img.``-prefixed keys (stripped) or bare keys. A missing
+    file raises ``FileNotFoundError`` (explicit user intent). Returns the state dict from
+    ``loaded_states["D_img"]`` when no explicit file is set, else ``None``.
+    """
+    path = getattr(args, "discriminator_checkpoint", None)
+    fallback = loaded_states.get("D_img") if loaded_states else None
+    if not isinstance(path, str) or not path:
+        return fallback
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"discriminator_checkpoint not found: {path}")
+    from safetensors.torch import load_file
+
+    raw = load_file(path)
+    prefix = "D_img."
+    prefixed = {k[len(prefix) :]: v for k, v in raw.items() if k.startswith(prefix)}
+    state = prefixed or raw
+    note = " (overrides D_img from model_checkpoint)" if fallback else ""
+    print(f"Using discriminator_checkpoint: {path}{note}")
+    return state
+
+
 def _make_discriminator(args, ctx_dim: int, saved_state=None):
     """Build PatchDiscriminator per ``args``; load ``saved_state`` only if it fits exactly.
 
@@ -424,14 +448,15 @@ def initialize_models(args, config, device, checkpoint_manager):
     # old D checkpoints' ctx_proj keys are ignored on load). Legacy compressors: keep the
     # saved D_img's width when present, else vae_dim + get_context_dims().
     ctx_dim = discriminator_ctx_dim(compressor, args.vae_dim)
-    if ctx_dim and loaded_states and loaded_states.get("D_img"):
+    d_state = _resolve_discriminator_state(args, loaded_states)
+    if ctx_dim and d_state:
         try:
-            ctx_dim = _sd_weight(loaded_states["D_img"], "ctx_proj").shape[1]  # in_features
+            ctx_dim = _sd_weight(d_state, "ctx_proj").shape[1]  # in_features
             print(f"Using ctx_dim={ctx_dim} from saved D_img checkpoint")
         except (KeyError, AttributeError):
             pass
     print(f"Discriminator ctx_dim={ctx_dim}")
-    D_img = _make_discriminator(args, ctx_dim)
+    D_img = _make_discriminator(args, ctx_dim, d_state)
 
     # Create diffuser pipeline
     diffuser = FluxPipeline(compressor, flow_processor, expander)
@@ -453,8 +478,6 @@ def initialize_models(args, config, device, checkpoint_manager):
         if loaded_states.get("image_encoder"):
             image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
             print("✓ Loaded image_encoder checkpoint")
-        if loaded_states.get("D_img"):
-            D_img = _make_discriminator(args, ctx_dim, loaded_states["D_img"])
 
     # Move to device
     diffuser.to(device)
@@ -921,7 +944,6 @@ def train_legacy(args):
     # Discriminator: ctx_dim 0 for v0.10.0 compressors (see discriminator_ctx_dim)
     ctx_dim = discriminator_ctx_dim(diffuser.compressor, args.vae_dim)
     print(f"Creating discriminator with ctx_dim={ctx_dim}")
-    D_img = _make_discriminator(args, ctx_dim)
 
     # Initialize checkpoint manager for easier model management
     checkpoint_manager = CheckpointManager(
@@ -936,6 +958,8 @@ def train_legacy(args):
     # Log loaded model metadata if available
     if model_metadata:
         print(f"✓ Loaded model metadata: {model_metadata}")
+
+    D_img = _make_discriminator(args, ctx_dim, _resolve_discriminator_state(args, loaded_states))
 
     # Apply loaded state dicts to models if they exist
     if loaded_states.get("diffuser.compressor"):
@@ -954,8 +978,6 @@ def train_legacy(args):
     if loaded_states.get("image_encoder"):
         image_encoder.load_state_dict(loaded_states["image_encoder"], strict=False)  # type: ignore[arg-type]
         print("✓ Loaded image_encoder checkpoint")
-    if loaded_states.get("D_img"):
-        D_img = _make_discriminator(args, ctx_dim, loaded_states["D_img"])
 
     diffuser.to(device)
     text_encoder.to(device)
@@ -1801,6 +1823,12 @@ def parse_args(argv: list[str] | None = None):
 
     # Model
     parser.add_argument("--model_checkpoint", type=str, help="Path to checkpoint to resume from")
+    parser.add_argument(
+        "--discriminator_checkpoint",
+        type=str,
+        default=None,
+        help="D_img .safetensors to load (D_img. prefix optional); overrides model_checkpoint's D_img",
+    )
     parser.add_argument("--vae_dim", type=int, default=128, help="VAE latent dimension")
     parser.add_argument(
         "--text_embedding_dim", type=int, default=1024, help="Text embedding dimension"
@@ -2361,6 +2389,8 @@ def parse_args(argv: list[str] | None = None):
 
         if "model_checkpoint" in config and "model_checkpoint" not in cli_provided:
             args.model_checkpoint = config["model_checkpoint"]
+        if "discriminator_checkpoint" in config and "discriminator_checkpoint" not in cli_provided:
+            args.discriminator_checkpoint = config["discriminator_checkpoint"]
 
     legacy = [
         flag for flag, _ in _LEGACY_CTX_SHRINKAGE_FLAGS if getattr(args, flag[2:]) is not None
