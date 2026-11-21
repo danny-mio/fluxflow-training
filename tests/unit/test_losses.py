@@ -386,19 +386,33 @@ class TestPerPatchHinge:
         assert r1_penalty(x, out).item() >= 0
 
 
-class TestFreeBitsPerDimension:
-    def test_batch_mean_clamp_not_per_element(self):
+class TestFreeBitsPerChannel:
+    def test_free_bits_per_channel_floor(self):
+        mu = torch.zeros(2, 3, 4, 4)
+        mu[:, 0] = 3.0  # channel 0: KL = 4.5 per element (above floor)
+        logvar = torch.zeros_like(mu)  # channels 1,2: KL = 0 (below floor)
+        kl = kl_standard_normal(
+            mu, logvar, free_bits_nats=0.5, reduce="mean", normalize_by_dims=True
+        )
+        assert torch.isclose(kl, torch.tensor((4.5 + 0.5 + 0.5) / 3))
+
+    def test_free_bits_floored_channels_no_grad(self):
+        mu = torch.zeros(2, 2, 2, 2, requires_grad=True)
+        logvar = torch.zeros(2, 2, 2, 2)
+        with torch.no_grad():
+            mu[:, 0] = 3.0
+        kl_standard_normal(mu, logvar, free_bits_nats=0.5, normalize_by_dims=True).backward()
+        assert mu.grad[:, 1].abs().sum() == 0
+        assert mu.grad[:, 0].abs().sum() > 0
+
+    def test_channel_mean_over_batch_and_space(self):
         mu = torch.zeros(2, 1, 1, 2)
-        mu[0, 0, 0, 0] = 3.0  # KL 4.5 in sample 0, dim 0
+        mu[0, 0, 0, 0] = 3.0  # KL 4.5 at one of 4 elements -> channel mean 1.125
         logvar = torch.zeros_like(mu)
         kl = kl_standard_normal(mu, logvar, free_bits_nats=1.0, normalize_by_dims=True)
-        # dim0 batch-mean 2.25 (>1, unclamped); dim1 mean 0 -> clamped to 1
-        assert kl.item() == pytest.approx((2.25 + 1.0) / 2)
-
-    def test_clamped_dims_have_no_gradient(self):
-        mu = torch.zeros(2, 1, 1, 2, requires_grad=True)
-        kl_standard_normal(mu, torch.zeros_like(mu), free_bits_nats=1.0).backward()
-        assert torch.count_nonzero(mu.grad) == 0
+        assert kl.item() == pytest.approx(1.125)  # above floor, untouched
+        kl = kl_standard_normal(mu, logvar, free_bits_nats=2.0, normalize_by_dims=True)
+        assert kl.item() == pytest.approx(2.0)  # floored
 
     def test_zero_free_bits_inert(self):
         mu, lv = torch.randn(3, 2, 4, 4), torch.randn(3, 2, 4, 4)

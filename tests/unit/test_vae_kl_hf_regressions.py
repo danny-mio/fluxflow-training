@@ -25,10 +25,14 @@ def _step(**kw):
 
 class TestKlDefault:
     def test_dataclass_default(self):
-        assert PipelineStepConfig(name="s", n_epochs=1).kl_z_weight == 1e-3
+        assert PipelineStepConfig(name="s", n_epochs=1).kl_z_weight == 1e-5
 
     def test_parse_default(self):
-        assert _step().kl_z_weight == 1e-3
+        assert _step().kl_z_weight == 1e-5
+
+    def test_free_bits_default(self):
+        assert PipelineStepConfig(name="s", n_epochs=1).kl_free_bits == 0.5
+        assert _step().kl_free_bits == 0.5
 
 
 class TestKlWarning:
@@ -38,12 +42,12 @@ class TestKlWarning:
         return t
 
     def test_fires_once_for_large_weight(self, caplog):
-        t = self._v100(kl_z_weight=0.5)
+        t = self._v100(kl_z_weight=0.01)
         with caplog.at_level(logging.WARNING, logger=LOGGER):
             for i in range(3):
                 t.train_step(_imgs(), global_step=i)
         msgs = [r for r in caplog.records if "kl_z_weight" in r.getMessage()]
-        assert len(msgs) == 1 and "per-element" in msgs[0].getMessage()
+        assert len(msgs) == 1 and "48x" in msgs[0].getMessage()
 
     def test_silent_for_small_weight(self, caplog):
         t = self._v100(kl_z_weight=1e-3)

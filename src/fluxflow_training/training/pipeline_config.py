@@ -204,7 +204,7 @@ class PipelineStepConfig:
     # - ``kl_z_warmup_steps`` (was ``kl_warmup_steps``)
     # The legacy names continue to load with a DeprecationWarning emitted
     # by the YAML parser. When both forms appear, the v0.10.0 form wins.
-    kl_z_weight: float = 1e-3
+    kl_z_weight: float = 1e-5
     # Counts OPTIMIZER steps (trainer scales by gradient_accumulation_steps).
     kl_z_warmup_steps: int = 10000
     # HF-frequency alpha ramp 0.3 -> 1.2 length, in micro-batch global steps.
@@ -214,7 +214,7 @@ class PipelineStepConfig:
     # these in sync with the new fields whenever possible.
     kl_beta: float = 0.0001
     kl_warmup_steps: int = 5000
-    kl_free_bits: float = 0.0
+    kl_free_bits: float = 0.5
     # v0.10.0: deterministic ctx-features shrinkage (β-VAE-style L2). Per design §5.5
     # the schedule is delayed until ``ctx_shrinkage_warmup_start_step`` then cosine
     # warms up to ``ctx_shrinkage_weight`` over ``ctx_shrinkage_warmup_steps``.
@@ -879,7 +879,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         initial_clipping_norm=step_dict.get("initial_clipping_norm", 1.0),
         kl_beta=step_dict.get("kl_beta", 0.0001),
         kl_warmup_steps=step_dict.get("kl_warmup_steps", 5000),
-        kl_z_weight=step_dict.get("kl_z_weight", 1e-3),
+        kl_z_weight=step_dict.get("kl_z_weight", 1e-5),
         kl_z_warmup_steps=step_dict.get("kl_z_warmup_steps", 10000),
         hf_ramp_steps=step_dict.get("hf_ramp_steps", 30000),
         ctx_shrinkage_weight=step_dict.get("ctx_shrinkage_weight", 0.001),
@@ -888,7 +888,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         ctx_shrinkage_max_mean_sq=step_dict.get("ctx_shrinkage_max_mean_sq", 1000.0),
         t_txt=_warn_deprecated_t_txt(step_dict),
         null_prompt=step_dict.get("null_prompt", ""),
-        kl_free_bits=step_dict.get("kl_free_bits", 0.0),
+        kl_free_bits=step_dict.get("kl_free_bits", 0.5),
         lambda_adv=step_dict.get("lambda_adv", 0.5),
         lambda_lpips=step_dict.get("lambda_lpips", 0.1),
         mse_weight=step_dict.get("mse_weight", 0.1),

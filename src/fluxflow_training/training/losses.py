@@ -87,13 +87,14 @@ def kl_standard_normal(
     """
     KL divergence between learned Gaussian and standard normal.
 
-    Optionally applies free-bits: the batch-mean KL of each latent dimension
-    (C, H, W position) is floored at ``free_bits_nats``; floored dims carry no gradient.
+    Optionally applies free-bits: the KL of each latent channel
+    (mean over batch and spatial dims) is floored at ``free_bits_nats`` per element;
+    floored channels carry no gradient, others are unchanged.
 
     Args:
         mu: Mean tensor [B, D, H, W]
         logvar: Log variance tensor [B, D, H, W]
-        free_bits_nats: Minimum KL in nats (0.0 = no constraint)
+        free_bits_nats: Minimum per-channel KL in nats/element (0.0 = no constraint)
         reduce: 'mean' or 'sum' reduction over batch
         normalize_by_dims: If True, normalize KL by number of dimensions (resolution-invariant).
                           If False, sum over dimensions (legacy behavior).
@@ -111,8 +112,8 @@ def kl_standard_normal(
     kl = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp())
 
     if free_bits_nats > 0.0:
-        below = kl.mean(dim=0, keepdim=True) < free_bits_nats
-        kl = torch.where(below, torch.full_like(kl, free_bits_nats), kl)
+        per_channel = kl.mean(dim=(0, 2, 3), keepdim=True)  # [1, C, 1, 1]
+        kl = torch.where(per_channel < free_bits_nats, torch.full_like(kl, free_bits_nats), kl)
 
     if normalize_by_dims:
         # Mean over all dimensions (resolution-invariant, recommended for new training)

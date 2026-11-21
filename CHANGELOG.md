@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Not yet released — work in progress toward v0.10.0.
 
+### Changed
+- **KL**: free bits are now per channel (mean over batch+spatial dims floored at
+  `kl_free_bits` nats/element; floored channels get no gradient). Pipeline defaults
+  `kl_z_weight` 1e-3 -> 1e-5, `kl_free_bits` 0.0 -> 0.5 (1e-3 collapsed 11/16 z channels:
+  KL is per-element mean vs per-pixel L1, ~48x stronger at f16/16ch). v100 warning now
+  fires above 1e-3. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
+
 ### Added
 - **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
   that batch fraction with `use_context=False` (z-only; both halves get recon pressure,

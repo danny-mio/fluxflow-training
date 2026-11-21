@@ -46,7 +46,7 @@ _BEZIER_REG_WEIGHT = 0.05
 _STD_FLOOR = 0.05
 
 # Fallbacks / bounds for the adaptive GAN weight and the KL warning threshold.
-_KL_WARN_WEIGHT = 0.05  # kl_z_weight above this is almost certainly too large (per-element KL)
+_KL_WARN_WEIGHT = 1e-3  # kl_z_weight above this is too strong (per-element KL vs per-pixel L1)
 _ADAPTIVE_GAN_EPS = 1e-4
 _CTX_DROP_SEED = 0x2D7
 _ADAPTIVE_GAN_MAX = 1e4
@@ -916,9 +916,10 @@ class VAETrainer:
         if self._has_ctx_half(packed):
             self._kl_warned = True
             logger.warning(
-                f"kl_z_weight={self.kl_z_weight} is large: KL is a per-element mean with a "
-                f"fixed weight (no adaptive balancing); values > {_KL_WARN_WEIGHT} can "
-                "collapse z toward the prior. Typical: 1e-3."
+                f"kl_z_weight={self.kl_z_weight} is large: KL is mean-normalized per latent "
+                "element vs per-pixel L1: 1e-3 is ~48x stronger than it looks at f16/16ch; "
+                f"values > {_KL_WARN_WEIGHT} can collapse z channels toward the prior. "
+                "Typical: 1e-5."
             )
 
     def _has_ctx_half(self, packed: torch.Tensor) -> bool:
