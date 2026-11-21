@@ -14,6 +14,18 @@ Not yet released — work in progress toward v0.10.0.
   `kl_z_weight` 1e-3 -> 1e-5, `kl_free_bits` 0.0 -> 0.5 (1e-3 collapsed 11/16 z channels:
   KL is per-element mean vs per-pixel L1, ~48x stronger at f16/16ch). v100 warning now
   fires above 1e-3. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
+- **VAE optimizer weight decay**: both VAE param-group builders now exempt biases,
+  norm weights and other ndim<=1 params (`split_weight_decay_groups(exempt_vectors=True)`);
+  weight decay had pushed the ctx scale into LayerNorm gamma. Old single-group
+  optimizer state remaps via `orig_idx`.
+- **Flow step adopts the VAE EMA**: on the transition to a VAE-frozen flow step the VAE
+  EMA parameters are copied into compressor/expander (live buffers kept), before
+  calibration. Resume re-runs the calibration check after loading state.
+- **EMA warmup**: effective decay `min(decay, (1+n)/(10+n))` at update `n`;
+  `num_updates` is saved in the EMA state (missing in old checkpoints = warmup done).
+  EMA averages parameters only; buffers (e.g. latent stats) stay live.
+- **`FlowTrainer` refuses an uncalibrated v0.10.0 VAE** (`ValueError`, via
+  `check_latents_calibrated`). Requires fluxflow-core with latent-stats buffers.
 
 ### Removed
 - **`ctx_shrinkage` loss** (inert: it acted on the input of an affine-free instance norm).
@@ -24,6 +36,13 @@ Not yet released — work in progress toward v0.10.0.
   one-time warning.
 
 ### Added
+- **Latent calibration** (v0.10.0): per-channel mean/std of the compressor's token
+  rows, written to compressor and expander via `FluxPipeline.set_latent_stats` so the
+  flow sees ~N(0, I) latents. Automatic when a `train_diff`/`train_diff_full` step
+  starts on an uncalibrated VAE (step key `calibration_images`, default 2000, 0 = off);
+  the model checkpoint is exported right after. Standalone:
+  `fluxflow-calibrate-latents --checkpoint CKPT --config CFG --out OUT` (see
+  `docs/TRAINING_GUIDE.md`).
 - **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
   that batch fraction with `use_context=False` (z-only; both halves get recon pressure,
   GAN/latent-cycle/plateau use the ctx half only) and `ctx_noise_sigma` (0.5) adds
@@ -158,8 +177,8 @@ Not yet released — work in progress toward v0.10.0.
   `text_encoder_projection`, `text_encoder_backbone` optimizers exempt biases,
   norm weights, ndim<=1 params, `cls`, `*_scale` and activation coefficients
   (new `split_module_params` -> `split_weight_decay_groups(exempt_vectors=True)`).
-  Old single-group optimizer state still loads via `orig_idx`. VAE optimizer
-  unchanged.
+  Old single-group optimizer state still loads via `orig_idx`. VAE optimizer:
+  see the VAE weight-decay entry above.
 - Default caption token length 32 -> 128 (`--max_text_length` / `data.max_text_length`,
   dataset classes, orchestrator fallbacks now read `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`
   instead of hardcoding 32). 32 truncated 40.5% of training captions; 128 truncates 0.12%.
@@ -168,7 +187,8 @@ Not yet released — work in progress toward v0.10.0.
   `VAETrainer(total_training_steps=)` (was only used by the ramp).
 - **Flow targets use sampled latents**: `FlowTrainer` encodes via new
   `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`
-  `sample` kwarg; the z half is now raw ~N(0,I), no LayerNorm). Legacy v060/v070
+  `sample` kwarg; the z half gets no LayerNorm; the packed latent is normalized by the
+  calibrated latent stats). Legacy v060/v070
   compressors without a `sample` parameter are called unchanged.
 - `generate_with_cfg` encodes its init image deterministically (`sample=False`, mean);
   only the hw context vector is used there.
@@ -195,14 +215,13 @@ Not yet released — work in progress toward v0.10.0.
   EMA: see Fixed.
 - Contrast loss uses a smoothed log std ratio; histogram loss is a
   differentiable sorted-value 1D Wasserstein distance (`bins` removed).
-- Free bits clamp the batch-mean KL per latent dimension.
 - ReduceLROnPlateau metric is fixed-alpha L1.
 - Legacy `train.py`: new flags `--kl_z_warmup_steps`,
   `--ctx_shrinkage_warmup_start_step`, `--ctx_shrinkage_warmup_steps`,
   `--ctx_shrinkage_max_mean_sq`, `--instance_noise_std`,
   `--instance_noise_decay`, `--r1_gamma`, `--r1_interval`,
   `--[no-]train_ctx_aux`, `--lambda_ctx_aux`, `--gan_start_step`,
-  `--gan_warmup_steps`.
+  `--gan_warmup_steps`. (`--ctx_shrinkage_*` are now ignored; see Removed.)
 - **VAE optimizer weight decay**: identity-gating scalars (`*_scale` params
   with one element: `conv1_scale`, SPADE `beta_scale`/`gamma_scale`,
   `ctx_zinject_*_scale`) are now in a `weight_decay=0` param group so decay no
@@ -279,10 +298,11 @@ Both legacy keys still load via `_parse_step_config` and emit a
 - **Flow EMA computed but never saved or used**: FlowTrainer EMA (flow + text
   encoder, decay 0.9999) is now saved in `training_states.pt` (`ema_flow`),
   restored on resume, and applied for sample generation (raw weights restored
-  after). Exports (`flxflow_final` etc.) stay raw. No EMA warmup yet.
+  after). Exports (`flxflow_final` etc.) stay raw. EMA warmup: see Changed.
 - **KL collapse**: default `kl_z_weight` 0.5 -> 1e-3 (pipeline config; KL is a per-element
-  mean with fixed weight, 0.5 gave ~27x recon gradient and collapsed z). One-time warning
-  when v100 runs with `kl_z_weight > 0.05`. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
+  mean with fixed weight, 0.5 gave ~27x recon gradient and collapsed z); since lowered to
+  1e-5 with a 1e-3 warning threshold (see Changed). Trainer/CLI/orchestrator fallbacks
+  stay 0.0 (legacy opt-in).
 - `kl_z_warmup_steps` now counts OPTIMIZER steps (trainer scales by
   `gradient_accumulation_steps`). Other warmups (`gan_*`, `ctx_shrinkage_*`, legacy
   `kl_warmup_steps`) still count micro-batches.

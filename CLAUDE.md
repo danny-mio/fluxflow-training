@@ -10,8 +10,8 @@ training-side glue for the five locked decisions:
 
 1. **Per-token text** — flow trainer consumes `(text_seq, text_mask)` from
    `BertTextEncoder` instead of pooled vectors.
-2. **Conditional ctx coupling** — VAE trainer optimizes a new
-   `ctx_shrinkage_weight` term to keep ctx informative without collapsing.
+2. **Conditional ctx coupling** — the VAE trains ctx with `ctx_dropout_frac` /
+   `ctx_noise_sigma` (the `ctx_shrinkage_weight` term was removed as inert).
 3. **Full flow modernization** — flow trainer wires 2D RoPE + dual FiLM
    downstream of `FluxFlowProcessor_v100`.
 4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology with
@@ -20,10 +20,11 @@ training-side glue for the five locked decisions:
    `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`) are exposed in the YAML config.
 
 New config keys (see `config.example.yaml`):
-- `kl_z_weight` — final KL weight on the clean Gaussian latent (default 1e-3; per-element KL). `kl_z_warmup_steps` counts optimizer steps.
+- `kl_z_weight` — final KL weight on the clean Gaussian latent (default 1e-5; per-element KL). `kl_z_warmup_steps` counts optimizer steps.
+- `kl_free_bits` — per-channel KL floor, nats/element (default 0.5).
+- `calibration_images` — latent-stat calibration at the VAE→flow transition (default 2000). Workflow: `docs/TRAINING_GUIDE.md` § "Training workflow (v0.10.0)".
 - `hf_ramp_steps` — HF-loss alpha ramp length (default 30000 micro-batch steps).
 - Logs: `VAE`/`vae_loss` is HF-weighted recon over the whole batch incl. the z-only half (rises as alpha ramps); watch `L1ctx` (plain ctx-path L1).
-- `ctx_shrinkage_weight` — L2-like pressure on `ctx` to prevent runaway scale.
 - `t_txt` — deprecated, ignored (warns). Text length = `data.max_text_length`.
 
 CFG empty-prompt substitution at flow-train time goes through

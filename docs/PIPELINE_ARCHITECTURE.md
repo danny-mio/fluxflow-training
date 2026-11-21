@@ -146,9 +146,9 @@ either the whole-encoder key or the split keys, not both.
 
 ```yaml
 # v0.10.0 (preferred):
-kl_z_weight: 0.001          # Final KL weight on the clean Gaussian latent
+kl_z_weight: 1e-5         # Final KL weight on the clean Gaussian latent
 kl_z_warmup_steps: 10000  # OPTIMIZER steps (x grad accum internally)
-kl_free_bits: 0.0         # Free bits threshold (nats)
+kl_free_bits: 0.5         # Per-channel KL floor (nats/element; 0 = off)
 lambda_adv: 0.5           # GAN adversarial loss weight
 lambda_lpips: 0.1         # LPIPS perceptual loss weight
 lambda_ctx_aux: 0.01      # Aux stop-grad MSE on ctx vs z_tokens (VAE only)

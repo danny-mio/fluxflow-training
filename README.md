@@ -59,15 +59,23 @@ for the full cross-package walkthrough):
 3. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
    with no config change beyond the latent-dim drop.
 4. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
-   `kl_z_warmup_steps`. Caption length is `data.max_text_length` (default `128`);
-   step-level `t_txt` is deprecated and ignored.
+   `kl_z_warmup_steps`, with per-channel free bits (`kl_free_bits`). Caption
+   length is `data.max_text_length` (default `128`); step-level `t_txt` is
+   deprecated and ignored.
+5. **Latent calibration** — flow training needs a VAE whose per-channel latent
+   statistics are calibrated. Pipeline runs do this automatically at the
+   VAE→flow transition; otherwise run `fluxflow-calibrate-latents`. See
+   [Training workflow (v0.10.0)](docs/TRAINING_GUIDE.md#training-workflow-v0100).
 
 ### New config keys (`PipelineStepConfig`)
 
 | Key | Default | Purpose |
 |-----|---------|---------|
-| `kl_z_weight` | `0.001` | Final KL weight on the clean Gaussian latent. |
+| `kl_z_weight` | `1e-5` | Final KL weight on the clean Gaussian latent. |
 | `kl_z_warmup_steps` | `10000` | Cosine warmup length for `kl_z_weight`, in OPTIMIZER steps (scaled by `gradient_accumulation_steps`). |
+| `kl_free_bits` | `0.5` | Per-channel KL floor, nats/element; channels below it get no KL gradient. `0` disables. |
+| `calibration_images` | `2000` | Images encoded to calibrate latent stats when a flow step starts on an uncalibrated VAE. `0` disables (the flow step then fails). |
+| `ctx_shrinkage_*` | — | Removed; accepted but ignored with a warning. |
 | `hf_ramp_steps` | `30000` | HF-loss alpha ramp (0.3 to 1.2) length, micro-batch global steps. |
 | `t_txt` | — | Deprecated, ignored; use `data.max_text_length`. |
 | `null_prompt` | `""` | String encoded into the cached CFG null context. |

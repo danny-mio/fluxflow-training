@@ -5,6 +5,7 @@ A comprehensive guide to configuring and running training for FluxFlow text-to-i
 ## Table of Contents
 
 - [v0.10.0 Loss Schedule](#v0100-loss-schedule)
+- [Training workflow (v0.10.0)](#training-workflow-v0100)
 - [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 - [Overview](#overview)
 - [Quick Start](#quick-start)
@@ -22,10 +23,14 @@ bezier-coupled architecture. The relevant schedules live in
 
 ### KL warmup on the clean Gaussian latent
 
-KL is annealed from `0` to `kl_z_weight` with a cosine ramp over
+KL is annealed from `0` to `kl_z_weight` (pipeline default `1e-5`) with a cosine ramp over
 `kl_z_warmup_steps` OPTIMIZER steps (x `gradient_accumulation_steps` micro-batches; `losses.cosine_warmup_weight`). `VAE` / `vae_loss` is the HF-frequency-weighted recon over the whole batch, including the z-only half (`ctx_dropout_frac`), and rises while `hf_ramp_steps` ramps alpha 0.3 to 1.2; read `L1ctx` (`recon_l1_ctx`) for the plain ctx-path L1. Legacy
 `kl_beta` / `kl_warmup_steps` keys still load and emit a
 `DeprecationWarning`; when both forms appear, the v0.10.0 form wins.
+
+Free bits are per channel: each z channel's KL (mean over batch and spatial dims) is
+floored at `kl_free_bits` nats/element (pipeline default `0.5`, `0` disables); a
+channel below the floor gets no KL gradient.
 
 ### z-vs-ctx balance
 
@@ -54,15 +59,16 @@ training:
     steps:
       - name: vae_warmup
         train_vae: true
-        kl_z_weight: 0.001
+        kl_z_weight: 1e-5
         kl_z_warmup_steps: 10000
+        kl_free_bits: 0.5              # per-channel, nats/element
         lambda_ctx_aux: 0.01           # aux ctx vs z_tokens (VAE only)
         train_latent_cycle: false      # G.E idempotence; see config.example.yaml latent_cycle_*
         # logs: latent_cycle_loss (unweighted), latent_cycle_reject_frac
 
       - name: flow_cfg
         train_diff: true
-        t_txt: 32                      # DistilBERT max length (design §5.7)
+        calibration_images: 2000       # auto-calibrate latent stats if uncalibrated
         null_prompt: ""                # cached empty CFG null context
         cfg_dropout_prob: 0.10
         ctx_loss_weight: 0.5           # ctx-dim vs VAE-dim v-prediction loss
@@ -75,6 +81,38 @@ training:
 
 Datasets accept a matching `max_text_length` (default `128`); see
 `data/datasets.py`.
+
+## Training workflow (v0.10.0)
+
+Train the VAE, calibrate its latent statistics, then train the flow.
+
+1. **Train the VAE** (`train_vae` steps).
+2. **Calibrate.** The flow's noise schedule assumes ~N(0, I) per channel. Calibration
+   encodes training images, measures each latent channel's mean and std, and stores
+   them as `latent_shift` / `latent_scale` on both compressor and expander. Encoding
+   then normalizes and decoding denormalizes, so reconstruction is unchanged.
+   - **In a pipeline**: at the transition to a VAE-frozen flow step, the VAE EMA
+     weights (if the VAE step kept an EMA) replace the live VAE weights. If the VAE is
+     then uncalibrated, the `train_diff` / `train_diff_full` step encodes
+     `calibration_images` images (default `2000`), logs a per-channel table and
+     exports the model checkpoint. Resume repeats the check.
+   - **Standalone** (e.g. the VAE was trained elsewhere):
+
+     ```bash
+     fluxflow-calibrate-latents --checkpoint outputs/run/flxflow_final.safetensors \
+         --config config.yaml --out outputs/run/flxflow_calibrated.safetensors
+     ```
+
+     It uses the config's `default_dataset` (or its first dataset) at its training
+     resolutions. Options: `--num-images` (default `2000`), `--batch-size` (default
+     `8`), `--force` (allow `--out` to equal `--checkpoint`).
+3. **Train the flow** from the calibrated checkpoint. `FlowTrainer` raises
+   `ValueError` on an uncalibrated v0.10.0 VAE, so set `calibration_images: 0` only
+   when the checkpoint is already calibrated.
+
+Automatic calibration only runs on an uncalibrated VAE. After further VAE training,
+recalibrate with `fluxflow-calibrate-latents` and retrain the flow: flow checkpoints are
+tied to the latent statistics they were trained on.
 
 ---
 
@@ -959,7 +997,7 @@ training:
         train_vae: true
         gan_training: false
         lr: 2e-5
-        kl_z_weight: 0.001
+        kl_z_weight: 1e-5
         kl_z_warmup_steps: 10000
         transition_on:
           mode: "loss_threshold"
@@ -974,7 +1012,7 @@ training:
         gan_training: true
         lr: 1e-5
         lambda_adv: 0.9
-        kl_z_weight: 0.001
+        kl_z_weight: 1e-5
         optimization:
           optimizers:
             vae:
