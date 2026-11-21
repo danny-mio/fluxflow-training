@@ -15,6 +15,14 @@ Not yet released — work in progress toward v0.10.0.
   KL is per-element mean vs per-pixel L1, ~48x stronger at f16/16ch). v100 warning now
   fires above 1e-3. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
 
+### Removed
+- **`ctx_shrinkage` loss** (inert: it acted on the input of an affine-free instance norm).
+  Removed `losses.compute_ctx_shrinkage`, the `ctx_zinject_norm` pre-hook and
+  `VAETrainer` `ctx_shrinkage_*` args, the `ctx_shrinkage_loss`/`ctx_shrinkage_alpha`
+  metrics and the `CtxShrink` console column. `ctx_shrinkage_*` step/YAML keys and
+  `--ctx_shrinkage_*` flags are still accepted (flags hidden) but ignored, with a
+  one-time warning.
+
 ### Added
 - **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
   that batch fraction with `use_context=False` (z-only; both halves get recon pressure,

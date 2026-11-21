@@ -139,7 +139,6 @@ def _build(
     downscales: int = 1,
     seed: int = 0,
     train_reconstruction: bool = False,
-    ctx_shrinkage_weight: float = 0.0,
     accum: int = 1,
     **cycle,
 ):
@@ -173,9 +172,6 @@ def _build(
         r1_interval=1000,
         accelerator=_PlainAccelerator(),
         gradient_accumulation_steps=accum,
-        ctx_shrinkage_weight=ctx_shrinkage_weight,
-        ctx_shrinkage_warmup_start_step=0,
-        ctx_shrinkage_warmup_steps=0,
         **cycle,
     )
     return trainer, compressor, expander
@@ -541,22 +537,3 @@ class TestCycleOutsideReconWeighting:
         r_off = t_off._train_generator(imgs, global_step=0)
         r_on = t_on._train_generator(imgs, global_step=0)
         assert r_on["recon"] == pytest.approx(r_off["recon"])
-
-
-class TestCtxShrinkageNotOverwrittenByCycle:
-    @pytest.mark.parametrize("posterior_frac", [0.0, 1.0])
-    def test_shrinkage_loss_identical_with_cycle_on_vs_off(self, posterior_frac):
-        imgs = _imgs(2, seed=3)
-        t_off, _, _ = _build(ctx_shrinkage_weight=0.5)
-        t_on, _, _ = _build(
-            ctx_shrinkage_weight=0.5, latent_cycle_posterior_frac=posterior_frac, **_ON
-        )
-        r_off = t_off._train_generator(imgs, global_step=0)
-        r_on = t_on._train_generator(imgs, global_step=0)
-        assert r_off["ctx_shrinkage_loss"] > 0.0
-        assert r_on["ctx_shrinkage_loss"] == r_off["ctx_shrinkage_loss"]
-
-    def test_capture_re_enabled_after_step(self):
-        trainer, _, _ = _build(ctx_shrinkage_weight=0.5, **_ON)
-        trainer._train_generator(_imgs(), global_step=0)
-        assert trainer._ctx_capture_enabled is True

@@ -27,16 +27,6 @@ KL is annealed from `0` to `kl_z_weight` with a cosine ramp over
 `kl_beta` / `kl_warmup_steps` keys still load and emit a
 `DeprecationWarning`; when both forms appear, the v0.10.0 form wins.
 
-### Delayed ctx shrinkage
-
-A β-VAE-style L2 on the deterministic ctx features
-(`losses.compute_ctx_shrinkage`) is held at `0` until
-`ctx_shrinkage_warmup_start_step` then cosine-ramps to
-`ctx_shrinkage_weight` over `ctx_shrinkage_warmup_steps`
-(`losses.delayed_cosine_warmup_weight`). The VAE trainer registers a forward
-hook on `ctx_zinject_norm` so the pre-attention ctx tensor reaches the
-loss without forcing an extra forward pass.
-
 ### z-vs-ctx balance
 
 The deterministic ctx half can let the decoder ignore z. Two training-only
@@ -66,9 +56,6 @@ training:
         train_vae: true
         kl_z_weight: 0.001
         kl_z_warmup_steps: 10000
-        ctx_shrinkage_weight: 0.001
-        ctx_shrinkage_warmup_start_step: 5000
-        ctx_shrinkage_warmup_steps: 5000
         lambda_ctx_aux: 0.01           # aux ctx vs z_tokens (VAE only)
         train_latent_cycle: false      # G.E idempotence; see config.example.yaml latent_cycle_*
         # logs: latent_cycle_loss (unweighted), latent_cycle_reject_frac

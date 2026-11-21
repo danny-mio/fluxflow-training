@@ -149,9 +149,6 @@ either the whole-encoder key or the split keys, not both.
 kl_z_weight: 0.001          # Final KL weight on the clean Gaussian latent
 kl_z_warmup_steps: 10000  # OPTIMIZER steps (x grad accum internally)
 kl_free_bits: 0.0         # Free bits threshold (nats)
-ctx_shrinkage_weight: 0.001              # β-VAE-style L2 on ctx features
-ctx_shrinkage_warmup_start_step: 5000    # Delay before ctx shrinkage warmup
-ctx_shrinkage_warmup_steps: 5000         # Warmup length once start reached
 lambda_adv: 0.5           # GAN adversarial loss weight
 lambda_lpips: 0.1         # LPIPS perceptual loss weight
 lambda_ctx_aux: 0.01      # Aux stop-grad MSE on ctx vs z_tokens (VAE only)

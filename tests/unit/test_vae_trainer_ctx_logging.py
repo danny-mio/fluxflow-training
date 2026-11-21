@@ -6,12 +6,11 @@ metric that plateaus near 1.0 regardless of optimizer choice is
 (zero gradient path into SPADE/compressor/expander), trained by its own
 separate ``context_predictor_optimizer``. It is now logged as
 ``ctx_probe_alignment`` to make that distinction visible, alongside the two
-gradient-carrying ctx terms (``ctx_shrinkage_loss``, ``ctx_aux_loss``) and the
+gradient-carrying ctx terms (``ctx_aux_loss``) and the
 new SPADE γ/β drift diagnostics.
 
-These tests avoid running a full forward pass through a real compressor (the
-existing test suite for this module does the same — see
-test_vae_trainer_ctx_shrinkage.py's docstring) and instead assert against the
+These tests avoid running a full forward pass through a real compressor and
+instead assert against the
 module source, matching the established pattern used by
 test_vae_trainer_bugs.py for similarly deep-in-a-heavy-method regressions.
 """
@@ -56,16 +55,8 @@ class TestCtxProbeRelabeling:
 
 
 class TestGradientCarryingCtxMetricsSurfaced:
-    """ctx_shrinkage_loss and ctx_aux_loss (gradient-carrying) must reach train_step's
+    """ctx_aux_loss (gradient-carrying) must reach train_step's
     returned dict alongside the probe, so callers can log them side by side."""
-
-    def test_train_step_propagates_ctx_shrinkage_loss(self):
-        source = _source()
-        assert 'losses["ctx_shrinkage_loss"] = gen_losses.get("ctx_shrinkage_loss"' in source
-
-    def test_train_step_propagates_ctx_shrinkage_alpha(self):
-        source = _source()
-        assert 'losses["ctx_shrinkage_alpha"] = gen_losses.get("ctx_shrinkage_alpha"' in source
 
     def test_train_step_already_propagates_ctx_aux_loss(self):
         # Pre-existing wiring; guard against a future regression removing it.
@@ -295,8 +286,6 @@ class TestTrainStepCtxMetricsEndToEnd:
         assert "context_alignment" not in losses
         for key in (
             "ctx_probe_alignment",
-            "ctx_shrinkage_loss",
-            "ctx_shrinkage_alpha",
             "spade_gamma_drift",
             "spade_beta_drift",
         ):

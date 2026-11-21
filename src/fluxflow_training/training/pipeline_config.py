@@ -7,7 +7,7 @@ and transition criteria.
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Iterable, Literal, Optional
 
 from fluxflow.utils import get_logger
 
@@ -215,16 +215,6 @@ class PipelineStepConfig:
     kl_beta: float = 0.0001
     kl_warmup_steps: int = 5000
     kl_free_bits: float = 0.5
-    # v0.10.0: deterministic ctx-features shrinkage (β-VAE-style L2). Per design §5.5
-    # the schedule is delayed until ``ctx_shrinkage_warmup_start_step`` then cosine
-    # warms up to ``ctx_shrinkage_weight`` over ``ctx_shrinkage_warmup_steps``.
-    ctx_shrinkage_weight: float = 0.001
-    ctx_shrinkage_warmup_start_step: int = 5000
-    ctx_shrinkage_warmup_steps: int = 5000
-    # Clamp on mean(ctx_features**2) before scaling by alpha; caps runaway
-    # gradient shock during adversarial spikes. Full rationale in
-    # losses.compute_ctx_shrinkage's docstring.
-    ctx_shrinkage_max_mean_sq: float = 1000.0
     lambda_adv: float = 0.5
     lambda_lpips: float = 0.1
     mse_weight: float = 0.1
@@ -756,8 +746,38 @@ def _warn_deprecated_t_txt(step_dict: dict) -> int:
     return int(step_dict.get("t_txt", 32))
 
 
+_CTX_SHRINKAGE_KEYS = (
+    "ctx_shrinkage_weight",
+    "ctx_shrinkage_warmup_start_step",
+    "ctx_shrinkage_warmup_steps",
+    "ctx_shrinkage_max_mean_sq",
+)
+_CTX_SHRINKAGE_WARNED = False
+
+
+def warn_ctx_shrinkage_removed(keys: Iterable[str] = ()) -> None:
+    """Warn once per process that ``ctx_shrinkage_*`` settings are ignored.
+
+    The loss acted on the input of an affine-free instance norm and was inert,
+    so it was removed. The keys/flags are still accepted for old configs.
+    """
+    global _CTX_SHRINKAGE_WARNED
+    if _CTX_SHRINKAGE_WARNED:
+        return
+    _CTX_SHRINKAGE_WARNED = True
+    logger.warning(
+        "ctx_shrinkage removed (inert: acted before an affine-free instance norm); "
+        "ignoring deprecated setting(s): %s",
+        ", ".join(keys) or "ctx_shrinkage_*",
+    )
+
+
 def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
     """Parse a single pipeline step configuration."""
+    legacy_shrinkage = [k for k in _CTX_SHRINKAGE_KEYS if k in step_dict]
+    if legacy_shrinkage:
+        warn_ctx_shrinkage_removed(legacy_shrinkage)
+
     # Deprecation warnings for removed SPADE fields
     if "train_spade" in step_dict or "spade_training_mode" in step_dict:
         warnings.warn(
@@ -882,10 +902,6 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         kl_z_weight=step_dict.get("kl_z_weight", 1e-5),
         kl_z_warmup_steps=step_dict.get("kl_z_warmup_steps", 10000),
         hf_ramp_steps=step_dict.get("hf_ramp_steps", 30000),
-        ctx_shrinkage_weight=step_dict.get("ctx_shrinkage_weight", 0.001),
-        ctx_shrinkage_warmup_start_step=step_dict.get("ctx_shrinkage_warmup_start_step", 5000),
-        ctx_shrinkage_warmup_steps=step_dict.get("ctx_shrinkage_warmup_steps", 5000),
-        ctx_shrinkage_max_mean_sq=step_dict.get("ctx_shrinkage_max_mean_sq", 1000.0),
         t_txt=_warn_deprecated_t_txt(step_dict),
         null_prompt=step_dict.get("null_prompt", ""),
         kl_free_bits=step_dict.get("kl_free_bits", 0.5),

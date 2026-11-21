@@ -30,22 +30,6 @@ class TestNewConfigDefaults:
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
         assert step.kl_z_warmup_steps == 10000
 
-    def test_ctx_shrinkage_weight_default(self):
-        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.ctx_shrinkage_weight == 0.001
-
-    def test_ctx_shrinkage_warmup_start_step_default(self):
-        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.ctx_shrinkage_warmup_start_step == 5000
-
-    def test_ctx_shrinkage_warmup_steps_default(self):
-        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.ctx_shrinkage_warmup_steps == 5000
-
-    def test_ctx_shrinkage_max_mean_sq_default(self):
-        step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
-        assert step.ctx_shrinkage_max_mean_sq == 1000.0
-
     def test_t_txt_default(self):
         step = PipelineStepConfig(name="s", n_epochs=1, train_vae=True)
         assert step.t_txt == 32
@@ -64,36 +48,6 @@ class TestNewConfigYAMLLoading:
         )
         cfg = parse_pipeline_config(cfg_dict)
         assert cfg.steps[0].kl_z_weight == 0.25
-
-    def test_ctx_shrinkage_keys_load_from_yaml(self):
-        cfg_dict = _wrap_step(
-            {
-                "name": "vae",
-                "n_epochs": 1,
-                "train_vae": True,
-                "ctx_shrinkage_weight": 0.005,
-                "ctx_shrinkage_warmup_start_step": 1000,
-                "ctx_shrinkage_warmup_steps": 2000,
-                "ctx_shrinkage_max_mean_sq": 500.0,
-            }
-        )
-        cfg = parse_pipeline_config(cfg_dict)
-        assert cfg.steps[0].ctx_shrinkage_weight == 0.005
-        assert cfg.steps[0].ctx_shrinkage_warmup_start_step == 1000
-        assert cfg.steps[0].ctx_shrinkage_warmup_steps == 2000
-        assert cfg.steps[0].ctx_shrinkage_max_mean_sq == 500.0
-
-    def test_ctx_shrinkage_max_mean_sq_defaults_when_omitted(self):
-        cfg_dict = _wrap_step(
-            {
-                "name": "vae",
-                "n_epochs": 1,
-                "train_vae": True,
-                "ctx_shrinkage_weight": 0.005,
-            }
-        )
-        cfg = parse_pipeline_config(cfg_dict)
-        assert cfg.steps[0].ctx_shrinkage_max_mean_sq == 1000.0
 
     def test_t_txt_and_null_prompt_load_from_yaml(self):
         cfg_dict = _wrap_step(
@@ -196,19 +150,11 @@ class TestDirectConstructionAcceptsNewKeys:
             train_vae=True,
             kl_z_weight=0.4,
             kl_z_warmup_steps=15000,
-            ctx_shrinkage_weight=0.002,
-            ctx_shrinkage_warmup_start_step=4000,
-            ctx_shrinkage_warmup_steps=6000,
-            ctx_shrinkage_max_mean_sq=250.0,
             t_txt=48,
             null_prompt="nothing",
         )
         assert step.kl_z_weight == 0.4
         assert step.kl_z_warmup_steps == 15000
-        assert step.ctx_shrinkage_weight == 0.002
-        assert step.ctx_shrinkage_warmup_start_step == 4000
-        assert step.ctx_shrinkage_warmup_steps == 6000
-        assert step.ctx_shrinkage_max_mean_sq == 250.0
         assert step.t_txt == 48
         assert step.null_prompt == "nothing"
 

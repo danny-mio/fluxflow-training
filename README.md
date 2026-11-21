@@ -51,17 +51,14 @@ for the full cross-package walkthrough):
    `(text_seq [B, T_txt, D], text_mask [B, T_txt])` from `BertTextEncoder`
    instead of the pooled vector. Legacy v060/v070 checkpoints still load via
    polymorphic dispatch.
-2. **Conditional ctx coupling** — the VAE trainer adds a delayed cosine
-   warmup of `compute_ctx_shrinkage` so the deterministic ctx branch stays
-   informative without collapsing into z.
-3. **Full flow modernization** — 2D RoPE + dual FiLM downstream of the
+2. **Full flow modernization** — 2D RoPE + dual FiLM downstream of the
    v0.10.0 flow processor; no extra config beyond the new keys below.
    See the
    [v0.10.0 flow processor source in fluxflow-core](https://github.com/danny-mio/fluxflow-core/blob/develop/src/fluxflow/models/v100/flow.py)
    for the model-side wiring.
-4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
+3. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
    with no config change beyond the latent-dim drop.
-5. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
+4. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
    `kl_z_warmup_steps`. Caption length is `data.max_text_length` (default `128`);
    step-level `t_txt` is deprecated and ignored.
 
@@ -72,9 +69,6 @@ for the full cross-package walkthrough):
 | `kl_z_weight` | `0.001` | Final KL weight on the clean Gaussian latent. |
 | `kl_z_warmup_steps` | `10000` | Cosine warmup length for `kl_z_weight`, in OPTIMIZER steps (scaled by `gradient_accumulation_steps`). |
 | `hf_ramp_steps` | `30000` | HF-loss alpha ramp (0.3 to 1.2) length, micro-batch global steps. |
-| `ctx_shrinkage_weight` | `0.001` | β-VAE-style L2 on deterministic ctx features. |
-| `ctx_shrinkage_warmup_start_step` | `5000` | Step at which ctx-shrinkage warmup begins. |
-| `ctx_shrinkage_warmup_steps` | `5000` | Warmup length once `start_step` is reached. |
 | `t_txt` | — | Deprecated, ignored; use `data.max_text_length`. |
 | `null_prompt` | `""` | String encoded into the cached CFG null context. |
 | `freeze_context_branch` | `false` | Freeze the ctx encoder branch while leaving z-path trainable. |

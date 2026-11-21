@@ -31,9 +31,6 @@ class TestNewCliFlags:
     def test_defaults(self):
         a = _parse()
         assert a.kl_z_warmup_steps == 10000
-        assert a.ctx_shrinkage_warmup_start_step == 5000
-        assert a.ctx_shrinkage_warmup_steps == 5000
-        assert a.ctx_shrinkage_max_mean_sq == 1000.0
         assert a.gan_start_step == 0
         assert a.gan_warmup_steps == 1000
         assert a.instance_noise_std == 0.05
@@ -66,9 +63,6 @@ class TestLegacyVaeTrainerWiring:
         "kw",
         [
             "kl_z_warmup_steps=args.kl_z_warmup_steps",
-            "ctx_shrinkage_warmup_start_step=args.ctx_shrinkage_warmup_start_step",
-            "ctx_shrinkage_warmup_steps=args.ctx_shrinkage_warmup_steps",
-            "ctx_shrinkage_max_mean_sq=args.ctx_shrinkage_max_mean_sq",
             "gan_start_step=args.gan_start_step",
             "gan_warmup_steps=args.gan_warmup_steps",
             "instance_noise_std=args.instance_noise_std",

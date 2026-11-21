@@ -131,22 +131,6 @@ training:
   # here) to opt out and keep the legacy kl_beta path.
   kl_z_weight: 0.0
 
-  # v0.10.0: L2-like shrinkage pressure on the ctx branch to keep it informative
-  # without collapsing (design §5.5); warms up from ctx_shrinkage_warmup_start_step
-  # over ctx_shrinkage_warmup_steps. Wired into both training drivers. Default 0.0
-  # (this key's default in both --ctx_shrinkage_weight and legacy-script YAML) =
-  # inactive. NOTE: in pipeline-mode configs, PipelineStepConfig's own field default
-  # is 0.001 — omitting this key from a pipeline step's YAML uses 0.001, not 0.0. Set
-  # it explicitly (as here) to opt out and keep it inactive.
-  ctx_shrinkage_weight: 0.0
-
-  # v0.10.0: clamp on mean(ctx_features**2) before scaling by the shrinkage
-  # alpha, capping the gradient shock from transient adversarial spikes in
-  # the ctx branch (see losses.compute_ctx_shrinkage docstring for the
-  # percentile analysis behind this default). PipelineStepConfig's own
-  # default is 1000.0; omitting this key uses that.
-  ctx_shrinkage_max_mean_sq: 1000.0
-
   # v0.10.0: make z carry content, ctx only the residual (training only, v0.10.0 VAE).
   # ctx_dropout_frac: fraction of each batch decoded z-only (use_context=False); 0 = off.
   # ctx_noise_sigma: ctx tokens get noise sigma*std(token); capacity of ctx is
@@ -191,11 +175,6 @@ training:
 
   # HF-loss alpha ramp (0.3 -> 1.2) length in micro-batch global steps.
   hf_ramp_steps: 30000
-
-  # ctx shrinkage schedule (see ctx_shrinkage_weight above): off before the start
-  # step, cosine ramp over warmup_steps. Wired into both drivers.
-  ctx_shrinkage_warmup_start_step: 5000
-  ctx_shrinkage_warmup_steps: 5000
 
   # GAN schedule: adversarial terms are off before gan_start_step, then ramp up over
   # gan_warmup_steps global steps (0 = no ramp). Pipeline steps take the same keys.

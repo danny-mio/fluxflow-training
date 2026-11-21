@@ -93,17 +93,11 @@ class TestVaeTrainerKwargWiring:
         kw = self._kwargs(
             _gan_step(
                 kl_z_warmup_steps=77,
-                ctx_shrinkage_warmup_start_step=11,
-                ctx_shrinkage_warmup_steps=22,
-                ctx_shrinkage_max_mean_sq=33.0,
                 gan_start_step=3,
                 gan_warmup_steps=4,
             )
         )
         assert kw["kl_z_warmup_steps"] == 77
-        assert kw["ctx_shrinkage_warmup_start_step"] == 11
-        assert kw["ctx_shrinkage_warmup_steps"] == 22
-        assert kw["ctx_shrinkage_max_mean_sq"] == 33.0
         assert (kw["gan_start_step"], kw["gan_warmup_steps"]) == (3, 4)
 
     def test_new_defaults(self):

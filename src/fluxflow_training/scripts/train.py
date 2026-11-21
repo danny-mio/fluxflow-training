@@ -59,6 +59,7 @@ from fluxflow_training.training.optimizer_factory import (
     split_weight_decay_groups,
     get_default_optimizer_config,
 )
+from fluxflow_training.training.pipeline_config import warn_ctx_shrinkage_removed
 from fluxflow_training.training.rocm_compat import disable_broken_rocm_sdpa
 from fluxflow_training.training.scheduler_factory import (
     create_scheduler,
@@ -232,13 +233,18 @@ def _sd_weight(state_dict: dict, prefix: str):
     return state_dict[orig_key] if orig_key in state_dict else state_dict[f"{prefix}.weight"]
 
 
+# Removed ctx_shrinkage loss: legacy flags accepted, hidden, ignored (warned once).
+_LEGACY_CTX_SHRINKAGE_FLAGS = (
+    ("--ctx_shrinkage_weight", float),
+    ("--ctx_shrinkage_warmup_start_step", int),
+    ("--ctx_shrinkage_warmup_steps", int),
+    ("--ctx_shrinkage_max_mean_sq", float),
+)
+
 # Plain scalar training.* YAML keys that map 1:1 onto CLI args (CLI wins over YAML).
 _YAML_TRAINING_KEYS = (
     "kl_z_warmup_steps",
     "hf_ramp_steps",
-    "ctx_shrinkage_warmup_start_step",
-    "ctx_shrinkage_warmup_steps",
-    "ctx_shrinkage_max_mean_sq",
     "ctx_dropout_frac",
     "ctx_noise_sigma",
     "gan_start_step",
@@ -1243,10 +1249,6 @@ def train_legacy(args):
             hf_ramp_steps=args.hf_ramp_steps,
             discriminator_update_freq=args.discriminator_update_freq,
             kl_z_weight=args.kl_z_weight,
-            ctx_shrinkage_weight=args.ctx_shrinkage_weight,
-            ctx_shrinkage_warmup_start_step=args.ctx_shrinkage_warmup_start_step,
-            ctx_shrinkage_warmup_steps=args.ctx_shrinkage_warmup_steps,
-            ctx_shrinkage_max_mean_sq=args.ctx_shrinkage_max_mean_sq,
             ctx_dropout_frac=args.ctx_dropout_frac,
             ctx_noise_sigma=args.ctx_noise_sigma,
             gradient_clip_norm=args.initial_clipping_norm,
@@ -2059,13 +2061,6 @@ def parse_args():
         "path (current behavior); values > 0 switch to the cosine-warmup kl_z schedule.",
     )
     parser.add_argument(
-        "--ctx_shrinkage_weight",
-        type=float,
-        default=0.0,
-        help="v0.10.0: L2-like shrinkage pressure on the ctx branch (design §5.5). "
-        "Default 0.0 = inactive (current behavior).",
-    )
-    parser.add_argument(
         "--kl_z_warmup_steps",
         type=int,
         default=10000,
@@ -2077,24 +2072,6 @@ def parse_args():
         type=int,
         default=30000,
         help="Length (micro-batch steps) of the HF-loss alpha ramp 0.3 -> 1.2.",
-    )
-    parser.add_argument(
-        "--ctx_shrinkage_warmup_start_step",
-        type=int,
-        default=5000,
-        help="Step at which ctx shrinkage starts ramping up.",
-    )
-    parser.add_argument(
-        "--ctx_shrinkage_warmup_steps",
-        type=int,
-        default=5000,
-        help="Cosine warmup length of ctx_shrinkage_weight.",
-    )
-    parser.add_argument(
-        "--ctx_shrinkage_max_mean_sq",
-        type=float,
-        default=1000.0,
-        help="Clamp on mean(ctx_features**2) inside the shrinkage term.",
     )
     parser.add_argument(
         "--ctx_dropout_frac",
@@ -2140,6 +2117,10 @@ def parse_args():
     parser.add_argument(
         "--lambda_ctx_aux", type=float, default=0.01, help="Weight of the ctx aux loss"
     )
+
+    # Removed loss; flags stay parseable (hidden) for old command lines, but are ignored.
+    for flag, flag_type in _LEGACY_CTX_SHRINKAGE_FLAGS:
+        parser.add_argument(flag, type=flag_type, default=None, help=argparse.SUPPRESS)
 
     args = parser.parse_args()
 
@@ -2329,11 +2310,6 @@ def parse_args():
                 ]
             if "kl_z_weight" in config["training"] and "kl_z_weight" not in cli_provided:
                 args.kl_z_weight = config["training"]["kl_z_weight"]
-            if (
-                "ctx_shrinkage_weight" in config["training"]
-                and "ctx_shrinkage_weight" not in cli_provided
-            ):
-                args.ctx_shrinkage_weight = config["training"]["ctx_shrinkage_weight"]
             for key in _YAML_TRAINING_KEYS:
                 if key in config["training"] and key not in cli_provided:
                     setattr(args, key, config["training"][key])
@@ -2381,6 +2357,20 @@ def parse_args():
         if "model_checkpoint" in config and "model_checkpoint" not in cli_provided:
             args.model_checkpoint = config["model_checkpoint"]
 
+    legacy = [
+        flag for flag, _ in _LEGACY_CTX_SHRINKAGE_FLAGS if getattr(args, flag[2:]) is not None
+    ]
+    legacy += (
+        [
+            f"training.{flag[2:]}"
+            for flag, _ in _LEGACY_CTX_SHRINKAGE_FLAGS
+            if flag[2:] in (config.get("training") or {})
+        ]
+        if args.config
+        else []
+    )
+    if legacy:
+        warn_ctx_shrinkage_removed(legacy)
     return args
 
 

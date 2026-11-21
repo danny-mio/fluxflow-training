@@ -1221,17 +1221,11 @@ class TrainingPipelineOrchestrator:
                 ctx_input_dim=_ctx_input_dim,
                 # Additive opt-in efficiency knob; default 1 preserves current behavior.
                 discriminator_update_freq=getattr(step, "discriminator_update_freq", 1),
-                # v0.10.0 (design §5.5): kl_z_weight / ctx_shrinkage_weight. Effective
-                # default comes from PipelineStepConfig (0.5 / 0.001 per design doc);
+                # v0.10.0 (design §5.5): kl_z_weight. Effective default comes from
+                # PipelineStepConfig;
                 # the getattr fallback here is VAETrainer's own inert default (0.0),
                 # used only if ``step`` is missing the attribute entirely.
                 kl_z_weight=getattr(step, "kl_z_weight", 0.0),
-                ctx_shrinkage_weight=getattr(step, "ctx_shrinkage_weight", 0.0),
-                ctx_shrinkage_warmup_start_step=getattr(
-                    step, "ctx_shrinkage_warmup_start_step", 5000
-                ),
-                ctx_shrinkage_warmup_steps=getattr(step, "ctx_shrinkage_warmup_steps", 5000),
-                ctx_shrinkage_max_mean_sq=getattr(step, "ctx_shrinkage_max_mean_sq", 1000.0),
                 gradient_clip_norm=args.initial_clipping_norm,
                 accelerator=self.accelerator,
                 disc_logit_diagnostic_interval=getattr(step, "disc_logit_diagnostic_interval", 0),
@@ -1767,17 +1761,15 @@ class TrainingPipelineOrchestrator:
                 # NOTE: this is the FLOW trainer's context-dim v-prediction loss
                 # (flow_losses["ctx_loss"], see flow_trainer.py), logged below as
                 # "Ctx". It is unrelated to the VAE trainer's ctx_probe_alignment /
-                # ctx_shrinkage_loss / ctx_aux_loss metrics logged as "CtxProbe" /
-                # "CtxShrink" / "CtxAux" — do not confuse the two "ctx" families.
+                # ctx_aux_loss metrics logged as "CtxProbe" /
+                # "CtxAux" — do not confuse the two "ctx" families.
                 ctx_errors = FloatBuffer(max(args.log_interval * 2, 10))  # context dim loss (flow)
                 # VAE trainer's ctx-related diagnostics (see vae_trainer.py train_step):
                 # ctx_probe_errors: context_alignment_loss, a diagnostic probe with
                 #   both inputs detached -> zero gradient into SPADE/compressor/expander.
                 #   Its ~1.0 plateau is the MSE "predict the mean" floor, not a training signal.
                 ctx_probe_errors = FloatBuffer(max(args.log_interval * 2, 10))
-                # ctx_shrinkage_errors / ctx_aux_errors: gradient-carrying ctx terms
-                #   (active only when their respective weights are > 0).
-                ctx_shrinkage_errors = FloatBuffer(max(args.log_interval * 2, 10))
+                # ctx_aux_errors: gradient-carrying ctx term (active only when its weight > 0).
                 ctx_aux_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 latent_cycle_errors = FloatBuffer(max(args.log_interval * 2, 10))
                 # Plain L1 of ctx-decoded / z-only halves (z-only absent when frac=0).
@@ -1862,8 +1854,6 @@ class TrainingPipelineOrchestrator:
                             # and SPADE drift if available.
                             if "ctx_probe_alignment" in vae_losses:
                                 ctx_probe_errors.add_item(vae_losses["ctx_probe_alignment"])
-                            if "ctx_shrinkage_loss" in vae_losses:
-                                ctx_shrinkage_errors.add_item(vae_losses["ctx_shrinkage_loss"])
                             if "ctx_aux_loss" in vae_losses:
                                 ctx_aux_errors.add_item(vae_losses["ctx_aux_loss"])
                             if "recon_l1_ctx" in vae_losses:
@@ -1987,9 +1977,7 @@ class TrainingPipelineOrchestrator:
                             # plateaus near 1.0 by construction, see vae_trainer.py comments.
                             if len(ctx_probe_errors._items) > 0:
                                 log_msg += f" | CtxProbe: {ctx_probe_errors.average:.4f}"
-                            # Gradient-carrying ctx terms (0 unless their weights are wired > 0).
-                            if len(ctx_shrinkage_errors._items) > 0:
-                                log_msg += f" | CtxShrink: {ctx_shrinkage_errors.average:.4f}"
+                            # Gradient-carrying ctx term (0 unless its weight is wired > 0).
                             if len(ctx_aux_errors._items) > 0:
                                 log_msg += f" | CtxAux: {ctx_aux_errors.average:.4f}"
                             if len(recon_l1_zonly_errors._items) > 0:
@@ -2008,7 +1996,7 @@ class TrainingPipelineOrchestrator:
                         if step.train_diff or step.train_diff_full:
                             log_msg += f" | Flow: {flow_errors.average:.4f}"
                             # Flow's context-dim v-prediction loss — unrelated to the VAE
-                            # CtxProbe/CtxShrink/CtxAux metrics above (see buffer comment).
+                            # CtxProbe/CtxAux metrics above (see buffer comment).
                             if len(ctx_errors._items) > 0:
                                 log_msg += f" | Ctx: {ctx_errors.average:.4f}"
                             if len(update_ratio_errors._items) > 0:
@@ -2044,8 +2032,6 @@ class TrainingPipelineOrchestrator:
                                 metrics["coarseness_loss"] = coarseness_errors.average
                             if len(ctx_probe_errors._items) > 0:
                                 metrics["ctx_probe_alignment"] = ctx_probe_errors.average
-                            if len(ctx_shrinkage_errors._items) > 0:
-                                metrics["ctx_shrinkage_loss"] = ctx_shrinkage_errors.average
                             if len(ctx_aux_errors._items) > 0:
                                 metrics["ctx_aux_loss"] = ctx_aux_errors.average
                             if len(recon_l1_ctx_errors._items) > 0:

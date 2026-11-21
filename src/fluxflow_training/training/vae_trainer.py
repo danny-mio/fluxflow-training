@@ -5,9 +5,9 @@ Handles VAE (compressor + expander) training with optional GAN discriminator.
 
 import json
 import math
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Iterator, Optional, Union, cast
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 import torch
@@ -24,7 +24,6 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, _LRScheduler
 
 from .losses import (
     compute_bezier_monotonicity_reg,
-    compute_ctx_shrinkage,
     cosine_warmup_weight,
     d_hinge_loss,
     delayed_cosine_warmup_weight,
@@ -220,15 +219,6 @@ class VAETrainer:
         latent_cycle_posterior_frac: float = 0.0,
         latent_cycle_reject_range: float = 1.05,
         latent_cycle_reject_frac: float = 0.01,
-        # v0.10.0: ctx-features L2 shrinkage (design §5.5). Active only when
-        # ``ctx_shrinkage_weight > 0`` AND the underlying compressor exposes the
-        # ``ctx_zinject_norm`` submodule (FluxCompressor_v100). The hook captures
-        # the pre-norm ctx tensor (ctx_zinject_norm's input) and feeds it to
-        # compute_ctx_shrinkage.
-        ctx_shrinkage_weight: float = 0.0,
-        ctx_shrinkage_warmup_start_step: int = 5000,
-        ctx_shrinkage_warmup_steps: int = 5000,
-        ctx_shrinkage_max_mean_sq: float = 1000.0,
         # v0.10.0: KL_z asymptotic weight and cosine warmup length. Default 0.0
         # so legacy callers using kl_beta / kl_warmup_steps stay on the old path.
         # When > 0 the trainer uses the wide-range schedule per design §5.5.
@@ -333,8 +323,6 @@ class VAETrainer:
             latent_cycle_reject_range: |x| threshold of the off-manifold guard.
             latent_cycle_reject_frac: Drop a sample when more than this fraction of its
                 pixels exceed reject_range. No clamping anywhere.
-            ctx_shrinkage_max_mean_sq: Clamp on mean(ctx_features**2) before scaling by
-                the shrinkage alpha (see losses.compute_ctx_shrinkage). Default 1000.0.
             accelerator: Accelerate accelerator instance
             discriminator_update_freq: Run discriminator forward+backward every N
                 global steps (default 1 = every step, current behavior). Values > 1
@@ -369,23 +357,11 @@ class VAETrainer:
         # v0.10.0 KL_z schedule (used when kl_z_weight > 0; else legacy kl_beta path)
         self.kl_z_weight = kl_z_weight
         self.kl_z_warmup_steps = kl_z_warmup_steps
-        # v0.10.0 ctx shrinkage schedule
-        self.ctx_shrinkage_weight = ctx_shrinkage_weight
-        self.ctx_shrinkage_warmup_start_step = ctx_shrinkage_warmup_start_step
-        self.ctx_shrinkage_warmup_steps = ctx_shrinkage_warmup_steps
-        self.ctx_shrinkage_max_mean_sq = ctx_shrinkage_max_mean_sq
         self.ctx_dropout_frac = ctx_dropout_frac
         self.ctx_noise_sigma = ctx_noise_sigma
         # Dedicated CPU generator: B==1 z-only draws are reproducible and leave the
         # global RNG (data order, dropout, noise) untouched.
         self._ctx_drop_gen = torch.Generator().manual_seed(_CTX_DROP_SEED)
-        # Hook state: last captured ctx_features (pre-norm, pre-attention).
-        self._ctx_features_cache: Optional[torch.Tensor] = None
-        self._ctx_hook_handle: Optional[torch.utils.hooks.RemovableHandle] = None
-        # Cleared while secondary compressor forwards run so they can't overwrite
-        # the real-image ctx features (see _suspend_ctx_capture).
-        self._ctx_capture_enabled = True
-
         # GAN settings
         self.use_gan = use_gan
         if use_gan:
@@ -555,61 +531,6 @@ class VAETrainer:
         )
 
         self._prepare_context_components()
-
-        # Install forward pre-hook on ctx_zinject_norm to capture the pre-norm
-        # ctx features (the input to compute_ctx_shrinkage) without forcing a
-        # signature change on the compressor. Only the v0.10.0 compressor has
-        # this submodule, so the hook is installed conditionally.
-        self._install_ctx_shrinkage_hook()
-
-    def _install_ctx_shrinkage_hook(self) -> None:
-        """Install a forward pre-hook capturing the ctx_zinject_norm input.
-
-        ``ctx_zinject_norm`` is a ``GroupNorm(affine=False)``, so its *output*
-        is forced to ~unit variance by construction - a shrinkage loss on the
-        output would be a near-zero-gradient no-op. The pre-hook instead
-        captures the unconstrained pre-norm ``cx`` tensor (the real input to
-        ``ctx_zinject_norm`` inside ``FluxCompressor_v100.forward``), so the
-        shrinkage term has real gradient to act on.
-
-        The hook stores the tensor on ``self._ctx_features_cache`` each forward
-        pass (unless capture is suspended, see ``_suspend_ctx_capture``).
-        Subsequent ``_train_generator`` reads and clears the cache so the
-        shrinkage term operates on the real-image ctx features. No-op when the
-        compressor doesn't expose ``ctx_zinject_norm``.
-        """
-        if self.ctx_shrinkage_weight <= 0:
-            return
-        unwrapped = self._get_unwrapped_model(self.compressor)
-        ctx_norm = getattr(unwrapped, "ctx_zinject_norm", None)
-        if ctx_norm is None:
-            logger.warning(
-                "compressor has no 'ctx_zinject_norm' submodule; ctx_shrinkage "
-                "loss will be inactive even though ctx_shrinkage_weight > 0."
-            )
-            return
-
-        def _hook(_module, args):
-            if self._ctx_capture_enabled:
-                self._ctx_features_cache = args[0]
-
-        self._ctx_hook_handle = ctx_norm.register_forward_pre_hook(_hook)
-
-    @contextmanager
-    def _suspend_ctx_capture(self) -> Iterator[None]:
-        """Disable ctx-feature capture; wrap every secondary compressor forward."""
-        prev = self._ctx_capture_enabled
-        self._ctx_capture_enabled = False
-        try:
-            yield
-        finally:
-            self._ctx_capture_enabled = prev
-
-    def remove_ctx_shrinkage_hook(self) -> None:
-        """Detach the ctx shrinkage forward hook if installed."""
-        if self._ctx_hook_handle is not None:
-            self._ctx_hook_handle.remove()
-            self._ctx_hook_handle = None
 
     def _autocast(self):
         """Mixed-precision context for the expensive forward passes (compressor,
@@ -1162,10 +1083,6 @@ class VAETrainer:
         # v0.10.0: latent cycle loss (unweighted) and off-manifold reject fraction
         losses["latent_cycle_loss"] = gen_losses.get("latent_cycle_loss", 0.0)
         losses["latent_cycle_reject_frac"] = gen_losses.get("latent_cycle_reject_frac", 0.0)
-        # v0.10.0: gradient-carrying ctx-shrinkage term (see ctx_shrinkage_weight).
-        # Reads 0.0 unless the caller explicitly wires a nonzero weight in.
-        losses["ctx_shrinkage_loss"] = gen_losses.get("ctx_shrinkage_loss", 0.0)
-        losses["ctx_shrinkage_alpha"] = gen_losses.get("ctx_shrinkage_alpha", 0.0)
         # Diagnostic probe only — no gradient into SPADE/compressor/expander. See
         # the comment on context_alignment_loss in _train_generator for why this
         # plateaus near 1.0 regardless of optimizer/training quality.
@@ -1426,8 +1343,7 @@ class VAETrainer:
             if n_rec:
                 parts.append(out_imgs_rec[:n_rec, :, rows, cols].detach())
             if n_post:
-                with self._suspend_ctx_capture():
-                    packed_b = self.compressor(real_imgs[n_rec:n, :, rows, cols], training=True)[0]
+                packed_b = self.compressor(real_imgs[n_rec:n, :, rows, cols], training=True)[0]
                 parts.append(self.expander(packed_b, use_context=spade))
         x_s = torch.cat([p.float() for p in parts])
 
@@ -1437,7 +1353,7 @@ class VAETrainer:
             return zero, reject_frac
         x_s = x_s[keep]
 
-        with self._autocast(), self._suspend_ctx_capture():
+        with self._autocast():
             packed_cycle = self.compressor(x_s, training=True)[0]
         with self._autocast():
             x_hat = self._frozen_expander_forward(packed_cycle, spade)
@@ -1893,46 +1809,6 @@ class VAETrainer:
         if latent_cycle_lambda > 0:
             total_loss = total_loss + latent_cycle_lambda * latent_cycle_loss
 
-        # v0.10.0: ctx-features L2 shrinkage (design §5.5). The forward hook on
-        # ctx_zinject_norm populates _ctx_features_cache; if no v0.10.0 compressor
-        # is in play or the weight is 0 we just contribute zero.
-        ctx_shrinkage_alpha = delayed_cosine_warmup_weight(
-            global_step,
-            self.ctx_shrinkage_warmup_start_step,
-            self.ctx_shrinkage_warmup_steps,
-            self.ctx_shrinkage_weight,
-        )
-        if ctx_shrinkage_alpha > 0 and self._ctx_hook_handle is not None:
-            # The pre-hook is installed and the schedule says the term should be
-            # active: a missing/malformed cache here means the pre-hook silently
-            # stopped firing (e.g. a future refactor of
-            # FluxCompressor_v100.forward's ctx_zinject_norm(cx) call convention)
-            # rather than an intentional no-op. Surface that loudly instead of
-            # silently reverting to a dead-gradient no-op.
-            assert (
-                isinstance(self._ctx_features_cache, torch.Tensor)
-                and self._ctx_features_cache.dim() == 4
-            ), (
-                "ctx_shrinkage hook is installed and alpha="
-                f"{ctx_shrinkage_alpha} > 0 but _ctx_features_cache is "
-                f"{self._ctx_features_cache!r} (expected a 4D pre-norm ctx "
-                "tensor). The ctx_zinject_norm pre-hook likely stopped firing - "
-                "check FluxCompressor_v100.forward's ctx_zinject_norm(cx) call."
-            )
-        if self._ctx_features_cache is not None and ctx_shrinkage_alpha > 0:
-            ctx_shrinkage_loss = compute_ctx_shrinkage(
-                self._ctx_features_cache,
-                ctx_shrinkage_alpha,
-                max_mean_sq=self.ctx_shrinkage_max_mean_sq,
-            )
-            total_loss = total_loss + ctx_shrinkage_loss
-        else:
-            ctx_shrinkage_loss = torch.tensor(0.0, device=real_imgs.device)
-        # Clear cache so a stale tensor can't be reused in a subsequent step
-        # that skips the compressor forward (defensive — train_step always
-        # runs the compressor, but the cache lifecycle stays explicit).
-        self._ctx_features_cache = None
-
         # Add context alignment loss (Step 2)
         total_loss = total_loss + 0.1 * context_alignment_loss
 
@@ -2009,9 +1885,6 @@ class VAETrainer:
             # v0.10.0: latent cycle loss (unweighted) + reject fraction
             "latent_cycle_loss": float(latent_cycle_loss.detach().item()),
             "latent_cycle_reject_frac": float(latent_cycle_reject_frac),
-            # v0.10.0: ctx-features L2 shrinkage (design §5.5)
-            "ctx_shrinkage_loss": float(ctx_shrinkage_loss.detach().item()),
-            "ctx_shrinkage_alpha": float(ctx_shrinkage_alpha),
             # Diagnostic probe, no gradient into SPADE/compressor/expander.
             "ctx_probe_alignment": float(context_alignment_loss.detach().item()),
             "color_stats": float(color_stats_loss.detach().item()),
