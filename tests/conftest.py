@@ -328,3 +328,15 @@ def assert_finite():
         )
 
     return _assert
+
+
+# ============================================================================
+# v0.10.0 latent statistics
+# ============================================================================
+
+
+def mark_latents_calibrated(*modules: torch.nn.Module) -> None:
+    """Give v100 compressor/expander non-identity latent stats (FlowTrainer guard)."""
+    for module in modules:
+        channels = module.latent_shift.numel()
+        module.set_latent_stats(torch.zeros(channels), torch.full((channels,), 1.0001))

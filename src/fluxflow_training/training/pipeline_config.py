@@ -232,6 +232,10 @@ class PipelineStepConfig:
     # v0.10.0: relative weight of context-dim v-prediction loss vs VAE-dim loss in FlowTrainer.
     # Default 0.5 per plan §3.8.11 DP-1 decision from user.
     ctx_loss_weight: float = 0.5
+    # v0.10.0: images used to calibrate VAE latent stats (latent_shift/latent_scale) when
+    # a train_diff/train_diff_full step starts on an uncalibrated VAE. 0 disables (then
+    # FlowTrainer refuses the uncalibrated VAE; run fluxflow-calibrate-latents instead).
+    calibration_images: int = 2000
 
     # v0.10.0: freeze context branch independently from the rest of the compressor.
     # When True, ctx_encoder_first_step / ctx_encoder_z / ctx_proj / ctx_token_attn /
@@ -491,6 +495,7 @@ class PipelineConfigValidator:
         "kl_z_warmup_steps",
         "hf_ramp_steps",
         "instance_noise_std",
+        "calibration_images",
     )
 
     def _validate_non_negative(
@@ -919,6 +924,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         discriminator_use_spectral_norm=step_dict.get("discriminator_use_spectral_norm"),
         lambda_ctx_aux=step_dict.get("lambda_ctx_aux", 0.01),
         ctx_loss_weight=step_dict.get("ctx_loss_weight", 0.5),
+        calibration_images=int(step_dict.get("calibration_images", 2000)),
         freeze_context_branch=step_dict.get("freeze_context_branch", False),
         disc_logit_diagnostic_interval=step_dict.get("disc_logit_diagnostic_interval", 0),
         optimization=optimization,

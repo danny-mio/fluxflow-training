@@ -1743,7 +1743,11 @@ def validate_and_show_plan(config, args):
     print("=" * 80 + "\n")
 
 
-def parse_args():
+def parse_args(argv: list[str] | None = None):
+    """Parse ``fluxflow-train`` arguments (``argv`` defaults to ``sys.argv[1:]``).
+
+    YAML values from ``--config`` fill every option not given on the command line.
+    """
     parser = argparse.ArgumentParser(description="Train FluxFlow text-to-image model")
 
     # Config file
@@ -2122,7 +2126,8 @@ def parse_args():
     for flag, flag_type in _LEGACY_CTX_SHRINKAGE_FLAGS:
         parser.add_argument(flag, type=flag_type, default=None, help=argparse.SUPPRESS)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    cli_tokens = sys.argv if argv is None else argv
 
     # Load config file if provided
     if args.config:
@@ -2134,7 +2139,7 @@ def parse_args():
         # Map config to args (config overrides defaults, but CLI args override config)
         cli_provided = set()
         for action in parser._actions:
-            if any(option in sys.argv for option in action.option_strings):
+            if any(option in cli_tokens for option in action.option_strings):
                 cli_provided.add(action.dest)
 
         # Apply config values if not provided via CLI

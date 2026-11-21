@@ -69,6 +69,7 @@ dev = [
 [project.scripts]
 fluxflow-train = "fluxflow_training.scripts.train:main"
 fluxflow-generate = "fluxflow_training.scripts.generate:main"
+fluxflow-calibrate-latents = "fluxflow_training.scripts.calibrate_latents:main"
 
 [project.urls]
 Homepage = "https://github.com/danny-mio/fluxflow-training"

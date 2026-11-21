@@ -186,7 +186,16 @@ class FlowTrainer:
                              Increase if context dims are under-trained; decrease if they
                              dominate early and destabilise the VAE loss.
             accelerator: Accelerate accelerator instance
+
+        Raises:
+            ValueError: if ``compressor`` is a v0.10.0 compressor whose latent stats are
+                still the identity default (legacy compressors without the attribute pass).
         """
+        if getattr(compressor, "latent_stats_calibrated", True) is False:
+            raise ValueError(
+                "VAE latent stats not calibrated: run fluxflow-calibrate-latents on this "
+                "checkpoint before flow training"
+            )
         self.flow_processor = flow_processor
         self.text_encoder = text_encoder
         self.compressor = compressor
@@ -417,18 +426,17 @@ class FlowTrainer:
 
         if context_dims > 0:
             # Split v_target and prediction into VAE and context groups, normalise each
-            # separately to equalise loss scale across the two very different dynamic ranges.
-            # VAE dims (~unit Gaussian) and context dims (~0.1-0.5 range after mean-pooling)
-            # would otherwise produce a ~10x loss imbalance under a shared normalisation.
+            # separately. After latent calibration (fluxflow-calibrate-latents) both groups
+            # are ~unit variance per channel; the per-group normalisation is kept as a
+            # safety net against residual scale differences between the groups.
             vae_v_target = v_target[:, :, :vae_dims].detach()  # [B, T, vae_dims]
             ctx_v_target = v_target[:, :, vae_dims:].detach()  # [B, T, context_dims]
 
             pred_vae = pred_seq[:, :, :vae_dims].contiguous().float()
             pred_ctx = pred_seq[:, :, vae_dims:].contiguous().float()
 
-            # Normalise by the v-target's own std so the scale is consistent across
-            # all timesteps.  Using clean-x0 std (ctx ~0.1-0.5) would over-weight
-            # ctx_loss ~11x at high-noise timesteps where v_target ≈ noise (std ~1).
+            # Normalise by the v-target's own std (not clean-x0 std) so the scale is
+            # consistent across all timesteps.
             vae_std = vae_v_target.std() + 1e-8
             ctx_std = ctx_v_target.std() + 1e-8
 

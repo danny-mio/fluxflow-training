@@ -41,7 +41,14 @@ class FloatBuffer:
 
 
 class EMA:
-    """Exponential Moving Average for model parameters."""
+    """Exponential Moving Average for model parameters.
+
+    Only parameters are averaged. Buffers (e.g. v0.10.0 ``latent_shift`` /
+    ``latent_scale``, set once by calibration) are mirrored from the live model on
+    ``update`` and are never overwritten by stale shadow copies on ``apply_shadow`` /
+    ``copy_to``: the live model's buffers are authoritative. The shadow keeps the full
+    ``state_dict`` key set so checkpoint layout is unchanged.
+    """
 
     def __init__(
         self,
@@ -63,21 +70,37 @@ class EMA:
         }
         self._original: Optional[Dict[str, torch.Tensor]] = None
 
+    def _buffer_keys(self) -> set[str]:
+        """State-dict keys of the tracked model that are buffers (not parameters)."""
+        return {n for n, _ in self.model.named_buffers(remove_duplicate=False)}
+
+    def _shadow_with_live_buffers(self) -> Dict[str, torch.Tensor]:
+        """Shadow parameters + the live model's current buffers."""
+        live = self.model.state_dict()
+        merged = dict(self.shadow)
+        for k in self._buffer_keys():
+            if k in live:
+                merged[k] = live[k]
+        return merged
+
     def update(self) -> None:
-        """Update shadow parameters with current model state."""
+        """Update shadow parameters with current model state (buffers are copied)."""
+        buffer_keys = self._buffer_keys()
         with torch.no_grad():
             for name, param in self.model.state_dict().items():
-                if param.dtype.is_floating_point:
+                if name in buffer_keys:
+                    self.shadow[name] = param.detach().clone().to(self.device)
+                elif param.dtype.is_floating_point:
                     self.shadow[name].mul_(self.decay).add_(
                         param.data.to(self.device), alpha=1.0 - self.decay
                     )
 
     def apply_shadow(self) -> None:
-        """Replace model parameters with EMA shadow (for inference/eval)."""
+        """Replace model parameters with EMA shadow (for inference/eval); buffers stay live."""
         self._original = {
             k: v.detach().clone().to(self.device) for k, v in self.model.state_dict().items()
         }
-        self.model.load_state_dict(self.shadow)
+        self.model.load_state_dict(self._shadow_with_live_buffers())
 
     def restore(self) -> None:
         """Restore original model parameters (after apply_shadow)."""
@@ -96,12 +119,12 @@ class EMA:
 
     def copy_to(self, model: nn.Module) -> None:
         """
-        Copy EMA shadow parameters to another model.
+        Copy EMA shadow parameters (plus the tracked model's live buffers) to another model.
 
         Args:
             model: Target model to copy EMA parameters to
         """
-        model.load_state_dict(self.shadow)
+        model.load_state_dict(self._shadow_with_live_buffers())
 
     def state_dict(self) -> Dict[str, Any]:
         """

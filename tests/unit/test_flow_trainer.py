@@ -586,3 +586,51 @@ class TestUpdateRatioFlowDiagnostic:
             )
         # NaN-skip path returns the early minimal dict — no update_ratio_flow key.
         assert metrics.get("update_ratio_flow", 0.0) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# v0.10.0: FlowTrainer refuses an uncalibrated VAE
+# ---------------------------------------------------------------------------
+
+
+class TestUncalibratedVaeGuard:
+    @staticmethod
+    def _build(compressor):
+        from fluxflow_training.training.flow_trainer import FlowTrainer
+
+        flow = _MinimalFlow(16)
+        optimizer = AdamW(flow.parameters(), lr=1e-4)
+        return FlowTrainer(
+            flow_processor=flow,
+            text_encoder=nn.Linear(2, 2),
+            compressor=compressor,
+            optimizer=optimizer,
+            scheduler=ConstantLR(optimizer),
+            num_train_timesteps=100,
+            accelerator=MagicMock(),
+        )
+
+    @staticmethod
+    def _v100():
+        from fluxflow.models.v100.vae import FluxCompressor_v100
+
+        return FluxCompressor_v100(d_model=8, downscales=2, use_gradient_checkpointing=False)
+
+    def test_uncalibrated_v100_raises(self):
+        with pytest.raises(ValueError, match="not calibrated") as exc:
+            self._build(self._v100())
+        assert "fluxflow-calibrate-latents" in str(exc.value)
+
+    def test_calibrated_v100_constructs(self):
+        from tests.conftest import mark_latents_calibrated
+
+        comp = self._v100()
+        mark_latents_calibrated(comp)
+        assert self._build(comp).compressor is comp
+
+    def test_legacy_compressor_without_attribute_passes(self):
+        class _Legacy(nn.Module):
+            pass
+
+        assert not hasattr(_Legacy(), "latent_stats_calibrated")
+        self._build(_Legacy())

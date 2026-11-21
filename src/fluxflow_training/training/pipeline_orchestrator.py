@@ -16,6 +16,12 @@ import torch.nn as nn
 from fluxflow.utils import get_logger, safe_vae_sample, save_sample_images
 
 from .checkpoint_manager import CheckpointManager
+from .latent_calibration import (
+    calibrate_models,
+    context_dims_of,
+    format_latent_stats_table,
+    has_latent_stats,
+)
 from .optimizer_factory import get_default_optimizer_config
 from .pipeline_config import PipelineConfig, PipelineStepConfig
 from .utils import (
@@ -1329,6 +1335,84 @@ class TrainingPipelineOrchestrator:
 
         return trainers
 
+    def _maybe_calibrate_latents(
+        self,
+        step: PipelineStepConfig,
+        models: dict,
+        dataloader: Any,
+        batch_size: int,
+        sampler: Any = None,
+    ) -> bool:
+        """Calibrate VAE latent stats when a flow step starts on an uncalibrated VAE.
+
+        Runs only for ``train_diff`` / ``train_diff_full`` steps whose compressor exposes
+        ``latent_stats_calibrated`` (v0.10.0) and is uncalibrated, and only when
+        ``step.calibration_images > 0`` (0 leaves the VAE uncalibrated so FlowTrainer's
+        guard raises). Encodes ``ceil(calibration_images / batch_size)`` batches (every
+        resolution tensor) under no_grad + autocast, sets the stats on compressor and
+        expander, logs the per-channel table, and immediately exports the model checkpoint
+        (training state is left untouched so resume position/optimizer states are kept).
+        A stateful ``sampler`` (``state_dict``/``load_state_dict``) is restored afterwards
+        so calibration does not consume the step's training batches.
+
+        Returns:
+            True if calibration ran.
+        """
+        if not (step.train_diff or step.train_diff_full):
+            return False
+        compressor = models.get("compressor")
+        if compressor is None or not has_latent_stats(compressor):
+            return False
+        if not hasattr(compressor, "latent_stats_calibrated"):
+            return False
+        if compressor.latent_stats_calibrated:
+            logger.info("latent stats already calibrated")
+            return False
+        n_images = getattr(step, "calibration_images", 2000)
+        if n_images <= 0:
+            logger.warning(
+                "VAE latent stats uncalibrated and calibration_images=0: "
+                "auto-calibration disabled (FlowTrainer will refuse to train)"
+            )
+            return False
+
+        max_batches = math.ceil(n_images / max(int(batch_size), 1))
+        logger.info(
+            f"Calibrating VAE latent stats on {max_batches} batches "
+            f"(calibration_images={n_images}, batch_size={batch_size})..."
+        )
+        sampler_state = None
+        if sampler is not None and hasattr(sampler, "state_dict"):
+            sampler_state = sampler.state_dict()
+
+        def _autocast():
+            return self.accelerator.autocast() if self.accelerator is not None else nullcontext()
+
+        try:
+            mean, std = calibrate_models(
+                models,
+                (imgs for imgs, _ in dataloader),
+                max_batches,
+                autocast=_autocast,
+            )
+        finally:
+            if sampler_state is not None and hasattr(sampler, "load_state_dict"):
+                sampler.load_state_dict(sampler_state)
+
+        logger.info(
+            "VAE latent stats calibrated (raw per-channel mean/std):\n"
+            + format_latent_stats_table(mean, std, context_dims_of(compressor))
+        )
+        # Persist immediately so the stats survive a crash before the next checkpoint.
+        self.checkpoint_manager.save_models(
+            diffuser=models["diffuser"],
+            text_encoder=models["text_encoder"],
+            discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
+            model_config=models.get("model_config", {}),
+        )
+        logger.info(f"Calibrated checkpoint saved to {self.checkpoint_manager.model_path}")
+        return True
+
     def _save_checkpoint(
         self,
         step_idx,
@@ -1589,6 +1673,7 @@ class TrainingPipelineOrchestrator:
             dataset_size = len(dataloader.dataset)
 
         batches_per_epoch = compute_batches_per_epoch(dataset_size, args.batch_size)
+        current_batch_size = args.batch_size
 
         # Generate initial samples (before training starts)
         if start_step == 0 and start_epoch == 0:
@@ -1628,8 +1713,9 @@ class TrainingPipelineOrchestrator:
                         dataloader, sampler, dataset_size = self._create_dataloader_for_dataset(
                             dataset_config, current_dataset_name, args, config
                         )
+                        current_batch_size = resolve_dataset_batch_size(dataset_config, args)
                         batches_per_epoch = compute_batches_per_epoch(
-                            dataset_size, resolve_dataset_batch_size(dataset_config, args)
+                            dataset_size, current_batch_size
                         )
                         logger.info(
                             f"Dataset size: {dataset_size:,} samples, {batches_per_epoch} batches/epoch"
@@ -1657,6 +1743,12 @@ class TrainingPipelineOrchestrator:
                 step.n_epochs, batches_per_epoch, step.max_steps
             )
             schedulers = self._create_step_schedulers(step, optimizers, total_steps)
+
+            # v0.10.0: calibrate VAE latent stats on the VAE -> flow transition. Must run
+            # before the VAE EMA snapshot and before FlowTrainer (its guard would raise).
+            self._maybe_calibrate_latents(
+                step, models, dataloader, current_batch_size, sampler=sampler
+            )
 
             # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)
             needs_vae_trainer = step.train_vae or step.gan_training or step.use_lpips

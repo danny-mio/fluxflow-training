@@ -99,6 +99,7 @@ class CheckpointManager:
         discriminators: Optional[dict[str, nn.Module]] = None,
         save_pretrained: bool = False,
         model_config: Optional[Union[dict[str, Any], Any]] = None,
+        model_path: Optional[Union[str, Path]] = None,
     ) -> None:
         """
         Save model checkpoints.
@@ -110,8 +111,12 @@ class CheckpointManager:
             save_pretrained: Whether to save in HuggingFace format
             model_config: Optional model configuration with version/type info. Accepts
                 either a plain dict or a pydantic BaseModel (e.g. fluxflow.config.ModelConfig).
+            model_path: Optional explicit file for the main checkpoint (same key layout).
+                When given, ONLY that file is written: no text_encoder.safetensors sibling
+                and no discriminator files (used by fluxflow-calibrate-latents --out).
         """
-        logger.info(f"Saving model checkpoints to {self.output_dir}")
+        target = Path(model_path) if model_path is not None else self.model_path
+        logger.info(f"Saving model checkpoints to {target}")
 
         # Create metadata for model configuration. model_config may be a plain
         # dict or a pydantic BaseModel -- `"x" in model_config` silently
@@ -152,10 +157,13 @@ class CheckpointManager:
         # see BertTextEncoder.load_with_override.
         diffuser_state = {f"diffuser.{k}": v for k, v in diffuser.state_dict().items()}
         combined_state = {**diffuser_state, **text_encoder_state}
+        target.parent.mkdir(parents=True, exist_ok=True)
         safetensors.torch.save_file(
-            combined_state, str(self.model_path), metadata=metadata if metadata else None
+            combined_state, str(target), metadata=metadata if metadata else None
         )
-        logger.debug(f"✓ Saved diffuser + text encoder to {self.model_path}")
+        logger.debug(f"✓ Saved diffuser + text encoder to {target}")
+        if model_path is not None:
+            return
 
         # Save text encoder as a standalone sibling file (override source).
         safetensors.torch.save_file(text_encoder_state, str(self.text_encoder_path))
