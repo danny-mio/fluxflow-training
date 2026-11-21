@@ -661,18 +661,6 @@ pipeline:
     - name: "step1"
 ```
 
-### "AttributeError: 'NoneType' object has no attribute 'update'" (EMA)
-
-**Cause**: Bug in versions < 0.2.0 where EMA wasn't created for GAN-only mode.
-
-**Fix**: Upgrade to v0.2.0+ or set `train_vae: true`.
-
-### Empty metrics in JSONL file
-
-**Cause**: Bug in versions < 0.2.0 where VAE trainer wasn't called when `train_vae: false`.
-
-**Fix**: Upgrade to v0.2.0+.
-
 ### Samples not updating during training
 
 **Cause**: Mid-epoch sample generation was disabled in early versions.

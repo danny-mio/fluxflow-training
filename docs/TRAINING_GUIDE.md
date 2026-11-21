@@ -188,17 +188,17 @@ gan_training: true
 **5. Reduce Widths**:
 ```yaml
 model:
-  vae_encoder_channels: [32, 64, 128, 128]   # default [32, 64, 128, 256]
+  vae_encoder_channels: [32, 64, 128, 128]   # default [32, 64, 128, 256]; VRAM gate: 50.5M params, passes
   feature_maps_dim: 64
   feature_maps_dim_disc: 8
 ```
 v0.10.0 VAE widths are set by `vae_encoder_channels` / `vae_decoder_channels` /
 `vae_spade_hidden`, not `vae_dim` (see [Understanding VAE Dimensions](#understanding-vae-dimensions)).
 
-**6. Use mixed precision** (saves ~20-30%):
+**6. Use mixed precision** (pre-rework estimate: saves ~20-30%):
 ```yaml
 use_fp16: true
-precision: bf16  # supported mixed precision for v0.10.0 (default "fp16")
+precision: bf16  # recommended for v0.10.0; default "fp16" is accepted
 ```
 
 > SPADE is always-on in v0.10.0; the `train_spade` field is deprecated and ignored by the parser, so disabling it is no longer a memory lever.
@@ -505,7 +505,7 @@ If not set, prompts are used exactly as provided in the dataset.
 | `--optim_sched_config` | str | - | Path to JSON file with optimizer/scheduler configurations |
 | `--training_steps` | int | 1 | Inner training steps per batch (gradient accumulation) |
 | `--use_fp16` | flag | False | Use mixed precision training |
-| `--precision` | str | `fp16` | Mixed-precision dtype when `--use_fp16` is set: `fp16` or `bf16`. Use `bf16` for v0.10.0 (see [Mixed Precision Training](#mixed-precision-training)). |
+| `--precision` | str | `fp16` | Mixed-precision dtype when `--use_fp16` is set: `fp16` or `bf16`. `bf16` recommended for v0.10.0 (fp16 can overflow, ~65504 max, now that Padé input clamps are removed); fp16 remains the default and is accepted (see [Mixed Precision Training](#mixed-precision-training)). |
 | `--initial_clipping_norm` | float | 1.0 | Gradient clipping norm for stability |
 | `--compile_activations` | flag | False | `torch.compile` the Padé activation math (`activation_type: pade`), fusing its elementwise ops into one kernel. YAML: `training.compile_activations`. One-time compile cost at startup. |
 
@@ -639,8 +639,9 @@ divisible by 8):
 | `vae_decoder_channels` | `[256, 128, 64, 32]` |
 | `vae_spade_hidden` | `[128, 128, 64, 32]` |
 
-A smaller encoder, e.g. `vae_encoder_channels: [32, 64, 128, 128]`, is the fallback
-when the defaults do not fit. Checkpoints load at their own widths (inferred from
+A smaller encoder, `vae_encoder_channels: [32, 64, 128, 128]`, is the fallback when
+the defaults do not fit (measured in the pre-training VRAM gate: 50.5M params, passes).
+Checkpoints load at their own widths (inferred from
 the weights). The legacy (non-v0.10.0) VAE still derives its widths from `vae_dim`.
 
 ### Understanding Feature Map Dimensions
@@ -651,10 +652,10 @@ the weights). The legacy (non-v0.10.0) VAE still derives its widths from `vae_di
 ### Mixed Precision Training
 
 `--use_fp16` enables mixed precision; `--precision {fp16,bf16}` (YAML
-`training.precision`, default `fp16`) selects the dtype. bf16 is the supported mixed
-precision for v0.10.0: it shares fp32's exponent range, while fp16's ~65504 max can
-overflow to Inf as activations grow (the Padé fp16 input clamps were removed in the
-v0.10.0 rework).
+`training.precision`, default `fp16`) selects the dtype. bf16 recommended for v0.10.0: it
+shares fp32's exponent range, while fp16 (~65504 max) can overflow to Inf as
+activations grow, now that the Padé input clamps are removed. fp16 remains the default
+and is accepted.
 
 ### Gradient Accumulation
 
@@ -1160,6 +1161,9 @@ fluxflow-train \
 
 ### Limited VRAM Strategy (8GB)
 
+Pre-rework sizing (narrow VAE; this CLI-only run builds the legacy v0.6.0 VAE, where
+`vae_dim` sets widths). v0.10.0 VRAM will differ.
+
 For GPUs with limited VRAM:
 
 ```bash
@@ -1408,7 +1412,7 @@ See [Memory Requirements & OOM Prevention](#memory-requirements--oom-prevention)
 ### Slow Training Speed
 
 **Solutions:**
-1. Enable mixed precision: `--use_fp16 --precision bf16`
+1. Enable mixed precision: `--use_fp16 --precision bf16` (bf16 recommended for v0.10.0; fp16 default accepted)
 2. Increase workers: `--workers 16`
 3. Increase batch size: `--batch_size 4`
 4. Reduce sample frequency: `--checkpoint_save_interval 200` or `--samples_per_checkpoint 5`
@@ -1452,7 +1456,7 @@ Generation: ~2-5 seconds per image (512x512, 50 steps)
 | VAE (dim=256) | 1 | ~10 sec/batch | ~22GB |
 | Flow (dim=128) | 2 | ~8 sec/batch | ~20GB |
 
-*With `--use_fp16`, speeds improve by ~40%*
+*With `--use_fp16`, speeds improved by ~40% (pre-rework)*
 
 #### RTX 4090 (24GB VRAM)
 

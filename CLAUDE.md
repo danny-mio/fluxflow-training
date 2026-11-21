@@ -23,8 +23,7 @@ CFG empty-prompt substitution at flow-train time goes through
 `fluxflow_training.training.cfg_utils.apply_cfg_null_substitution`
 (pairs with `fluxflow.utils.visualization.build_cfg_null_pair`).
 
-Plans live in `fluxflow-core/docs/plans/2026-06-13-v0.10.0-redesign-design.md`
-and `-implementation.md`. Per-repo milestone tag: `m5-training-pipeline`.
+Per-repo milestone tag: `m5-training-pipeline`.
 
 Acceptance criteria stubs: `tests/acceptance/test_redesign_done_criteria.py`
 (marked `acceptance, gpu, slow`; filled in after the M8 retraining run).

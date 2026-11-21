@@ -107,7 +107,7 @@ v0.10.0 wide-VAE numbers will differ):
 - Reduce batch size: `batch_size: 2` or `1`
 - Disable LPIPS: `use_lpips: false` (saves ~6-8GB)
 - Reduce image size: `img_size: 512` (saves ~10-15GB)
-- Mixed precision: `use_fp16: true` + `precision: bf16` (bf16 is the supported mixed precision for v0.10.0; saves ~20-30%)
+- Mixed precision: `use_fp16: true` + `precision: bf16` (pre-rework estimate: saves ~20-30%). bf16 recommended for v0.10.0 (fp16 can overflow, ~65504 max, now that Padé input clamps are removed); fp16 remains the default and is accepted.
 - See [TRAINING_GUIDE.md](docs/TRAINING_GUIDE.md) "Limited VRAM Strategy"
 
 **Experimental: AMD ROCm** — gfx1151 (Strix Halo APU) support is
@@ -173,7 +173,7 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
 - **Training Visualization**: Automatic diagram generation for loss curves and metrics
 - **Optimizers**: Multiple optimizer support (AdamW, Adam, SGD, RMSprop)
 - **Schedulers**: Various learning rate schedulers (CosineAnnealing, StepLR, ExponentialLR, ReduceLROnPlateau)
-- **Mixed Precision**: `use_fp16` + `precision` (`fp16` default, `bf16` supported for v0.10.0)
+- **Mixed Precision**: `use_fp16` + `precision`; bf16 recommended for v0.10.0 (fp16 can overflow, ~65504 max, now that Padé input clamps are removed); fp16 remains the default and is accepted
 
 ### Monitoring & Logging
 

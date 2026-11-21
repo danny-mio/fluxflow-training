@@ -26,6 +26,101 @@ Not yet released — work in progress toward v0.10.0.
   EMA averages parameters only; buffers (e.g. latent stats) stay live.
 - **`FlowTrainer` refuses an uncalibrated v0.10.0 VAE** (`ValueError`, via
   `check_latents_calibrated`). Requires fluxflow-core with latent-stats buffers.
+- numpy 2.x supported: `<2.0` pin removed; floor raised to 1.26.4 (scipy 1.17 requires it).
+- **Flow/text-encoder weight-decay exemption**: `flow`, `text_encoder`,
+  `text_encoder_projection`, `text_encoder_backbone` optimizers exempt biases,
+  norm weights, ndim<=1 params, `cls`, `*_scale` and activation coefficients
+  (new `split_module_params` -> `split_weight_decay_groups(exempt_vectors=True)`).
+  Old single-group optimizer state still loads via `orig_idx`. VAE optimizer:
+  see the VAE weight-decay entry above.
+- Default caption token length 32 -> 128 (`--max_text_length` / `data.max_text_length`,
+  dataset classes, orchestrator fallbacks now read `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`
+  instead of hardcoding 32). 32 truncated 40.5% of training captions; 128 truncates 0.12%.
+- HF alpha ramp (0.3 -> 1.2) is a fixed length again: new step key / `--hf_ramp_steps`
+  (default 30000 micro-batch steps, = pre-bbc5a16) replaces 30% of run length. Removed
+  `VAETrainer(total_training_steps=)` (was only used by the ramp).
+- **Flow targets use sampled latents**: `FlowTrainer` encodes via new
+  `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`
+  `sample` kwarg; the z half gets no LayerNorm; the packed latent is normalized by the
+  calibrated latent stats). Legacy v060/v070
+  compressors without a `sample` parameter are called unchanged.
+- `generate_with_cfg` encodes its init image deterministically (`sample=False`, mean);
+  only the hw context vector is used there.
+- `rocm_compat.disable_broken_rocm_sdpa` now re-exports the fluxflow-core
+  implementation (requires the matching core).
+- **Loss weighting**: loss-history adaptive weighting removed (could go
+  negative for the GAN term and cancelled `kl_z_weight`). KL always uses its
+  schedule; recon weight 1; GAN weight is VQGAN-style
+  `lambda_adv · warmup · clamp(‖∇rec‖/‖∇gan‖, 0, 1e4)` at the decoder's last
+  conv (fixed `lambda_adv · warmup` with `adaptive_weights: false`).
+- **GAN schedule**: new `gan_start_step` (0) / `gan_warmup_steps` (1000)
+  pipeline keys and CLI flags; D is not trained before start. Generator step
+  now runs first and D trains on the detached reconstruction (one fewer VAE
+  forward per step). D for v0.10.0 is built with `ctx_dim=0`; old
+  `ctx_proj` keys are ignored.
+- **GAN losses**: hinge per patch (was on the patch-mean), lazy R1 scaled by
+  `r1_interval`, D grad clipping, D defaults from the discriminator optimizer
+  config, `instance_noise_std` default 0.05.
+- **Defaults**: `train_ctx_aux` now `false` (it trained ctx to copy z).
+- **Weight decay**: all params of trainable Bezier/Padé activation modules
+  join the no-decay group; resume remaps optimizer state by original index.
+- **VAE EMA** (compressor + expander) weights are now used for samples and
+  exported models; raw weights stay in training state for exact resume. Flow
+  EMA: see Fixed.
+- Contrast loss uses a smoothed log std ratio; histogram loss is a
+  differentiable sorted-value 1D Wasserstein distance (`bins` removed).
+- ReduceLROnPlateau metric is fixed-alpha L1.
+- Legacy `train.py`: new flags `--kl_z_warmup_steps`,
+  `--ctx_shrinkage_warmup_start_step`, `--ctx_shrinkage_warmup_steps`,
+  `--ctx_shrinkage_max_mean_sq`, `--instance_noise_std`,
+  `--instance_noise_decay`, `--r1_gamma`, `--r1_interval`,
+  `--[no-]train_ctx_aux`, `--lambda_ctx_aux`, `--gan_start_step`,
+  `--gan_warmup_steps`. (`--ctx_shrinkage_*` are now ignored; see Removed.)
+- **VAE optimizer weight decay**: identity-gating scalars (`*_scale` params
+  with one element: `conv1_scale`, SPADE `beta_scale`/`gamma_scale`,
+  `ctx_zinject_*_scale`) are now in a `weight_decay=0` param group so decay no
+  longer pulls them toward "off". Old single-group optimizer/scheduler state is
+  remapped on resume (warning + skip if it cannot be).
+- **Discriminator loss**: the unconditional-fake term (`expander(..., use_context=False)`,
+  weighted 0.5) is removed; D loss is the conditional hinge only. Expect
+  shifted D dynamics on resumed runs.
+- `--use_gradient_checkpointing` is now a `BooleanOptionalAction`
+  (`--no-use_gradient_checkpointing` disables it; previously impossible from
+  the CLI).
+- The per-step `empty_cache()` before the generator backward now only runs
+  when free device memory is below 15%; unconditional release forced the
+  backward to re-allocate every block from the driver.
+- **Flow trainer text contract**: pooled `[B, D]` text vectors are replaced
+  by `(text_seq [B, T_txt, D], text_mask [B, T_txt])`. The trainer detects
+  the active model version and dispatches to the legacy code path for v060
+  / v070 checkpoints.
+- **KL_z schedule**: KL warmup is now a cosine ramp over `kl_z_warmup_steps`
+  toward `kl_z_weight` (legacy `kl_beta` / `kl_warmup_steps` still load with
+  a deprecation warning; v0.10.0 keys win when both are present).
+- **`ctx_loss_weight` default**: changed from `1.0` (v0.8.1) to `0.5`,
+  balancing ctx-dim and VAE-dim v-prediction losses in `FlowTrainer`.
+- **`lambda_ctx_aux` default**: `0.01` (auxiliary stop-grad MSE on ctx vs
+  `z_tokens` during VAE training).
+- **`fluxflow` dependency bumped to `>=0.10.0`**: required for
+  `fluxflow.utils.visualization.build_cfg_null_pair` and the v0.10.0 model
+  architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).
+- **Flow Lion hyperparameters retuned**: `lr` `5e-7` → `1e-7`,
+  `weight_decay` `0.01` → `0.05`; cosine schedule floor (`eta_min_factor`)
+  `0.1` → `0.01` for flow. Lion previously shared AdamW's learning rate, a
+  known Lion misconfiguration (Lion needs roughly 5-10x smaller lr and larger
+  weight_decay than AdamW). Decay is coupled (`lr * weight_decay`;
+  `decoupled_weight_decay` defaults to false, see Fixed). The observed plateau
+  was mainly the scheduler-pacing bug (see Fixed).
+- **`kl_z_weight` now actually wired into `VAETrainer`**
+  (`pipeline_orchestrator.py`, `scripts/train.py`) — the `PipelineStepConfig`
+  field existed but was never passed through, so setting it had zero effect.
+  **Behavior change**: any pipeline-mode step with `train_vae: true` that
+  doesn't override it switches from the legacy `kl_beta` KL path to the
+  cosine-warmup KL_z at the pipeline `kl_z_weight` default (1e-3 at the time;
+  now 1e-5, see the KL entry at the top of Unreleased). The same change wired
+  `ctx_shrinkage_weight`, since removed (see Removed). The legacy
+  `scripts/train.py` CLI driver's new flags default to `0.0` instead, so
+  that path has no behavior change unless explicitly opted in.
 
 ### Removed
 - **`ctx_shrinkage` loss** (inert: it acted on the input of an affine-free instance norm).
@@ -34,6 +129,11 @@ Not yet released — work in progress toward v0.10.0.
   metrics and the `CtxShrink` console column. `ctx_shrinkage_*` step/YAML keys and
   `--ctx_shrinkage_*` flags are still accepted (flags hidden) but ignored, with a
   one-time warning.
+- Random-latent loss (`train_random_latent`, `lambda_random_latent_z/ctx`):
+  latent-space MSE/cosine against random N(0,I) targets was ill-posed.
+  Replaced by the latent cycle loss. Old keys are silently ignored by the
+  step parser -- remove them from configs and set `train_latent_cycle`.
+  Checkpoints trained with it may carry shifted latent/ctx statistics.
 
 ### Added
 - **`discriminator_checkpoint`** (config key / `--discriminator_checkpoint`): load an existing
@@ -170,103 +270,6 @@ Not yet released — work in progress toward v0.10.0.
   `data.max_text_length` YAML key (previously hardcoded to `32` with no
   override); default 128 (see Changed).
 
-### Changed
-- numpy 2.x supported: `<2.0` pin removed; floor raised to 1.26.4 (scipy 1.17 requires it).
-- **Flow/text-encoder weight-decay exemption**: `flow`, `text_encoder`,
-  `text_encoder_projection`, `text_encoder_backbone` optimizers exempt biases,
-  norm weights, ndim<=1 params, `cls`, `*_scale` and activation coefficients
-  (new `split_module_params` -> `split_weight_decay_groups(exempt_vectors=True)`).
-  Old single-group optimizer state still loads via `orig_idx`. VAE optimizer:
-  see the VAE weight-decay entry above.
-- Default caption token length 32 -> 128 (`--max_text_length` / `data.max_text_length`,
-  dataset classes, orchestrator fallbacks now read `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`
-  instead of hardcoding 32). 32 truncated 40.5% of training captions; 128 truncates 0.12%.
-- HF alpha ramp (0.3 -> 1.2) is a fixed length again: new step key / `--hf_ramp_steps`
-  (default 30000 micro-batch steps, = pre-bbc5a16) replaces 30% of run length. Removed
-  `VAETrainer(total_training_steps=)` (was only used by the ramp).
-- **Flow targets use sampled latents**: `FlowTrainer` encodes via new
-  `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`
-  `sample` kwarg; the z half gets no LayerNorm; the packed latent is normalized by the
-  calibrated latent stats). Legacy v060/v070
-  compressors without a `sample` parameter are called unchanged.
-- `generate_with_cfg` encodes its init image deterministically (`sample=False`, mean);
-  only the hw context vector is used there.
-- `rocm_compat.disable_broken_rocm_sdpa` now re-exports the fluxflow-core
-  implementation (requires the matching core).
-- **Loss weighting**: loss-history adaptive weighting removed (could go
-  negative for the GAN term and cancelled `kl_z_weight`). KL always uses its
-  schedule; recon weight 1; GAN weight is VQGAN-style
-  `lambda_adv · warmup · clamp(‖∇rec‖/‖∇gan‖, 0, 1e4)` at the decoder's last
-  conv (fixed `lambda_adv · warmup` with `adaptive_weights: false`).
-- **GAN schedule**: new `gan_start_step` (0) / `gan_warmup_steps` (1000)
-  pipeline keys and CLI flags; D is not trained before start. Generator step
-  now runs first and D trains on the detached reconstruction (one fewer VAE
-  forward per step). D for v0.10.0 is built with `ctx_dim=0`; old
-  `ctx_proj` keys are ignored.
-- **GAN losses**: hinge per patch (was on the patch-mean), lazy R1 scaled by
-  `r1_interval`, D grad clipping, D defaults from the discriminator optimizer
-  config, `instance_noise_std` default 0.05.
-- **Defaults**: `train_ctx_aux` now `false` (it trained ctx to copy z).
-- **Weight decay**: all params of trainable Bezier/Padé activation modules
-  join the no-decay group; resume remaps optimizer state by original index.
-- **VAE EMA** (compressor + expander) weights are now used for samples and
-  exported models; raw weights stay in training state for exact resume. Flow
-  EMA: see Fixed.
-- Contrast loss uses a smoothed log std ratio; histogram loss is a
-  differentiable sorted-value 1D Wasserstein distance (`bins` removed).
-- ReduceLROnPlateau metric is fixed-alpha L1.
-- Legacy `train.py`: new flags `--kl_z_warmup_steps`,
-  `--ctx_shrinkage_warmup_start_step`, `--ctx_shrinkage_warmup_steps`,
-  `--ctx_shrinkage_max_mean_sq`, `--instance_noise_std`,
-  `--instance_noise_decay`, `--r1_gamma`, `--r1_interval`,
-  `--[no-]train_ctx_aux`, `--lambda_ctx_aux`, `--gan_start_step`,
-  `--gan_warmup_steps`. (`--ctx_shrinkage_*` are now ignored; see Removed.)
-- **VAE optimizer weight decay**: identity-gating scalars (`*_scale` params
-  with one element: `conv1_scale`, SPADE `beta_scale`/`gamma_scale`,
-  `ctx_zinject_*_scale`) are now in a `weight_decay=0` param group so decay no
-  longer pulls them toward "off". Old single-group optimizer/scheduler state is
-  remapped on resume (warning + skip if it cannot be).
-- **Discriminator loss**: the unconditional-fake term (`expander(..., use_context=False)`,
-  weighted 0.5) is removed; D loss is the conditional hinge only. Expect
-  shifted D dynamics on resumed runs.
-- `--use_gradient_checkpointing` is now a `BooleanOptionalAction`
-  (`--no-use_gradient_checkpointing` disables it; previously impossible from
-  the CLI).
-- The per-step `empty_cache()` before the generator backward now only runs
-  when free device memory is below 15%; unconditional release forced the
-  backward to re-allocate every block from the driver.
-- **Flow trainer text contract**: pooled `[B, D]` text vectors are replaced
-  by `(text_seq [B, T_txt, D], text_mask [B, T_txt])`. The trainer detects
-  the active model version and dispatches to the legacy code path for v060
-  / v070 checkpoints.
-- **KL_z schedule**: KL warmup is now a cosine ramp over `kl_z_warmup_steps`
-  toward `kl_z_weight` (legacy `kl_beta` / `kl_warmup_steps` still load with
-  a deprecation warning; v0.10.0 keys win when both are present).
-- **`ctx_loss_weight` default**: changed from `1.0` (v0.8.1) to `0.5`,
-  balancing ctx-dim and VAE-dim v-prediction losses in `FlowTrainer`.
-- **`lambda_ctx_aux` default**: `0.01` (auxiliary stop-grad MSE on ctx vs
-  `z_tokens` during VAE training).
-- **`fluxflow` dependency bumped to `>=0.10.0`**: required for
-  `fluxflow.utils.visualization.build_cfg_null_pair` and the v0.10.0 model
-  architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).
-- **Flow Lion hyperparameters retuned**: `lr` `5e-7` → `1e-7`,
-  `weight_decay` `0.01` → `0.05`; cosine schedule floor (`eta_min_factor`)
-  `0.1` → `0.01` for flow. Lion previously shared AdamW's learning rate, a
-  known Lion misconfiguration (Lion needs roughly 5-10x smaller lr and larger
-  weight_decay than AdamW). Decay is coupled (`lr * weight_decay`;
-  `decoupled_weight_decay` defaults to false, see Fixed). The observed plateau
-  was mainly the scheduler-pacing bug (see Fixed).
-- **`kl_z_weight` now actually wired into `VAETrainer`**
-  (`pipeline_orchestrator.py`, `scripts/train.py`) — the `PipelineStepConfig`
-  field existed but was never passed through, so setting it had zero effect.
-  **Behavior change**: any pipeline-mode step with `train_vae: true` that
-  doesn't override it switches from the legacy `kl_beta` KL path to the
-  cosine-warmup KL_z at the pipeline `kl_z_weight` default (1e-3 at the time;
-  now 1e-5, see the KL entry at the top of Unreleased). The same change wired
-  `ctx_shrinkage_weight`, since removed (see Removed). The legacy
-  `scripts/train.py` CLI driver's new flags default to `0.0` instead, so
-  that path has no behavior change unless explicitly opted in.
-
 ### Deprecated
 - Step-level `t_txt` — never had any effect; now logs a warning when set. Text token
   length is the run-global `data.max_text_length` / `--max_text_length`.
@@ -275,13 +278,6 @@ Not yet released — work in progress toward v0.10.0.
 
 Both legacy keys still load via `_parse_step_config` and emit a
 `DeprecationWarning`. The new key wins when both are present.
-
-### Removed
-- Random-latent loss (`train_random_latent`, `lambda_random_latent_z/ctx`):
-  latent-space MSE/cosine against random N(0,I) targets was ill-posed.
-  Replaced by the latent cycle loss. Old keys are silently ignored by the
-  step parser -- remove them from configs and set `train_latent_cycle`.
-  Checkpoints trained with it may carry shifted latent/ctx statistics.
 
 ### Fixed
 - **Lion weight decay collapsed flow training**: `decoupled_weight_decay` now

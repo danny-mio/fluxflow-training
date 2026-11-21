@@ -21,7 +21,7 @@ model:
   flow_activation_type: null        # Options: null, "bezier", "pade"
 
   # Core dimensions
-  vae_dim: 128  # VAE latent dimension (32 for limited GPU, 128/256 for better quality)
+  vae_dim: 128  # Latent channels per token. v0.10.0 VAE widths: vae_encoder_channels / vae_decoder_channels / vae_spade_hidden (see docs/TRAINING_GUIDE.md)
   feature_maps_dim: 128  # Flow processor feature dimension
   feature_maps_dim_disc: 8  # Discriminator feature dimension
   text_embedding_dim: 1024
