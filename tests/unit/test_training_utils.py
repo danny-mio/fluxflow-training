@@ -141,7 +141,7 @@ class TestEMA:
         with torch.no_grad():
             model.weight.data.fill_(1.0)
 
-        ema = EMA(model, decay=0.9)
+        ema = EMA(model, decay=0.9, warmup=False)
 
         # Update model to new value
         with torch.no_grad():
@@ -160,7 +160,7 @@ class TestEMA:
         with torch.no_grad():
             model.weight.data.fill_(1.0)
 
-        ema = EMA(model, decay=0.5)
+        ema = EMA(model, decay=0.5, warmup=False)
 
         # Update model
         with torch.no_grad():
@@ -568,3 +568,58 @@ class TestEMAApplied:
             with ema.applied():
                 raise RuntimeError("boom")
         assert torch.allclose(m.weight, trained)
+
+
+class TestEMAWarmup:
+    """EMA warmup: effective decay = min(decay, (1+n)/(10+n))."""
+
+    def test_first_update_uses_warmup_decay(self):
+        model = nn.Linear(4, 3)
+        ema = EMA(model, decay=0.9999)
+        s0 = ema.shadow["weight"].clone()
+        with torch.no_grad():
+            model.weight.add_(1.0)
+        p = model.weight.detach().clone()
+        ema.update()
+        d = 2 / 11
+        assert torch.allclose(ema.shadow["weight"], d * s0 + (1 - d) * p, atol=1e-6)
+
+    def test_warmup_disabled_uses_constant_decay(self):
+        model = nn.Linear(4, 3)
+        ema = EMA(model, decay=0.9, warmup=False)
+        s0 = ema.shadow["weight"].clone()
+        with torch.no_grad():
+            model.weight.add_(1.0)
+        p = model.weight.detach().clone()
+        ema.update()
+        assert torch.allclose(ema.shadow["weight"], 0.9 * s0 + 0.1 * p, atol=1e-6)
+
+    def test_decay_reaches_target_after_many_updates(self):
+        ema = EMA(nn.Linear(2, 2), decay=0.9999)
+        ema.num_updates = 10**6
+        assert ema._effective_decay(10**6) == 0.9999
+
+    def test_state_dict_roundtrip_num_updates(self):
+        model = nn.Linear(2, 2)
+        ema = EMA(model, decay=0.999)
+        ema.update()
+        ema.update()
+        sd = ema.state_dict()
+        assert int(sd["num_updates"]) == 2
+        new = EMA(nn.Linear(2, 2), decay=0.999)
+        new.load_state_dict(sd)
+        assert new.num_updates == 2
+
+    def test_load_without_num_updates_means_warmup_finished(self):
+        model = nn.Linear(2, 2)
+        ema = EMA(model, decay=0.999)
+        sd = ema.state_dict()
+        del sd["num_updates"]
+        new = EMA(nn.Linear(2, 2), decay=0.999)
+        new.load_state_dict(sd)
+        s0 = new.shadow["weight"].clone()
+        with torch.no_grad():
+            new.model.weight.add_(1.0)
+        p = new.model.weight.detach().clone()
+        new.update()
+        assert torch.allclose(new.shadow["weight"], 0.999 * s0 + 0.001 * p, atol=1e-6)

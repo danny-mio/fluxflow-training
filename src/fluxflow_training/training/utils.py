@@ -55,15 +55,19 @@ class EMA:
         model: nn.Module,
         decay: float = 0.999,
         device: Optional[torch.device] = None,
+        warmup: bool = True,
     ):
         """
         Args:
             model: PyTorch model to track
             decay: EMA decay rate (higher = slower updates)
             device: Device to store shadow parameters (defaults to model device)
+            warmup: Use effective decay min(decay, (1+n)/(10+n)) at update n (1-based)
         """
         self.model = model
         self.decay = decay
+        self.warmup = warmup
+        self.num_updates = 0
         self.device = device or next(model.parameters()).device
         self.shadow: Dict[str, torch.Tensor] = {
             k: v.detach().clone().to(self.device) for k, v in model.state_dict().items()
@@ -83,16 +87,24 @@ class EMA:
                 merged[k] = live[k]
         return merged
 
+    def _effective_decay(self, n: float) -> float:
+        """Decay for 1-based update count ``n`` (warmup-limited when enabled)."""
+        if not self.warmup:
+            return self.decay
+        return min(self.decay, (1.0 + n) / (10.0 + n))
+
     def update(self) -> None:
         """Update shadow parameters with current model state (buffers are copied)."""
+        self.num_updates += 1
+        decay = self._effective_decay(self.num_updates)
         buffer_keys = self._buffer_keys()
         with torch.no_grad():
             for name, param in self.model.state_dict().items():
                 if name in buffer_keys:
                     self.shadow[name] = param.detach().clone().to(self.device)
                 elif param.dtype.is_floating_point:
-                    self.shadow[name].mul_(self.decay).add_(
-                        param.data.to(self.device), alpha=1.0 - self.decay
+                    self.shadow[name].mul_(decay).add_(
+                        param.data.to(self.device), alpha=1.0 - decay
                     )
 
     def apply_shadow(self) -> None:
@@ -136,6 +148,7 @@ class EMA:
         return {
             "decay": torch.tensor(self.decay),
             "shadow": self.shadow.copy(),
+            "num_updates": torch.tensor(self.num_updates),
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
@@ -146,6 +159,8 @@ class EMA:
             state_dict: Dictionary containing decay and shadow parameters
         """
         self.decay = float(state_dict["decay"])
+        # Missing counter (old checkpoints) = warmup finished
+        self.num_updates = int(state_dict.get("num_updates", 10**9))
         shadow_state = state_dict["shadow"]
         if isinstance(shadow_state, dict):
             self.shadow = shadow_state.copy()

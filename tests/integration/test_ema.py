@@ -190,8 +190,8 @@ class TestEMAIntegration:
 
     def test_ema_with_different_decay_rates(self, simple_model):
         """Different decay rates should produce different EMA behaviors."""
-        ema_fast = EMA(simple_model, decay=0.9)  # Fast adaptation
-        ema_slow = EMA(simple_model, decay=0.999)  # Slow adaptation
+        ema_fast = EMA(simple_model, decay=0.9, warmup=False)  # Fast adaptation
+        ema_slow = EMA(simple_model, decay=0.999, warmup=False)  # Slow adaptation
 
         optimizer = optim.Adam(simple_model.parameters(), lr=1e-2)
 
