@@ -62,8 +62,8 @@ for the full cross-package walkthrough):
 4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology
    with no config change beyond the latent-dim drop.
 5. **Clean Gaussian z** — KL is cosine-warmed via `kl_z_weight` /
-   `kl_z_warmup_steps`, and `t_txt` (default `32`) caps the DistilBERT max
-   text length per design §5.7.
+   `kl_z_warmup_steps`. Caption length is `data.max_text_length` (default `128`);
+   step-level `t_txt` is deprecated and ignored.
 
 ### New config keys (`PipelineStepConfig`)
 
@@ -75,7 +75,7 @@ for the full cross-package walkthrough):
 | `ctx_shrinkage_weight` | `0.001` | β-VAE-style L2 on deterministic ctx features. |
 | `ctx_shrinkage_warmup_start_step` | `5000` | Step at which ctx-shrinkage warmup begins. |
 | `ctx_shrinkage_warmup_steps` | `5000` | Warmup length once `start_step` is reached. |
-| `t_txt` | `32` | Per-sample text token length (matches design §5.7). |
+| `t_txt` | — | Deprecated, ignored; use `data.max_text_length`. |
 | `null_prompt` | `""` | String encoded into the cached CFG null context. |
 | `freeze_context_branch` | `false` | Freeze the ctx encoder branch while leaving z-path trainable. |
 
@@ -84,8 +84,7 @@ training) and `ctx_loss_weight` (relative weight of ctx-dim vs VAE-dim
 v-prediction loss in `FlowTrainer`) get new v0.10.0 defaults: `0.01` and
 `0.5` respectively, per the DP-1 decision.
 
-Datasets accept a configurable `max_text_length` (default `128`) so
-tokenization stays aligned with `t_txt`.
+Datasets accept a configurable `max_text_length` (default `128`).
 
 ### CFG empty-prompt substitution
 

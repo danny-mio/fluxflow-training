@@ -6,7 +6,7 @@ loss-threshold transitions, and checkpoint management.
 
 from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
 import gc
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from itertools import chain
 import math
 from dataclasses import asdict
@@ -815,7 +815,11 @@ class TrainingPipelineOrchestrator:
 
     def _create_step_optimizers(self, step, models, args):
         """Create optimizers for current step from inline config or defaults."""
-        from ..training.optimizer_factory import create_optimizer, split_weight_decay_groups
+        from ..training.optimizer_factory import (
+            create_optimizer,
+            split_module_params,
+            split_weight_decay_groups,
+        )
 
         optimizers = {}
 
@@ -873,7 +877,7 @@ class TrainingPipelineOrchestrator:
             # Create flow optimizer if training flow
             if (step.train_diff or step.train_diff_full) and models.get("flow_processor"):
                 optimizers["flow"] = create_optimizer(
-                    models["flow_processor"].parameters(), default_opt_config
+                    split_module_params(models["flow_processor"]), default_opt_config
                 )
                 logger.info(
                     f"✓ Created default flow optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
@@ -886,7 +890,7 @@ class TrainingPipelineOrchestrator:
                 and models.get("text_encoder")
             ):
                 optimizers["text_encoder"] = create_optimizer(
-                    models["text_encoder"].parameters(), default_opt_config
+                    split_module_params(models["text_encoder"]), default_opt_config
                 )
                 logger.info(
                     f"✓ Created default text_encoder optimizer: AdamW (lr={default_opt_config['lr']:.2e})"
@@ -914,23 +918,27 @@ class TrainingPipelineOrchestrator:
             elif name == "discriminator":
                 params = models["D_img"].parameters()
             elif name == "flow":
-                params = models["flow_processor"].parameters()
+                params = split_module_params(models["flow_processor"])
             elif name == "text_encoder":
-                params = models["text_encoder"].parameters()
+                params = split_module_params(models["text_encoder"])
             elif name == "text_encoder_projection":
                 if not models.get("text_encoder"):
                     logger.warning(
                         "text_encoder_projection optimizer: text_encoder not in models, skipping"
                     )
                     continue
-                params = models["text_encoder"].parameter_groups()["projection"]
+                params = split_module_params(
+                    models["text_encoder"], models["text_encoder"].parameter_groups()["projection"]
+                )
             elif name == "text_encoder_backbone":
                 if not models.get("text_encoder"):
                     logger.warning(
                         "text_encoder_backbone optimizer: text_encoder not in models, skipping"
                     )
                     continue
-                params = models["text_encoder"].parameter_groups()["backbone"]
+                params = split_module_params(
+                    models["text_encoder"], models["text_encoder"].parameter_groups()["backbone"]
+                )
             else:
                 logger.warning(f"Unknown optimizer name: {name}, skipping")
                 continue
@@ -1326,7 +1334,16 @@ class TrainingPipelineOrchestrator:
         return trainers
 
     def _save_checkpoint(
-        self, step_idx, step_epoch, batch_idx, models, optimizers, schedulers, ema, args
+        self,
+        step_idx,
+        step_epoch,
+        batch_idx,
+        models,
+        optimizers,
+        schedulers,
+        ema,
+        args,
+        ema_flow=None,
     ):
         """
         Save checkpoint with pipeline metadata.
@@ -1340,6 +1357,7 @@ class TrainingPipelineOrchestrator:
             schedulers: Dictionary of schedulers
             ema: EMA module (if applicable)
             args: Training arguments
+            ema_flow: Flow EMA (persisted in the training state; exports stay raw)
         """
         # Get pipeline metadata
         metadata = self.get_pipeline_metadata(step_idx, step_epoch, batch_idx)
@@ -1365,6 +1383,7 @@ class TrainingPipelineOrchestrator:
             optimizers=optimizers,
             schedulers=schedulers,
             ema=ema,
+            ema_flow=ema_flow,
             pipeline_metadata=metadata,
         )
 
@@ -1384,6 +1403,7 @@ class TrainingPipelineOrchestrator:
         args,
         parsed_sample_sizes,
         ema=None,
+        ema_flow=None,
     ):
         """
         Generate sample images for monitoring training progress.
@@ -1398,10 +1418,14 @@ class TrainingPipelineOrchestrator:
             args: Training arguments
             parsed_sample_sizes: List of sample size tuples
             ema: Optional EMA; samples are generated with its weights (raw restored after)
+            ema_flow: Optional flow EMA, applied the same way
         """
         if args.no_samples:
             return
-        with ema.applied() if ema is not None else nullcontext():
+        with ExitStack() as stack:
+            for e in (ema, ema_flow):
+                if e is not None:
+                    stack.enter_context(e.applied())
             self._generate_samples_impl(
                 step, step_idx, epoch, batch_idx, models, tokenizer, args, parsed_sample_sizes
             )
@@ -1651,6 +1675,11 @@ class TrainingPipelineOrchestrator:
             elif needs_vae_trainer and not step.use_ema:
                 logger.info("⚠ EMA disabled to save VRAM (~14GB for vae_dim=128)")
 
+            # Create trainers for this step
+            trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
+            # Flow EMA lives in FlowTrainer; restore after it exists (resume only)
+            ema_flow = trainers["flow"].ema if "flow" in trainers else None
+
             # Load optimizer/scheduler/EMA states when resuming
             # CRITICAL: Only load for the step we're resuming from
             if step_idx == start_step and (start_epoch > 0 or start_batch > 0):
@@ -1659,6 +1688,7 @@ class TrainingPipelineOrchestrator:
                     optimizers=optimizers,
                     schedulers=schedulers,
                     ema=ema,
+                    ema_flow=ema_flow,
                 )
                 if loaded:
                     logger.info("✓ Restored optimizer, scheduler, and EMA states from checkpoint")
@@ -1666,9 +1696,6 @@ class TrainingPipelineOrchestrator:
                     logger.warning(
                         "⚠ Could not load optimizer states, starting with fresh optimizers"
                     )
-
-            # Create trainers for this step
-            trainers = self._create_step_trainers(step, models, optimizers, schedulers, ema, args)
 
             # Training loop for this step
             step_start_time = time.time()
@@ -2050,7 +2077,15 @@ class TrainingPipelineOrchestrator:
                     # Checkpoint saving (mid-epoch)
                     if batch_idx % args.checkpoint_save_interval == 0 and batch_idx > 0:
                         self._save_checkpoint(
-                            step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                            step_idx,
+                            epoch,
+                            batch_idx,
+                            models,
+                            optimizers,
+                            schedulers,
+                            ema,
+                            args,
+                            ema_flow=ema_flow,
                         )
 
                         # Clear cache after checkpoint save to prevent fragmentation
@@ -2075,6 +2110,7 @@ class TrainingPipelineOrchestrator:
                                 args,
                                 parsed_sample_sizes,
                                 ema=ema,
+                                ema_flow=ema_flow,
                             )
 
                             # Clear cache after sample generation
@@ -2088,7 +2124,15 @@ class TrainingPipelineOrchestrator:
                 print(f"Epoch {epoch+1} completed in {format_duration(epoch_time)}")
 
                 self._save_checkpoint(
-                    step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                    step_idx,
+                    epoch,
+                    batch_idx,
+                    models,
+                    optimizers,
+                    schedulers,
+                    ema,
+                    args,
+                    ema_flow=ema_flow,
                 )
                 logger.info(f"End-of-epoch checkpoint saved")
 
@@ -2103,6 +2147,7 @@ class TrainingPipelineOrchestrator:
                     args,
                     parsed_sample_sizes,
                     ema=ema,
+                    ema_flow=ema_flow,
                 )
 
                 # Aggressive memory cleanup at end of epoch
@@ -2131,7 +2176,15 @@ class TrainingPipelineOrchestrator:
                     print(f"Moving to next step...")
                     # Save checkpoint before transitioning
                     self._save_checkpoint(
-                        step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                        step_idx,
+                        epoch,
+                        batch_idx,
+                        models,
+                        optimizers,
+                        schedulers,
+                        ema,
+                        args,
+                        ema_flow=ema_flow,
                     )
                     logger.info("Pre-transition checkpoint saved")
                     break
@@ -2139,14 +2192,22 @@ class TrainingPipelineOrchestrator:
             # Save final checkpoint at end of step
             logger.info(f"Step {step_idx+1} complete, saving final checkpoint")
             self._save_checkpoint(
-                step_idx, epoch, batch_idx, models, optimizers, schedulers, ema, args
+                step_idx,
+                epoch,
+                batch_idx,
+                models,
+                optimizers,
+                schedulers,
+                ema,
+                args,
+                ema_flow=ema_flow,
             )
 
             # Mark step as completed
             self.steps_completed.append(step.name)
 
             # Cleanup
-            del optimizers, schedulers, trainers
+            del optimizers, schedulers, trainers, ema_flow
             if ema:
                 del ema
             torch.cuda.empty_cache()

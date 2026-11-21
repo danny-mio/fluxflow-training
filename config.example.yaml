@@ -430,8 +430,11 @@ optimization:
   #                                # per step, so a too-large lr oscillates instead
   #                                # of converging (Chen et al. 2023).
   #         "betas": [0.9, 0.95],
-  #         "weight_decay": 0.05,  # ~5-10x larger than the equivalent AdamW value
-  #         "decoupled_weight_decay": true
+  #         "weight_decay": 0.05,  # per-step decay = lr * weight_decay (coupled)
+  #         # Default false. With lion_pytorch, true makes per-step decay equal
+  #         # weight_decay itself (lr is cancelled): 0.05 => weights x0.95 per
+  #         # step, collapsing them. If true, use weight_decay ~lr*wd (e.g. 1e-6).
+  #         "decoupled_weight_decay": false
   #       },
   #       "vae": {"type": "AdamW", "lr": 5e-7, "weight_decay": 0.01}
   #     },

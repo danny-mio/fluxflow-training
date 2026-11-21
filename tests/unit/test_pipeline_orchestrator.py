@@ -1762,3 +1762,111 @@ class TestCrashLoggingUsesPrint:
         # The next non-blank statement after the print block must be a bare raise.
         tail = content[idx : idx + 400]
         assert "raise" in tail, "Exception must still propagate after crash logging."
+
+
+class TestWeightDecayExemptionWiring:
+    """flow / text-encoder optimizers split params into decay / no-decay groups."""
+
+    def _orch(self):
+        from fluxflow_training.training.pipeline_config import (
+            PipelineConfig,
+            PipelineStepConfig,
+        )
+
+        orch = TrainingPipelineOrchestrator.__new__(TrainingPipelineOrchestrator)
+        orch.config = PipelineConfig(steps=[PipelineStepConfig(name="f", n_epochs=1)])
+        orch.device = "cpu"
+        return orch
+
+    def _models(self):
+        import torch.nn as nn
+        from fluxflow.models.encoders import BertTextEncoder
+
+        flow = nn.Sequential(nn.Linear(4, 4), nn.LayerNorm(4))
+        return {
+            "flow_processor": flow,
+            "text_encoder": BertTextEncoder(64, pretrain_model=None),
+        }
+
+    @staticmethod
+    def _wds(opt):
+        return [(g["weight_decay"], len(g["params"])) for g in opt.param_groups]
+
+    def test_explicit_flow_and_projection_groups(self):
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="f",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={
+                    "flow": OptimizerConfig(lr=1e-4, weight_decay=0.1),
+                    "text_encoder_projection": OptimizerConfig(lr=1e-4, weight_decay=0.1),
+                    "text_encoder_backbone": OptimizerConfig(lr=1e-6, weight_decay=0.1),
+                }
+            ),
+        )
+        models = self._models()
+        opts = self._orch()._create_step_optimizers(step, models, MagicMock())
+        flow = opts["flow"]
+        assert [g["weight_decay"] for g in flow.param_groups] == [0.1, 0.0]
+        assert flow.param_groups[0]["params"] == [models["flow_processor"][0].weight]
+        for k in ("text_encoder_projection", "text_encoder_backbone"):
+            wds = [g["weight_decay"] for g in opts[k].param_groups]
+            assert wds == [0.1, 0.0], k
+            assert all("orig_idx" in g for g in opts[k].param_groups)
+        te = models["text_encoder"]
+        for sub, k in (
+            ("projection", "text_encoder_projection"),
+            ("backbone", "text_encoder_backbone"),
+        ):
+            got = {id(p) for g in opts[k].param_groups for p in g["params"]}
+            assert got == {id(p) for p in te.parameter_groups()[sub]}
+
+    def test_default_path_flow_and_text_encoder_groups(self):
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.pipeline_config import PipelineStepConfig
+
+        step = PipelineStepConfig(name="f", n_epochs=1, train_diff=True)
+        step.train_text_encoder = True
+        args = MagicMock()
+        args.lr = 1e-4
+        opts = self._orch()._create_step_optimizers(step, self._models(), args)
+        assert [g["weight_decay"] for g in opts["flow"].param_groups] == [0.01, 0.0]
+        assert opts["text_encoder"].param_groups[-1]["weight_decay"] == 0.0
+
+    def test_legacy_single_group_flow_state_resumes(self):
+        import torch
+        from unittest.mock import MagicMock
+
+        from fluxflow_training.training.optimizer_factory import remap_optimizer_state
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        step = PipelineStepConfig(
+            name="f",
+            n_epochs=1,
+            train_diff=True,
+            optimization=OptimizationConfig(
+                optimizers={"flow": OptimizerConfig(type="Lion", lr=1e-4, weight_decay=0.1)}
+            ),
+        )
+        models = self._models()
+        flow = models["flow_processor"]
+        old = torch.optim.AdamW(list(flow.parameters()), lr=0.5)
+        for p in flow.parameters():
+            p.grad = torch.ones_like(p)
+        old.step()
+        opt = self._orch()._create_step_optimizers(step, models, MagicMock())["flow"]
+        assert remap_optimizer_state(opt, old.state_dict()) is not None

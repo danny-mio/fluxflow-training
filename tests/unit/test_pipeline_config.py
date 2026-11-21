@@ -702,3 +702,23 @@ class TestSpadeFieldsRemoved:
         assert any(
             "spade_training_mode" in m for m in messages
         ), f"Expected DeprecationWarning mentioning spade_training_mode; got: {messages}"
+
+
+class TestLionDecoupledDefault:
+    def test_dataclass_default_false(self):
+        assert OptimizerConfig().decoupled_weight_decay is False
+
+    def test_parsed_default_false(self):
+        cfg = parse_pipeline_config(
+            {
+                "steps": [
+                    {
+                        "name": "s",
+                        "n_epochs": 1,
+                        "train_diff": True,
+                        "optimization": {"optimizers": {"flow": {"type": "Lion"}}},
+                    }
+                ]
+            }
+        )
+        assert cfg.steps[0].optimization.optimizers["flow"].decoupled_weight_decay is False

@@ -8,32 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 Not yet released — work in progress toward v0.10.0.
 
-### Fixed
-- **KL collapse**: default `kl_z_weight` 0.5 -> 1e-3 (pipeline config; KL is a per-element
-  mean with fixed weight, 0.5 gave ~27x recon gradient and collapsed z). One-time warning
-  when v100 runs with `kl_z_weight > 0.05`. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
-- `kl_z_warmup_steps` now counts OPTIMIZER steps (trainer scales by
-  `gradient_accumulation_steps`). Other warmups (`gan_*`, `ctx_shrinkage_*`, legacy
-  `kl_warmup_steps`) still count micro-batches.
-- Console: `L1ctx` printed right after `VAE`. `VAE`/`vae_loss` = HF-weighted recon over the
-  whole batch incl. z-only half; it rises while alpha ramps.
-
-### Changed
-- Default caption token length 32 -> 128 (`--max_text_length` / `data.max_text_length`,
-  dataset classes, orchestrator fallbacks now read `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`
-  instead of hardcoding 32). 32 truncated 40.5% of training captions; 128 truncates 0.12%.
-- HF alpha ramp (0.3 -> 1.2) is a fixed length again: new step key / `--hf_ramp_steps`
-  (default 30000 micro-batch steps, = pre-bbc5a16) replaces 30% of run length. Removed
-  `VAETrainer(total_training_steps=)` (was only used by the ramp).
-
-### Changed
-- **Flow targets use sampled latents**: `FlowTrainer` encodes via new
-  `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`
-  `sample` kwarg; the z half is now raw ~N(0,I), no LayerNorm). Legacy v060/v070
-  compressors without a `sample` parameter are called unchanged.
-- `generate_with_cfg` encodes its init image deterministically (`sample=False`, mean);
-  only the hw context vector is used there.
-
 ### Added
 - **z-vs-ctx balance (v0.10.0 VAE, training only)**: `ctx_dropout_frac` (0.5) decodes
   that batch fraction with `use_context=False` (z-only; both halves get recon pressure,
@@ -41,8 +15,6 @@ Not yet released — work in progress toward v0.10.0.
   scale-invariant noise `sigma*std(token)` to ctx before decode. New diagnostics
   `recon_l1_ctx` / `recon_l1_zonly` (log `L1ctx` / `L1z`). Pipeline step keys and legacy
   `--ctx_dropout_frac` / `--ctx_noise_sigma` (+ YAML `training:`); 0 disables each.
-
-### Added (Experimental)
 - **AMD ROCm/gfx1151 support (experimental, unvalidated)**: `get_device()`
   now delegates to `fluxflow.utils.device` (distinguishes ROCm from real
   NVIDIA CUDA). `train.py` prints "Using ROCm backend (experimental)" when
@@ -68,8 +40,6 @@ Not yet released — work in progress toward v0.10.0.
   kernel cache). Also: per-dataset `reduced_min_sizes` now takes precedence
   over the global `--reduced_min_sizes` value when set, matching the
   existing `batch_size`/`workers` per-dataset override convention.
-
-### Added
 - **Latent cycle loss** (`train_latent_cycle`, `lambda_latent_cycle`,
   `latent_cycle_*`; default off): image-space G.E idempotence. Compressor
   re-encodes an expander output; the frozen expander (no weight gradient)
@@ -126,7 +96,7 @@ Not yet released — work in progress toward v0.10.0.
   - `kl_z_weight` / `kl_z_warmup_steps` (clean Gaussian latent KL).
   - `ctx_shrinkage_weight` / `ctx_shrinkage_warmup_start_step` /
     `ctx_shrinkage_warmup_steps`.
-  - `t_txt` (default `32` — DistilBERT max length per design §5.7).
+  - `t_txt` (deprecated, ignored; see Deprecated).
   - `null_prompt` (empty-prompt string cached as the CFG null context).
   - `freeze_context_branch` — freeze `ctx_encoder_first_step`, `ctx_encoder_z`,
     `ctx_proj`, `ctx_token_attn`, `ctx_final_norm` while leaving the z-path
@@ -138,9 +108,8 @@ Not yet released — work in progress toward v0.10.0.
   rejects co-existence of the whole `text_encoder` optimizer key with the
   split sub-component keys.
 - **Configurable dataset `max_text_length`**: dataset-level setting (default
-  `32`) plumbed through `data/datasets.py` so tokenization matches the
-  v0.10.0 `t_txt` budget. Older configs continue to load and emit a
-  deprecation warning when they still pass `kl_beta` / `kl_warmup_steps`.
+  `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH` = 128) plumbed through
+  `data/datasets.py`.
 - **Acceptance test stubs** in `tests/acceptance/test_redesign_done_criteria.py`
   for the M8 retraining run. Marked `acceptance, gpu, slow`; skipped until a
   trained checkpoint and held-out prompts are wired in.
@@ -166,9 +135,27 @@ Not yet released — work in progress toward v0.10.0.
   caption-length-percentile logging across all three dataset classes.
   `max_text_length` is now a real `--max_text_length` CLI flag /
   `data.max_text_length` YAML key (previously hardcoded to `32` with no
-  override); default unchanged.
+  override); default 128 (see Changed).
 
 ### Changed
+- **Flow/text-encoder weight-decay exemption**: `flow`, `text_encoder`,
+  `text_encoder_projection`, `text_encoder_backbone` optimizers exempt biases,
+  norm weights, ndim<=1 params, `cls`, `*_scale` and activation coefficients
+  (new `split_module_params` -> `split_weight_decay_groups(exempt_vectors=True)`).
+  Old single-group optimizer state still loads via `orig_idx`. VAE optimizer
+  unchanged.
+- Default caption token length 32 -> 128 (`--max_text_length` / `data.max_text_length`,
+  dataset classes, orchestrator fallbacks now read `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`
+  instead of hardcoding 32). 32 truncated 40.5% of training captions; 128 truncates 0.12%.
+- HF alpha ramp (0.3 -> 1.2) is a fixed length again: new step key / `--hf_ramp_steps`
+  (default 30000 micro-batch steps, = pre-bbc5a16) replaces 30% of run length. Removed
+  `VAETrainer(total_training_steps=)` (was only used by the ramp).
+- **Flow targets use sampled latents**: `FlowTrainer` encodes via new
+  `training.utils.encode_latent(compressor, imgs, sample=True)` (v100 `FluxCompressor`
+  `sample` kwarg; the z half is now raw ~N(0,I), no LayerNorm). Legacy v060/v070
+  compressors without a `sample` parameter are called unchanged.
+- `generate_with_cfg` encodes its init image deterministically (`sample=False`, mean);
+  only the hw context vector is used there.
 - `rocm_compat.disable_broken_rocm_sdpa` now re-exports the fluxflow-core
   implementation (requires the matching core).
 - **Loss weighting**: loss-history adaptive weighting removed (could go
@@ -187,13 +174,13 @@ Not yet released — work in progress toward v0.10.0.
 - **Defaults**: `train_ctx_aux` now `false` (it trained ctx to copy z).
 - **Weight decay**: all params of trainable Bezier/Padé activation modules
   join the no-decay group; resume remaps optimizer state by original index.
-- **EMA** weights are now used for samples and exported models; raw weights
-  stay in training state for exact resume.
+- **VAE EMA** (compressor + expander) weights are now used for samples and
+  exported models; raw weights stay in training state for exact resume. Flow
+  EMA: see Fixed.
 - Contrast loss uses a smoothed log std ratio; histogram loss is a
   differentiable sorted-value 1D Wasserstein distance (`bins` removed).
 - Free bits clamp the batch-mean KL per latent dimension.
-- ReduceLROnPlateau metric is fixed-alpha L1; HF-weight ramp uses the real
-  run length (`total_training_steps`).
+- ReduceLROnPlateau metric is fixed-alpha L1.
 - Legacy `train.py`: new flags `--kl_z_warmup_steps`,
   `--ctx_shrinkage_warmup_start_step`, `--ctx_shrinkage_warmup_steps`,
   `--ctx_shrinkage_max_mean_sq`, `--instance_noise_std`,
@@ -231,10 +218,11 @@ Not yet released — work in progress toward v0.10.0.
   architecture (per-token text, ctx_zinject_norm, multi-scale SPADE).
 - **Flow Lion hyperparameters retuned**: `lr` `5e-7` → `1e-7`,
   `weight_decay` `0.01` → `0.05`; cosine schedule floor (`eta_min_factor`)
-  `0.1` → `0.01` for flow. Root cause: Lion previously shared AdamW's
-  learning rate, a known Lion misconfiguration (Lion needs roughly 5-10x
-  smaller lr and larger weight_decay than AdamW), producing a fixed-point
-  plateau instead of convergence.
+  `0.1` → `0.01` for flow. Lion previously shared AdamW's learning rate, a
+  known Lion misconfiguration (Lion needs roughly 5-10x smaller lr and larger
+  weight_decay than AdamW). Decay is coupled (`lr * weight_decay`;
+  `decoupled_weight_decay` defaults to false, see Fixed). The observed plateau
+  was mainly the scheduler-pacing bug (see Fixed).
 - **`kl_z_weight`/`ctx_shrinkage_weight` now actually wired into
   `VAETrainer`** (`pipeline_orchestrator.py`, `scripts/train.py`) — these
   `PipelineStepConfig` fields existed but were previously never passed
@@ -242,8 +230,9 @@ Not yet released — work in progress toward v0.10.0.
   pipeline-mode step with `train_vae: true` that doesn't explicitly
   override these two keys now switches from the prior real behavior
   (legacy `kl_beta` KL path, inactive ctx-shrinkage) to the ratified
-  v0.10.0 defaults actually taking effect (`kl_z_weight=0.5` cosine-warmup
-  KL_z, `ctx_shrinkage_weight=0.001` active ctx-shrinkage). The legacy
+  v0.10.0 defaults actually taking effect (cosine-warmup KL_z at the
+  `kl_z_weight` default, now 1e-3 (see Fixed); `ctx_shrinkage_weight=0.001`
+  active ctx-shrinkage). The legacy
   `scripts/train.py` CLI driver's new flags default to `0.0` instead, so
   that path has no behavior change unless explicitly opted in.
 
@@ -265,6 +254,24 @@ Both legacy keys still load via `_parse_step_config` and emit a
   resuming one also changes effective `ctx_shrinkage` (see Fixed).
 
 ### Fixed
+- **Lion weight decay collapsed flow training**: `decoupled_weight_decay` now
+  defaults to false (optimizer_factory, pipeline_config, Lion default/override
+  configs). With lion_pytorch, true makes the per-step decay `weight_decay`
+  itself (`wd /= init_lr`), so wd 0.05 shrank every weight x0.95 per optimizer
+  step: flow output collapsed to zero (normalized loss -> 1.0, samples noise).
+  Warns when decoupled=True and `weight_decay > 1e-3`.
+- **Flow EMA computed but never saved or used**: FlowTrainer EMA (flow + text
+  encoder, decay 0.9999) is now saved in `training_states.pt` (`ema_flow`),
+  restored on resume, and applied for sample generation (raw weights restored
+  after). Exports (`flxflow_final` etc.) stay raw. No EMA warmup yet.
+- **KL collapse**: default `kl_z_weight` 0.5 -> 1e-3 (pipeline config; KL is a per-element
+  mean with fixed weight, 0.5 gave ~27x recon gradient and collapsed z). One-time warning
+  when v100 runs with `kl_z_weight > 0.05`. Trainer/CLI/orchestrator fallbacks stay 0.0 (legacy opt-in).
+- `kl_z_warmup_steps` now counts OPTIMIZER steps (trainer scales by
+  `gradient_accumulation_steps`). Other warmups (`gan_*`, `ctx_shrinkage_*`, legacy
+  `kl_warmup_steps`) still count micro-batches.
+- Console: `L1ctx` printed right after `VAE`. `VAE`/`vae_loss` = HF-weighted recon over the
+  whole batch incl. z-only half; it rises while alpha ramps.
 - Latent cycle froze the expander by toggling `requires_grad`, which
   disabled decoder checkpointing (+14% peak VRAM). It now calls the expander
   via `torch.func.functional_call` with detached params; checkpointing stays
@@ -434,10 +441,8 @@ Both legacy keys still load via `_parse_step_config` and emit a
   `FlowTrainer`'s; the two scheduler-pacing regression tests that
   asserted the old undivided behavior are renamed and updated to assert
   the correct divided behavior (they were locking in the bug, not
-  weakening coverage). Known follow-up: `discriminator_update_freq > 1`
-  combined with `gradient_accumulation_steps > 1` can theoretically leave
-  discriminator gradients silently discarded mid-window; doesn't affect
-  any current config (all use the default `discriminator_update_freq=1`).
+  weakening coverage). `discriminator_update_freq > 1` with
+  `gradient_accumulation_steps > 1` was fixed later (D has its own counter).
 - **`use_fp16`/`mixed_precision="fp16"` never actually engaged
   mixed-precision compute anywhere**, on either trainer: no
   `torch.autocast`/`accelerator.autocast()` context existed in
@@ -471,8 +476,8 @@ Both legacy keys still load via `_parse_step_config` and emit a
 
 ### Migration
 - Bump configs to the v0.10.0 schema: rename `kl_beta` → `kl_z_weight`,
-  `kl_warmup_steps` → `kl_z_warmup_steps`, and set `t_txt: 32` on flow
-  steps. See the v0.10.0 redesign migration notes in fluxflow-core
+  `kl_warmup_steps` → `kl_z_warmup_steps`; drop `t_txt` (ignored) and set
+  `data.max_text_length` only to override the 128 default. See the v0.10.0 redesign migration notes in fluxflow-core
   (<https://github.com/danny-mio/fluxflow-core/blob/develop/docs/MIGRATION-v0.10.0-redesign.md>)
   for the full cross-package walkthrough.
 

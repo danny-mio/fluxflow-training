@@ -584,3 +584,163 @@ class TestResumeAcrossGroupLayoutChange:
         for p in m.parameters():
             assert torch.equal(new.state[p]["exp_avg"], old.state[p]["exp_avg"])
         assert new.param_groups[1]["weight_decay"] == 0.0
+
+
+class TestLionDecoupledWeightDecay:
+    """lion_pytorch decoupled_weight_decay=True decays by (1 - wd) per step, not (1 - lr*wd)."""
+
+    def _decay(self, lr, wd, steps, **cfg):
+        p = nn.Parameter(torch.ones(4))
+        opt = create_optimizer([p], {"type": "Lion", "lr": lr, "weight_decay": wd, **cfg})
+        for _ in range(steps):
+            p.grad = torch.zeros_like(p)  # sign(0) == 0 -> pure decay
+            opt.step()
+        return p.detach()[0].item()
+
+    def test_default_is_coupled(self):
+        opt = create_optimizer([nn.Parameter(torch.ones(1))], {"type": "Lion", "lr": 1e-4})
+        assert opt.decoupled_wd is False
+
+    def test_coupled_decay_is_lr_times_wd(self):
+        lr, wd, n = 1e-3, 0.05, 50
+        assert self._decay(lr, wd, n) == pytest.approx((1 - lr * wd) ** n, rel=1e-5)
+
+    def test_decoupled_decay_is_wd_per_step(self):
+        wd, n = 1e-4, 50
+        got = self._decay(1e-3, wd, n, decoupled_weight_decay=True)
+        assert got == pytest.approx((1 - wd) ** n, rel=1e-4)
+
+    def test_large_wd_with_decoupled_warns(self, caplog):
+        with caplog.at_level("WARNING"):
+            create_optimizer(
+                [nn.Parameter(torch.ones(1))],
+                {
+                    "type": "Lion",
+                    "lr": 1e-4,
+                    "weight_decay": 0.05,
+                    "decoupled_weight_decay": True,
+                },
+            )
+        assert "0.95" in caplog.text and "decoupled_weight_decay" in caplog.text
+
+    @pytest.mark.parametrize(
+        "cfg",
+        [
+            {"weight_decay": 0.05},
+            {"weight_decay": 1e-6, "decoupled_weight_decay": True},
+            {"weight_decay": 1e-3, "decoupled_weight_decay": True},
+        ],
+    )
+    def test_no_warning_otherwise(self, caplog, cfg):
+        with caplog.at_level("WARNING"):
+            create_optimizer([nn.Parameter(torch.ones(1))], {"type": "Lion", "lr": 1e-4, **cfg})
+        assert "decoupled_weight_decay" not in caplog.text
+
+    def test_lion_default_configs_are_coupled(self):
+        cfgs = [get_default_optimizer_config("flow")] + [
+            get_default_optimizer_config(m, "Lion")
+            for m in ("vae", "text_encoder", "discriminator")
+        ]
+        assert all(c["decoupled_weight_decay"] is False for c in cfgs)
+
+
+class _FlowLike(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lin = nn.Linear(4, 4)
+        self.norm = nn.LayerNorm(4)
+        self.film_text_scale = nn.Parameter(torch.zeros(1))
+        self.mixer = nn.Module()
+        self.mixer.cls = nn.Parameter(torch.zeros(1, 1, 4))
+
+
+class TestSplitModuleParams:
+    def test_exempt_vectors_flag(self):
+        from fluxflow_training.training.optimizer_factory import (
+            split_weight_decay_groups,
+        )
+
+        m = _FlowLike()
+        names = dict(m.named_parameters())
+        decay, no_decay = split_weight_decay_groups(m.named_parameters(), exempt_vectors=True)
+        assert [id(p) for p in decay["params"]] == [id(names["lin.weight"])]
+        assert {id(p) for p in no_decay["params"]} == {
+            id(names[n])
+            for n in (
+                "lin.bias",
+                "norm.weight",
+                "norm.bias",
+                "film_text_scale",
+                "mixer.cls",
+            )
+        }
+        assert no_decay["weight_decay"] == 0.0
+
+    def test_default_rules_unchanged(self):
+        from fluxflow_training.training.optimizer_factory import (
+            split_weight_decay_groups,
+        )
+
+        groups = split_weight_decay_groups(_FlowLike().named_parameters())
+        assert len(groups[0]["params"]) == 5 and len(groups[1]["params"]) == 1
+
+    def test_activation_modules_exempt(self):
+        from fluxflow.models.pade_activation import TrainablePade
+
+        from fluxflow_training.training.optimizer_factory import split_module_params
+
+        m = nn.Sequential(nn.Linear(4, 4), TrainablePade(4))
+        groups = split_module_params(m)
+        act_ids = {id(p) for p in m[1].parameters()}
+        assert act_ids <= {id(p) for p in groups[1]["params"]}
+        assert groups[0]["params"] == [m[0].weight]
+
+    def test_subset_keeps_given_order_and_orig_idx(self):
+        from fluxflow_training.training.optimizer_factory import split_module_params
+
+        m = _FlowLike()
+        subset = [m.norm.weight, m.lin.bias, m.lin.weight]
+        groups = split_module_params(m, subset)
+        assert groups[0]["params"] == [m.lin.weight] and groups[0]["orig_idx"] == [2]
+        assert groups[1]["orig_idx"] == [0, 1]
+
+    def test_real_flow_processor_rules(self):
+        from fluxflow.models.v100.flow import FluxFlowProcessor_v100
+
+        from fluxflow_training.training.optimizer_factory import split_module_params
+
+        flow = FluxFlowProcessor_v100(d_model=128, vae_dim=16)
+        groups = split_module_params(flow)
+        decay_ids = {id(p) for p in groups[0]["params"]}
+        for n, p in flow.named_parameters():
+            leaf = n.rsplit(".", 1)[-1]
+            if (
+                p.ndim <= 1
+                or leaf.endswith("_scale")
+                or leaf == "cls"
+                or n.endswith((".p0", ".p1", ".p2", ".p3"))
+                and p.ndim == 3
+            ):
+                assert id(p) not in decay_ids, n
+            else:
+                assert id(p) in decay_ids, n
+
+    def test_legacy_single_group_state_loads(self):
+        from fluxflow_training.training.optimizer_factory import (
+            remap_optimizer_state,
+            split_module_params,
+        )
+
+        m = _FlowLike()
+        old = torch.optim.AdamW(list(m.parameters()), lr=0.5, weight_decay=0.1)
+        for p in m.parameters():
+            p.grad = torch.ones_like(p)
+        old.step()
+        opt = create_optimizer(
+            split_module_params(m), {"type": "AdamW", "lr": 1e-3, "weight_decay": 0.1}
+        )
+        remapped = remap_optimizer_state(opt, old.state_dict())
+        assert remapped is not None
+        opt.load_state_dict(remapped)
+        for p in m.parameters():
+            assert torch.equal(opt.state[p]["exp_avg"], old.state[p]["exp_avg"])

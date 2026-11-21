@@ -34,7 +34,7 @@ Memory-efficient optimizer that uses sign-based updates. Recommended for flow mo
 | `lr` | float | 1e-4 | Learning rate |
 | `betas` | list[float, float] | [0.9, 0.99] | Coefficients for computing running averages |
 | `weight_decay` | float | 0.0 | Weight decay coefficient |
-| `decoupled_weight_decay` | bool | True | Use decoupled weight decay (recommended) |
+| `decoupled_weight_decay` | bool | False | lion_pytorch semantics: `false` = per-step decay `lr * weight_decay`; `true` = per-step decay `weight_decay` (lr cancelled), so `weight_decay` must be ~`lr * wd` (e.g. 1e-6). `true` with `weight_decay > 1e-3` logs a warning (e.g. 0.05 shrinks weights x0.95 every step) |
 
 **Example:**
 ```json
@@ -43,7 +43,7 @@ Memory-efficient optimizer that uses sign-based updates. Recommended for flow mo
   "lr": 5e-7,
   "betas": [0.9, 0.95],
   "weight_decay": 0.01,
-  "decoupled_weight_decay": true
+  "decoupled_weight_decay": false
 }
 ```
 

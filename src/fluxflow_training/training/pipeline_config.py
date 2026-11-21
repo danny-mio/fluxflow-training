@@ -89,7 +89,7 @@ class OptimizerConfig:
     alpha: Optional[float] = None  # For RMSprop
     centered: bool = False  # For RMSprop
     amsgrad: bool = False  # For AdamW
-    decoupled_weight_decay: bool = True  # For Lion
+    decoupled_weight_decay: bool = False  # Lion; True => per-step decay = weight_decay
 
 
 @dataclass
@@ -812,7 +812,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
                 alpha=opt_cfg.get("alpha"),
                 centered=opt_cfg.get("centered", False),
                 amsgrad=opt_cfg.get("amsgrad", False),
-                decoupled_weight_decay=opt_cfg.get("decoupled_weight_decay", True),
+                decoupled_weight_decay=opt_cfg.get("decoupled_weight_decay", False),
             )
 
         # Parse schedulers

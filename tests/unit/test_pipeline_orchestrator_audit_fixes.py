@@ -290,3 +290,68 @@ class TestRecordGanLosses:
 
     def test_trainer_without_buffer_is_ignored(self):
         record_gan_losses(SimpleNamespace(), {"generator": 1.0})
+
+
+class TestFlowEmaOrchestration:
+    def _setup(self):
+        flow = nn.Linear(2, 2)
+        ema_flow = EMA(flow, decay=0.5)
+        shadow = flow.weight.detach().clone()
+        with torch.no_grad():
+            flow.weight.add_(10.0)
+        raw = flow.weight.detach().clone()
+        models = {"diffuser": MagicMock(), "text_encoder": MagicMock(), "D_img": None}
+        return flow, ema_flow, models, shadow, raw
+
+    @staticmethod
+    def _flow_step():
+        return PipelineStepConfig(name="f", n_epochs=1, train_diff=True)
+
+    def test_flow_samples_use_flow_ema_then_restore(self):
+        flow, ema_flow, models, shadow, raw = self._setup()
+        seen = {}
+        orch = _orch([self._flow_step()])
+        orch._generate_samples_impl = lambda *a, **k: seen.setdefault("w", flow.weight.clone())
+        orch._generate_samples(
+            self._flow_step(), 0, 0, 1, models, None, _args(), [], ema_flow=ema_flow
+        )
+        assert torch.equal(seen["w"], shadow)
+        assert torch.equal(flow.weight, raw)
+
+    def test_both_emas_applied_and_raw_restored_on_error(self):
+        flow, ema_flow, models, shadow, raw = self._setup()
+        vae = nn.Linear(2, 2)
+        ema = EMA(vae, decay=0.5)
+        orch = _orch([self._flow_step()])
+
+        def boom(*a, **k):
+            assert torch.equal(flow.weight, shadow)
+            raise RuntimeError("x")
+
+        orch._generate_samples_impl = boom
+        with pytest.raises(RuntimeError):
+            orch._generate_samples(
+                self._flow_step(),
+                0,
+                0,
+                1,
+                models,
+                None,
+                _args(),
+                [],
+                ema=ema,
+                ema_flow=ema_flow,
+            )
+        assert torch.equal(flow.weight, raw)
+
+    def test_save_checkpoint_passes_ema_flow_and_exports_raw(self):
+        flow, ema_flow, models, shadow, raw = self._setup()
+        seen = {}
+        orch = _orch([self._flow_step()])
+        orch.checkpoint_manager = MagicMock()
+        orch.checkpoint_manager.save_models.side_effect = lambda **k: seen.setdefault(
+            "export", flow.weight.detach().clone()
+        )
+        orch._save_checkpoint(0, 0, 1, models, {}, {}, None, _args(), ema_flow=ema_flow)
+        assert orch.checkpoint_manager.save_training_state.call_args.kwargs["ema_flow"] is ema_flow
+        assert torch.equal(seen["export"], raw)

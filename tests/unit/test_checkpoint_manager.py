@@ -10,6 +10,7 @@ import safetensors.torch
 import torch.nn as nn
 
 from fluxflow_training.training.checkpoint_manager import CheckpointManager
+from fluxflow_training.training.utils import EMA
 
 
 def _fake_model_config(**overrides):
@@ -126,5 +127,85 @@ class TestEmaRawWeightsResume:
         mgr = CheckpointManager(output_dir=tmp_path)
         mgr.save_training_state(
             epoch=0, batch_idx=1, global_step=1, optimizers={}, schedulers={}, ema=ema
+        )
+        assert mgr.load_optimizer_scheduler_ema_states({}, {}, None)
+
+
+class TestFlowEmaPersistence:
+    """Flow EMA lives under its own key and never collides with the VAE EMA."""
+
+    def _emas(self):
+        import torch
+
+        vae, flow = nn.Linear(2, 2), nn.Linear(3, 3)
+        e_vae, e_flow = EMA(vae, decay=0.9), EMA(flow, decay=0.9)
+        with torch.no_grad():
+            flow.weight.add_(1.0)
+        e_flow.update()
+        return e_vae, e_flow
+
+    def test_roundtrip_both_emas(self, tmp_path):
+        import torch
+
+        e_vae, e_flow = self._emas()
+        mgr = CheckpointManager(output_dir=tmp_path)
+        mgr.save_training_state(
+            epoch=0,
+            batch_idx=1,
+            global_step=1,
+            optimizers={},
+            schedulers={},
+            ema=e_vae,
+            ema_flow=e_flow,
+        )
+        states = torch.load(mgr.training_states_path, weights_only=True)
+        assert "ema" in states and "ema_flow" in states and "ema_flow_raw" not in states
+        n_vae, n_flow = EMA(nn.Linear(2, 2), decay=0.9), EMA(nn.Linear(3, 3), decay=0.9)
+        assert mgr.load_optimizer_scheduler_ema_states({}, {}, n_vae, ema_flow=n_flow)
+        assert torch.equal(n_flow.shadow["weight"], e_flow.shadow["weight"])
+        assert torch.equal(n_vae.shadow["weight"], e_vae.shadow["weight"])
+
+    def test_flow_only_without_vae_ema(self, tmp_path):
+        import torch
+
+        _, e_flow = self._emas()
+        mgr = CheckpointManager(output_dir=tmp_path)
+        mgr.save_training_state(
+            epoch=0,
+            batch_idx=1,
+            global_step=1,
+            optimizers={},
+            schedulers={},
+            ema=None,
+            ema_flow=e_flow,
+        )
+        n_flow = EMA(nn.Linear(3, 3), decay=0.9)
+        assert mgr.load_optimizer_scheduler_ema_states({}, {}, None, ema_flow=n_flow)
+        assert torch.equal(n_flow.shadow["weight"], e_flow.shadow["weight"])
+
+    def test_old_file_without_ema_flow_loads(self, tmp_path):
+        import torch
+
+        e_vae, _ = self._emas()
+        mgr = CheckpointManager(output_dir=tmp_path)
+        mgr.save_training_state(
+            epoch=0, batch_idx=1, global_step=1, optimizers={}, schedulers={}, ema=e_vae
+        )
+        n_flow = EMA(nn.Linear(3, 3), decay=0.9)
+        before = n_flow.shadow["weight"].clone()
+        assert mgr.load_optimizer_scheduler_ema_states({}, {}, None, ema_flow=n_flow)
+        assert torch.equal(n_flow.shadow["weight"], before)
+
+    def test_ema_flow_ignored_when_not_requested(self, tmp_path):
+        _, e_flow = self._emas()
+        mgr = CheckpointManager(output_dir=tmp_path)
+        mgr.save_training_state(
+            epoch=0,
+            batch_idx=1,
+            global_step=1,
+            optimizers={},
+            schedulers={},
+            ema=None,
+            ema_flow=e_flow,
         )
         assert mgr.load_optimizer_scheduler_ema_states({}, {}, None)

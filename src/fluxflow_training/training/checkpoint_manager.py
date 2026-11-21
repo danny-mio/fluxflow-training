@@ -265,6 +265,7 @@ class CheckpointManager:
         kl_warmup_steps: int = 0,
         kl_max_beta: float = 0.0,
         pipeline_metadata: Optional[dict] = None,
+        ema_flow: Any = None,
     ) -> None:
         """
         Save complete training state for resume.
@@ -281,6 +282,8 @@ class CheckpointManager:
             kl_warmup_steps: Total KL warmup steps
             kl_max_beta: Maximum KL beta value
             pipeline_metadata: Optional pipeline metadata (for multi-step training)
+            ema_flow: Optional flow+text-encoder EMA, saved under ``ema_flow``. Exports
+                carry raw flow weights, so no raw copy is stored.
         """
         logger.info(f"Saving training state at epoch {epoch}, batch {batch_idx}")
 
@@ -341,6 +344,8 @@ class CheckpointManager:
             consolidated_state["ema_raw"] = {
                 k: v.detach().clone() for k, v in ema.model.state_dict().items()
             }
+        if ema_flow is not None:
+            consolidated_state["ema_flow"] = ema_flow.state_dict()
         # Move all tensors to CPU before saving to avoid CUDA issues
         consolidated_state = _move_to_cpu(consolidated_state)
         torch.save(consolidated_state, self.training_states_path)
@@ -400,6 +405,7 @@ class CheckpointManager:
         optimizers: dict[str, Optimizer],
         schedulers: dict[str, _LRScheduler],  # type: ignore[type-arg]
         ema: Any,
+        ema_flow: Any = None,
     ) -> bool:
         """
         Load optimizer, scheduler, and EMA states.
@@ -408,6 +414,7 @@ class CheckpointManager:
             optimizers: Dictionary of optimizers to restore
             schedulers: Dictionary of schedulers to restore
             ema: EMA object to restore
+            ema_flow: Flow EMA to restore (files without ``ema_flow`` leave it as is)
 
         Returns:
             True if states were loaded, False otherwise
@@ -447,6 +454,10 @@ class CheckpointManager:
                     if "ema_raw" in training_states:
                         ema.model.load_state_dict(training_states["ema_raw"])
                     logger.debug("✓ EMA state restored")
+
+                if "ema_flow" in training_states and ema_flow is not None:
+                    ema_flow.load_state_dict(training_states["ema_flow"])
+                    logger.debug("✓ Flow EMA state restored")
 
                 return True
 

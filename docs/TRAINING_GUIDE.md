@@ -484,7 +484,7 @@ FluxFlow supports advanced per-model optimizer and scheduler configuration via J
       "lr": 5e-7,
       "betas": [0.9, 0.95],
       "weight_decay": 0.01,
-      "decoupled_weight_decay": true
+      "decoupled_weight_decay": false
     },
     "vae": {
       "type": "AdamW",

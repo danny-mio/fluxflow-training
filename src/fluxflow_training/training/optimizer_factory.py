@@ -13,6 +13,13 @@ from lion_pytorch import Lion
 logger = logging.getLogger(__name__)
 
 GATING_SCALE_SUFFIX = "_scale"
+# Non-matrix params named like this (e.g. ContextAttentionMixer.cls) are exempt
+# when ``exempt_vectors`` is set.
+NO_DECAY_PARAM_NAMES = frozenset({"cls"})
+# lion_pytorch decoupled_weight_decay=True decays by (1 - weight_decay) per step
+# (it divides wd by the initial lr, cancelling the lr factor); above this the
+# weight_decay is almost certainly an AdamW-style value and collapses the weights.
+LION_DECOUPLED_WD_WARN_THRESHOLD = 1e-3
 
 
 def _activation_module_types() -> tuple[type, ...]:
@@ -93,6 +100,7 @@ def validate_optimizer_config(optimizer_config: Dict[str, Any]) -> None:
 def split_weight_decay_groups(
     named_params: Iterable[tuple[str, nn.Parameter]],
     modules: Optional[Iterable[nn.Module]] = None,
+    exempt_vectors: bool = False,
 ) -> list[Dict[str, Any]]:
     """Split params into decay / no-decay groups.
 
@@ -103,7 +111,8 @@ def split_weight_decay_groups(
     coefficients drags the activation toward zero). Each group keeps ``orig_idx``
     (positions in the input order) so single-group optimizer state from older
     checkpoints can be remapped (see ``remap_optimizer_state``). Empty groups are
-    dropped.
+    dropped. ``exempt_vectors`` additionally exempts every ndim<=1 param (biases,
+    norm weights/biases, scalars) and ``cls`` tokens.
     """
     act_types = _activation_module_types()
     act_ids = {
@@ -117,6 +126,8 @@ def split_weight_decay_groups(
     no_decay: list[tuple[int, nn.Parameter]] = []
     for i, (name, p) in enumerate(named_params):
         exempt = (name.endswith(GATING_SCALE_SUFFIX) and p.numel() == 1) or id(p) in act_ids
+        if exempt_vectors:
+            exempt = exempt or p.ndim <= 1 or name.rsplit(".", 1)[-1] in NO_DECAY_PARAM_NAMES
         (no_decay if exempt else decay).append((i, p))
     groups: list[Dict[str, Any]] = []
     for items, extra in ((decay, {}), (no_decay, {"weight_decay": 0.0})):
@@ -125,6 +136,16 @@ def split_weight_decay_groups(
                 {"params": [p for _, p in items], "orig_idx": [i for i, _ in items], **extra}
             )
     return groups
+
+
+def split_module_params(
+    root: nn.Module, params: Optional[Iterable[nn.Parameter]] = None
+) -> list[Dict[str, Any]]:
+    """Decay / no-decay groups (``exempt_vectors``) for ``root``'s params, or the
+    ``params`` subset of it (order preserved, so ``orig_idx`` matches the flat list)."""
+    named = {id(p): n for n, p in root.named_parameters()}
+    items = [(named[id(p)], p) for p in (params if params is not None else root.parameters())]
+    return split_weight_decay_groups(items, modules=[root], exempt_vectors=True)
 
 
 def _saved_orig_idx(saved_groups: list[Dict[str, Any]]) -> Optional[list[list[int]]]:
@@ -176,6 +197,19 @@ def remap_optimizer_state(
     return {"state": state, "param_groups": new_groups}
 
 
+def _warn_lion_decoupled_wd(weight_decay: float, decoupled: bool) -> None:
+    """Warn loudly when lion_pytorch decoupled decay would shrink weights every step."""
+    if decoupled and weight_decay > LION_DECOUPLED_WD_WARN_THRESHOLD:
+        logger.warning(
+            "Lion decoupled_weight_decay=True with weight_decay=%g: lion_pytorch applies "
+            "weights *= (1 - weight_decay) = %g EVERY STEP (lr is cancelled out). This "
+            "collapses weights within ~100 steps. Use decoupled_weight_decay=false "
+            "(decay = lr*weight_decay) or weight_decay ~1e-6.",
+            weight_decay,
+            1 - weight_decay,
+        )
+
+
 def create_optimizer(
     parameters: Union[Iterator[nn.Parameter], Iterable[nn.Parameter], list[Dict[str, Any]]],
     optimizer_config: Dict[str, Any],
@@ -193,7 +227,9 @@ def create_optimizer(
             - weight_decay: Weight decay factor (default: 0.0)
             - momentum: Momentum for SGD (default: 0.0)
             - amsgrad: AMSGrad for Adam/AdamW (default: False)
-            - decoupled_weight_decay: For Lion optimizer (default: True)
+            - decoupled_weight_decay: Lion only (default: False). With lion_pytorch,
+              True makes per-step decay ``weight_decay`` (not ``lr * weight_decay``),
+              so weight_decay must be ~lr*wd (e.g. 1e-6)
 
     Returns:
         Configured optimizer instance
@@ -223,7 +259,8 @@ def create_optimizer(
         # Lion-specific parameters
         kwargs["betas"] = tuple(optimizer_config.get("betas", [0.9, 0.95]))
         kwargs["weight_decay"] = optimizer_config.get("weight_decay", 0.01)
-        kwargs["decoupled_weight_decay"] = optimizer_config.get("decoupled_weight_decay", True)
+        kwargs["decoupled_weight_decay"] = optimizer_config.get("decoupled_weight_decay", False)
+        _warn_lion_decoupled_wd(kwargs["weight_decay"], kwargs["decoupled_weight_decay"])
 
     elif optimizer_type in ["AdamW", "Adam"]:
         # Adam/AdamW-specific parameters
@@ -286,21 +323,21 @@ def get_default_optimizer_config(
             "lr": 1e-7,  # AdamW default 5e-7 / 5
             "betas": [0.9, 0.95],
             "weight_decay": 0.05,  # AdamW default 0.01 * 5
-            "decoupled_weight_decay": True,
+            "decoupled_weight_decay": False,
         },
         "text_encoder": {
             "type": "Lion",
             "lr": 1e-8,  # AdamW default 5e-8 / 5
             "betas": [0.9, 0.95],
             "weight_decay": 0.05,  # AdamW default 0.01 * 5
-            "decoupled_weight_decay": True,
+            "decoupled_weight_decay": False,
         },
         "discriminator": {
             "type": "Lion",
             "lr": 1e-7,  # AdamW default 5e-7 / 5
             "betas": [0.9, 0.95],
             "weight_decay": 0.005,  # AdamW default 0.001 * 5
-            "decoupled_weight_decay": True,
+            "decoupled_weight_decay": False,
         },
     }
 
@@ -317,7 +354,7 @@ def get_default_optimizer_config(
             "lr": 1e-7,
             "betas": [0.9, 0.95],
             "weight_decay": 0.05,
-            "decoupled_weight_decay": True,
+            "decoupled_weight_decay": False,
         },
         "vae": {
             "type": "AdamW",
