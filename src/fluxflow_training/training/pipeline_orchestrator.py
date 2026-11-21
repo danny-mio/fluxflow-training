@@ -849,6 +849,7 @@ class TrainingPipelineOrchestrator:
                         models["expander"].named_parameters(),
                     ),
                     modules=[models["compressor"], models["expander"]],
+                    exempt_vectors=True,
                 )
                 optimizers["vae"] = create_optimizer(vae_params, default_opt_config)
                 logger.info(
@@ -914,6 +915,7 @@ class TrainingPipelineOrchestrator:
                         models["expander"].named_parameters(),
                     ),
                     modules=[models["compressor"], models["expander"]],
+                    exempt_vectors=True,
                 )
             elif name == "discriminator":
                 params = models["D_img"].parameters()

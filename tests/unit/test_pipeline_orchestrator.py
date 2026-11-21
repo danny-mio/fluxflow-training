@@ -1870,3 +1870,72 @@ class TestWeightDecayExemptionWiring:
         old.step()
         opt = self._orch()._create_step_optimizers(step, models, MagicMock())["flow"]
         assert remap_optimizer_state(opt, old.state_dict()) is not None
+
+
+class TestVaeWeightDecayExemption:
+    """VAE optimizer exempts norms/biases/scalars (wd pushed ctx scale into LN gamma)."""
+
+    @staticmethod
+    def _models():
+        from fluxflow.models.v100.vae import FluxCompressor_v100, FluxExpander_v100
+
+        return {
+            "compressor": FluxCompressor_v100(
+                d_model=8, downscales=2, use_gradient_checkpointing=False
+            ),
+            "expander": FluxExpander_v100(d_model=8, upscales=2, use_gradient_checkpointing=False),
+        }
+
+    @staticmethod
+    def _step(explicit):
+        from fluxflow_training.training.pipeline_config import (
+            OptimizationConfig,
+            OptimizerConfig,
+            PipelineStepConfig,
+        )
+
+        kw = {}
+        if explicit:
+            kw["optimization"] = OptimizationConfig(
+                optimizers={"vae": OptimizerConfig(lr=1e-4, weight_decay=0.1)}
+            )
+        return PipelineStepConfig(name="v", n_epochs=1, train_vae=True, **kw)
+
+    def _build(self, models, explicit):
+        from unittest.mock import MagicMock
+
+        args = MagicMock()
+        args.lr = 1e-4
+        orch = TestWeightDecayExemptionWiring()._orch()
+        return orch._create_step_optimizers(self._step(explicit), models, args)["vae"]
+
+    @pytest.mark.parametrize("explicit", [True, False])
+    def test_vectors_exempt_matrices_decay(self, explicit):
+        models = self._models()
+        opt = self._build(models, explicit)
+        wd = {id(p): g["weight_decay"] for g in opt.param_groups for p in g["params"]}
+        named = list(models["compressor"].named_parameters()) + list(
+            models["expander"].named_parameters()
+        )
+        assert len(wd) == len(named)
+        assert any(n.endswith("_scale") for n, _ in named)
+        expected = 0.1 if explicit else 0.01
+        for n, p in named:
+            want = 0.0 if p.ndim <= 1 else expected
+            assert wd[id(p)] == want, n
+        assert any(p.ndim > 1 for _, p in named)
+
+    def test_legacy_single_group_vae_state_resumes(self):
+        import torch
+
+        from fluxflow_training.training.optimizer_factory import remap_optimizer_state
+
+        models = self._models()
+        params = list(models["compressor"].parameters()) + list(models["expander"].parameters())
+        old = torch.optim.AdamW(params, lr=0.5)
+        for p in params:
+            p.grad = torch.ones_like(p)
+        old.step()
+        opt = self._build(models, True)
+        assert all("orig_idx" in g for g in opt.param_groups)
+        assert remap_optimizer_state(opt, old.state_dict()) is not None
