@@ -4,6 +4,7 @@ Manages sequential execution of training pipeline steps with model freezing,
 loss-threshold transitions, and checkpoint management.
 """
 
+from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
 import gc
 from contextlib import nullcontext
 from itertools import chain
@@ -724,7 +725,7 @@ class TrainingPipelineOrchestrator:
                 dataset_size=dataset_config.webdataset_size or 10000,
                 samples_per_shard=dataset_config.webdataset_samples_per_shard or 1000,
                 fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
-                max_text_length=getattr(args, "max_text_length", 32),
+                max_text_length=getattr(args, "max_text_length", DEFAULT_MAX_TEXT_LENGTH),
             )
             sampler = None
             dataset_size = len(dataset)
@@ -739,7 +740,7 @@ class TrainingPipelineOrchestrator:
                 tokenizer_name=args.tokenizer_name,
                 transform=None,
                 fixed_prompt_prefix=getattr(args, "fixed_prompt_prefix", None),
-                max_text_length=getattr(args, "max_text_length", 32),
+                max_text_length=getattr(args, "max_text_length", DEFAULT_MAX_TEXT_LENGTH),
             )
 
             # Build dimension cache. When aspect_ratio_bucketing is enabled,
@@ -782,7 +783,7 @@ class TrainingPipelineOrchestrator:
                 noise_std=dataset_config.noise_std,
                 tokenizer_name=args.tokenizer_name,
                 transform=None,
-                max_text_length=getattr(args, "max_text_length", 32),
+                max_text_length=getattr(args, "max_text_length", DEFAULT_MAX_TEXT_LENGTH),
             )
 
             # No dimension cache needed for synthetic data

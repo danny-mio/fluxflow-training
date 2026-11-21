@@ -86,7 +86,7 @@ training:
         # text_encoder_projection stays trainable so the projection head can adapt
 ```
 
-Datasets accept a matching `max_text_length` (default `32`); see
+Datasets accept a matching `max_text_length` (default `128`); see
 `data/datasets.py`.
 
 ---

@@ -19,6 +19,9 @@ Not yet released — work in progress toward v0.10.0.
   whole batch incl. z-only half; it rises while alpha ramps.
 
 ### Changed
+- Default caption token length 32 -> 128 (`--max_text_length` / `data.max_text_length`,
+  dataset classes, orchestrator fallbacks now read `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`
+  instead of hardcoding 32). 32 truncated 40.5% of training captions; 128 truncates 0.12%.
 - HF alpha ramp (0.3 -> 1.2) is a fixed length again: new step key / `--hf_ramp_steps`
   (default 30000 micro-batch steps, = pre-bbc5a16) replaces 30% of run length. Removed
   `VAETrainer(total_training_steps=)` (was only used by the ramp).
@@ -245,6 +248,8 @@ Not yet released — work in progress toward v0.10.0.
   that path has no behavior change unless explicitly opted in.
 
 ### Deprecated
+- Step-level `t_txt` — never had any effect; now logs a warning when set. Text token
+  length is the run-global `data.max_text_length` / `--max_text_length`.
 - `kl_beta` — use `kl_z_weight`.
 - `kl_warmup_steps` — use `kl_z_warmup_steps`.
 

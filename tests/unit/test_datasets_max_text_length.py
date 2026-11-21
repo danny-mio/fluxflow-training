@@ -1,12 +1,13 @@
 """Unit tests for the configurable ``max_text_length`` parameter (v0.10.0).
 
 The dataset classes now expose ``max_text_length`` so callers can pin the
-tokenized prompt length to the flow processor's T_txt (default 32 in
+tokenized prompt length to the flow processor's T_txt (default DEFAULT_MAX_TEXT_LENGTH in
 the redesign). Previously the value was hardcoded at 128.
 """
 
 from unittest.mock import patch
 
+from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
 import pytest
 import torch
 
@@ -37,18 +38,18 @@ def mock_tokenizer_factory():
 
 
 class TestTextImageDatasetMaxTextLength:
-    def test_default_is_32(self, mock_tokenizer_factory, mock_image_dataset):
-        """v0.10.0 default is 32 tokens (matches flow processor T_txt)."""
+    def test_default_is_shared_constant(self, mock_tokenizer_factory, mock_image_dataset):
+        """Default is fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH."""
         with patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained") as patched:
-            patched.return_value = mock_tokenizer_factory(max_length=32)
+            patched.return_value = mock_tokenizer_factory(max_length=DEFAULT_MAX_TEXT_LENGTH)
             ds = TextImageDataset(
                 data_path=mock_image_dataset["data_dir"],
                 captions_file=mock_image_dataset["captions_file"],
                 tokenizer_name="distilbert-base-uncased",
             )
-            assert ds.max_text_length == 32
+            assert ds.max_text_length == DEFAULT_MAX_TEXT_LENGTH
             input_ids, _ = ds[0]
-            assert input_ids.shape == (32,)
+            assert input_ids.shape == (DEFAULT_MAX_TEXT_LENGTH,)
 
     def test_explicit_override(self, mock_tokenizer_factory, mock_image_dataset):
         """Caller can still request a longer max_length (e.g. for legacy models)."""
@@ -66,12 +67,12 @@ class TestTextImageDatasetMaxTextLength:
 
 
 class TestNoiseDatasetMaxTextLength:
-    def test_default_is_32(self, mock_tokenizer_factory):
+    def test_default_is_shared_constant(self, mock_tokenizer_factory):
         with patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained") as patched:
-            patched.return_value = mock_tokenizer_factory(max_length=32)
+            patched.return_value = mock_tokenizer_factory(max_length=DEFAULT_MAX_TEXT_LENGTH)
             ds = NoiseDataset(num_samples=4)
-            assert ds.max_text_length == 32
-            assert ds.empty_caption_tokens.shape == (32,)
+            assert ds.max_text_length == DEFAULT_MAX_TEXT_LENGTH
+            assert ds.empty_caption_tokens.shape == (DEFAULT_MAX_TEXT_LENGTH,)
 
     def test_explicit_override(self, mock_tokenizer_factory):
         with patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained") as patched:

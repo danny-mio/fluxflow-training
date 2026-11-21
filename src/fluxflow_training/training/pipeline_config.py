@@ -229,7 +229,10 @@ class PipelineStepConfig:
     lambda_lpips: float = 0.1
     mse_weight: float = 0.1
     # v0.10.0 flow text-conditioning shape.
-    # ``t_txt`` is the per-sample text token length (matches design §5.7).
+    # ``t_txt`` is DEPRECATED and ignored: the text token length is the
+    # run-global ``data.max_text_length`` / ``--max_text_length`` (default
+    # fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH). Kept only so old YAMLs load;
+    # a warning is logged when it is set.
     # ``null_prompt`` is the string encoded into the cached CFG null context.
     t_txt: int = 32
     null_prompt: str = ""
@@ -738,6 +741,21 @@ def parse_pipeline_config(config_dict: dict) -> PipelineConfig:
     return config
 
 
+def _warn_deprecated_t_txt(step_dict: dict) -> int:
+    """Return the step's ``t_txt`` (default 32), warning if set: it has no effect.
+
+    Text token length is controlled solely by the run-global
+    ``data.max_text_length`` / ``--max_text_length``.
+    """
+    if "t_txt" in step_dict:
+        logger.warning(
+            "Step '%s': 't_txt' is deprecated and ignored; set data.max_text_length "
+            "(or --max_text_length) to control text token length.",
+            step_dict.get("name", "?"),
+        )
+    return int(step_dict.get("t_txt", 32))
+
+
 def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
     """Parse a single pipeline step configuration."""
     # Deprecation warnings for removed SPADE fields
@@ -868,7 +886,7 @@ def _parse_step_config(step_dict: dict, is_default: bool) -> PipelineStepConfig:
         ctx_shrinkage_warmup_start_step=step_dict.get("ctx_shrinkage_warmup_start_step", 5000),
         ctx_shrinkage_warmup_steps=step_dict.get("ctx_shrinkage_warmup_steps", 5000),
         ctx_shrinkage_max_mean_sq=step_dict.get("ctx_shrinkage_max_mean_sq", 1000.0),
-        t_txt=step_dict.get("t_txt", 32),
+        t_txt=_warn_deprecated_t_txt(step_dict),
         null_prompt=step_dict.get("null_prompt", ""),
         kl_free_bits=step_dict.get("kl_free_bits", 0.0),
         lambda_adv=step_dict.get("lambda_adv", 0.5),

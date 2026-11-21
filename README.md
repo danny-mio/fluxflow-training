@@ -84,7 +84,7 @@ training) and `ctx_loss_weight` (relative weight of ctx-dim vs VAE-dim
 v-prediction loss in `FlowTrainer`) get new v0.10.0 defaults: `0.01` and
 `0.5` respectively, per the DP-1 decision.
 
-Datasets accept a configurable `max_text_length` (default `32`) so
+Datasets accept a configurable `max_text_length` (default `128`) so
 tokenization stays aligned with `t_txt`.
 
 ### CFG empty-prompt substitution

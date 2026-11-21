@@ -16,15 +16,15 @@ training-side glue for the five locked decisions:
    downstream of `FluxFlowProcessor_v100`.
 4. **Multi-scale SPADE** — VAE trainer respects the new decoder topology with
    no config changes required beyond the latent-dim drop.
-5. **Clean Gaussian z** — `kl_z_weight` (cosine warmup) and a new
-   `t_txt` (text-token max length, default 32) are exposed in the YAML config.
+5. **Clean Gaussian z** — `kl_z_weight` (cosine warmup) and `data.max_text_length` (text-token length, default 128 via
+   `fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`) are exposed in the YAML config.
 
 New config keys (see `config.example.yaml`):
 - `kl_z_weight` — final KL weight on the clean Gaussian latent (default 1e-3; per-element KL). `kl_z_warmup_steps` counts optimizer steps.
 - `hf_ramp_steps` — HF-loss alpha ramp length (default 30000 micro-batch steps).
 - Logs: `VAE`/`vae_loss` is HF-weighted recon over the whole batch incl. the z-only half (rises as alpha ramps); watch `L1ctx` (plain ctx-path L1).
 - `ctx_shrinkage_weight` — L2-like pressure on `ctx` to prevent runaway scale.
-- `t_txt` — DistilBERT max text length (32 for v0.10.0, was 512).
+- `t_txt` — deprecated, ignored (warns). Text length = `data.max_text_length`.
 
 CFG empty-prompt substitution at flow-train time goes through
 `fluxflow_training.training.cfg_utils.apply_cfg_null_substitution`

@@ -1,5 +1,6 @@
 """Unit tests for dataset classes (src/data/datasets.py)."""
 
+from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
 import os
 from unittest.mock import patch
 
@@ -79,7 +80,7 @@ class TestTextImageDataset:
         input_ids, image_path = dataset[0]
 
         # Check input_ids shape
-        assert input_ids.shape == (32,)  # v0.10.0 default max_length=32
+        assert input_ids.shape == (DEFAULT_MAX_TEXT_LENGTH,)
         assert input_ids.dtype == torch.long
 
         # Check image_path is string
@@ -101,8 +102,8 @@ class TestTextImageDataset:
 
         input_ids, _ = dataset[0]
 
-        # Should be exactly max_length (v0.10.0 default 32)
-        assert input_ids.shape[0] == 32
+        # Should be exactly max_length
+        assert input_ids.shape[0] == DEFAULT_MAX_TEXT_LENGTH
 
     @patch("fluxflow_training.data.datasets.AutoTokenizer.from_pretrained")
     def test_get_image_size_class(self, mock_from_pretrained, mock_tokenizer, mock_image_dataset):
@@ -166,7 +167,7 @@ class TestTextImageDataset:
         file_name, input_ids = dataset[0]
 
         assert isinstance(file_name, str)
-        assert input_ids.shape == (32,)  # v0.10.0 default max_length=32
+        assert input_ids.shape == (DEFAULT_MAX_TEXT_LENGTH,)
         assert input_ids.dtype == torch.long
 
 
@@ -214,7 +215,7 @@ class TestNoiseDataset:
         input_ids, image = dataset[0]
 
         assert isinstance(input_ids, torch.Tensor)
-        assert input_ids.shape == (32,)  # tokenizer max_length (v0.10.0 default 32)
+        assert input_ids.shape == (DEFAULT_MAX_TEXT_LENGTH,)
         assert input_ids.dtype == torch.long
 
         # PIL Image
@@ -671,7 +672,7 @@ class TestDatasetIntegration:
             # Get items from dataset
             for idx in batch:
                 input_ids, image_path = dataset[idx]
-                assert input_ids.shape == (32,)  # v0.10.0 default max_length=32
+                assert input_ids.shape == (DEFAULT_MAX_TEXT_LENGTH,)
                 assert os.path.exists(image_path)
             batch_count += 1
 

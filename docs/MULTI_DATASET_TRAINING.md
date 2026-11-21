@@ -65,10 +65,10 @@ datasets:
 
 **Text tokenization (v0.10.0+)**: the dataset classes
 (`TextImageDataset`, `StreamingWebDataset`, `NoiseDataset`) accept a
-`max_text_length` constructor argument (default `32`) that controls
-DistilBERT padding/truncation length. Keep this in sync with the flow
-step's `t_txt` so the text branch sees the same token budget at train
-time as at sample time. As of this writing it is a single global setting
+`max_text_length` constructor argument (default `128`, from
+`fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH`, which generation also uses)
+that controls DistilBERT padding/truncation length. The step-level `t_txt`
+key is deprecated and ignored. It is a single global setting
 for the whole run (applied to every dataset regardless of pipeline step),
 set via `--max_text_length` on the CLI or `data.max_text_length` in
 `config.yaml` (see `config.example.yaml`) -- there is no per-pipeline-step

@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterator, Optional
 
 import torch
 import webdataset as wds
+from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
 from fluxflow.types import DimensionCacheData, SamplerState  # type: ignore[attr-defined]
 from fluxflow.utils import get_logger
 from huggingface_hub import HfFileSystem, hf_hub_url
@@ -125,7 +126,7 @@ class TextImageDataset(Dataset):
         transform: Optional[Callable] = None,
         generate_mode: bool = False,
         fixed_prompt_prefix: Optional[str] = None,
-        max_text_length: int = 32,
+        max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
     ):
         """
         Args:
@@ -136,7 +137,7 @@ class TextImageDataset(Dataset):
             generate_mode: If True, load .txt files from data_path instead
             fixed_prompt_prefix: Optional text to prepend to all prompts (e.g. "style anime")
             max_text_length: Token sequence length used for padding/truncation.
-                v0.10.0 default is 32 (matches the flow processor's T_txt).
+                Default fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH.
                 Earlier code hardcoded 128.
         """
         self.data_path = data_path
@@ -252,7 +253,7 @@ class StreamingWebDataset(IterableDataset):
         dataset_size: Optional[int] = None,
         samples_per_shard: int = 10000,
         fixed_prompt_prefix: Optional[str] = None,
-        max_text_length: int = 32,
+        max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
     ):
         """
         Args:
@@ -270,7 +271,7 @@ class StreamingWebDataset(IterableDataset):
             samples_per_shard: Estimated samples per shard for size estimation (default 10000)
             fixed_prompt_prefix: Optional text to prepend to all prompts (e.g. "style anime")
             max_text_length: Token sequence length used for padding/truncation. v0.10.0
-                default is 32 (matches the flow processor's T_txt).
+                default fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH.
         """
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         self.max_text_length = max_text_length
@@ -461,7 +462,7 @@ class NoiseDataset(Dataset):
         noise_std: float = 1.0,
         tokenizer_name: str = "distilbert-base-uncased",
         transform: Optional[Callable] = None,
-        max_text_length: int = 32,
+        max_text_length: int = DEFAULT_MAX_TEXT_LENGTH,
     ):
         """
         Args:
@@ -471,7 +472,7 @@ class NoiseDataset(Dataset):
             tokenizer_name: HuggingFace tokenizer for empty captions
             transform: Optional image transform (applied to PIL image)
             max_text_length: Token sequence length used for padding the empty
-                caption. v0.10.0 default is 32.
+                caption. Default fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH.
         """
         self.dimensions = dimensions or [512, 512]
         self.height, self.width = self.dimensions

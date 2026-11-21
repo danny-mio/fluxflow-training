@@ -77,7 +77,7 @@ try:
     # installed fluxflow-core predates this constant (not yet reinstalled).
     from fluxflow.text_length import DEFAULT_MAX_TEXT_LENGTH
 except ImportError:  # pragma: no cover - stale fluxflow-core install
-    DEFAULT_MAX_TEXT_LENGTH = 32
+    DEFAULT_MAX_TEXT_LENGTH = 128
 
 # Environment setup
 warnings.filterwarnings(
@@ -1985,8 +1985,7 @@ def parse_args():
         default=DEFAULT_MAX_TEXT_LENGTH,
         help=(
             "Max tokenized caption length (padding/truncation) for training datasets. "
-            "Default (fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH, currently 32) matches "
-            "the v0.10.0 flow processor's T_txt; generation reads the same shared constant "
+            "Default (fluxflow.text_length.DEFAULT_MAX_TEXT_LENGTH, currently 128); generation reads the same shared constant "
             "so the two never silently diverge. Raise only after checking the "
             "truncation-rate/length distribution logged by the dataset classes (see "
             "docs/MULTI_DATASET_TRAINING.md)."

@@ -122,7 +122,7 @@ class TestTrainScriptArgumentParsing:
             assert args.vae_dim == 128
             assert args.text_embedding_dim == 1024
             assert args.kl_beta == 0.0001
-            assert args.max_text_length == 32
+            assert args.max_text_length == 128
             assert args.kl_warmup_steps == 5000
             assert args.compile_activations is False
 
@@ -160,7 +160,7 @@ class TestTrainScriptArgumentParsing:
             assert args.vae_dim == 256
 
     def test_parse_args_max_text_length_override(self):
-        """--max_text_length overrides the 32-token v0.10.0 default."""
+        """--max_text_length overrides the 128-token default."""
         train = import_script_module("train")
         test_args = [
             "--data_path",
