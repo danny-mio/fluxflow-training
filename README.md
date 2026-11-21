@@ -138,7 +138,6 @@ Weights will be cached in `~/.cache/torch/hub/checkpoints/`. If not pre-download
   - Loss-threshold transitions with early stopping
   - Full checkpoint resume from any step/epoch/batch
   - **Multi-dataset support**: Train different steps on different datasets (local/webdataset)
-  - **Auto-create missing models**: Automatic model initialization when transitioning between steps
   - See [PIPELINE_ARCHITECTURE.md](docs/PIPELINE_ARCHITECTURE.md) and [MULTI_DATASET_TRAINING.md](docs/MULTI_DATASET_TRAINING.md)
 
 - **GAN-Only Training Mode** (v0.2.0+)

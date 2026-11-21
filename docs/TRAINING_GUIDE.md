@@ -188,7 +188,7 @@ gan_training: true
 **5. Reduce Widths**:
 ```yaml
 model:
-  vae_encoder_channels: [32, 64, 128, 128]   # default [32, 64, 128, 256]; VRAM gate: 50.5M params, passes
+  vae_encoder_channels: [32, 64, 128, 128]   # default [32, 64, 128, 256]; lighter fallback (~50M params)
   feature_maps_dim: 64
   feature_maps_dim_disc: 8
 ```
@@ -639,8 +639,8 @@ divisible by 8):
 | `vae_decoder_channels` | `[256, 128, 64, 32]` |
 | `vae_spade_hidden` | `[128, 128, 64, 32]` |
 
-A smaller encoder, `vae_encoder_channels: [32, 64, 128, 128]`, is the fallback when
-the defaults do not fit (measured in the pre-training VRAM gate: 50.5M params, passes).
+A smaller encoder, `vae_encoder_channels: [32, 64, 128, 128]`, is a valid lighter
+fallback (~50M params) when the defaults do not fit.
 Checkpoints load at their own widths (inferred from
 the weights). The legacy (non-v0.10.0) VAE still derives its widths from `vae_dim`.
 
@@ -710,36 +710,8 @@ Pipeline training breaks your training workflow into multiple sequential steps, 
 
 ### Pipeline Resilience Features
 
-**Auto-Create Missing Models**:
-
-When transitioning between pipeline steps (e.g., VAE → Flow), required models are automatically created:
-
-```yaml
-steps:
-  - name: vae_warmup
-    train_vae: true
-    # Only creates: compressor, decoder
-
-  - name: flow_training
-    train_diff: true
-    # Auto-creates: flow_processor, text_encoder
-    # No manual initialization needed.
-```
-
-**Auto-created models:**
-- `flow_processor` - Created when `train_diff: true` or `train_diff_full: true`
-- `text_encoder` - Created for flow training
-- `compressor` (for Flow) - Created for flow training if missing
-- `expander` - Created for VAE with GAN
-- `D_img` (discriminator) - Created when `gan_training: true`
-
-**What you see:**
-```
-Auto-created flow_processor with feature_maps_dim=128
-Auto-created text_encoder with text_embedding_dim=512
-```
-
-This prevents crashes and makes pipeline mode more robust. See `docs/PIPELINE_ARCHITECTURE.md` for details.
+**Model creation**: all models are built once at startup and shared by every step;
+steps do not create models. See [PIPELINE_ARCHITECTURE.md](PIPELINE_ARCHITECTURE.md#model-creation).
 
 ### Quick Start: Pipeline Training
 
