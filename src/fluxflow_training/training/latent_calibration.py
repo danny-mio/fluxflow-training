@@ -154,9 +154,6 @@ def calibrate_models(
 
 
 def context_dims_of(compressor: Any) -> int:
-    """``compressor.get_context_dims()`` or 0 when unavailable."""
+    """``compressor.get_context_dims()``, or 0 when the compressor has no such method."""
     getter = getattr(compressor, "get_context_dims", None)
-    try:
-        return int(getter()) if callable(getter) else 0
-    except Exception:
-        return 0
+    return int(getter()) if callable(getter) else 0

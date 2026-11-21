@@ -4,7 +4,7 @@ Handles flow-based diffusion model training with v-prediction.
 """
 
 from contextlib import nullcontext
-from typing import Optional
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -113,6 +113,21 @@ def _autocast_ctx(accelerator):
     return accelerator.autocast()
 
 
+def check_latents_calibrated(compressor: Any) -> None:
+    """Raise if ``compressor`` is a v0.10.0 compressor with identity latent stats.
+
+    Legacy compressors (no ``latent_stats_calibrated`` attribute) pass.
+
+    Raises:
+        ValueError: when ``compressor.latent_stats_calibrated is False``.
+    """
+    if getattr(compressor, "latent_stats_calibrated", True) is False:
+        raise ValueError(
+            "VAE latent stats not calibrated: run fluxflow-calibrate-latents on this "
+            "checkpoint before flow training"
+        )
+
+
 def _empty_cache(device: torch.device) -> None:
     """Free cached memory for the current device."""
     if device.type == "cuda":
@@ -191,11 +206,7 @@ class FlowTrainer:
             ValueError: if ``compressor`` is a v0.10.0 compressor whose latent stats are
                 still the identity default (legacy compressors without the attribute pass).
         """
-        if getattr(compressor, "latent_stats_calibrated", True) is False:
-            raise ValueError(
-                "VAE latent stats not calibrated: run fluxflow-calibrate-latents on this "
-                "checkpoint before flow training"
-            )
+        check_latents_calibrated(compressor)
         self.flow_processor = flow_processor
         self.text_encoder = text_encoder
         self.compressor = compressor

@@ -16,6 +16,7 @@ import torch.nn as nn
 from fluxflow.utils import get_logger, safe_vae_sample, save_sample_images
 
 from .checkpoint_manager import CheckpointManager
+from .flow_trainer import check_latents_calibrated
 from .latent_calibration import (
     calibrate_models,
     context_dims_of,
@@ -1335,6 +1336,41 @@ class TrainingPipelineOrchestrator:
 
         return trainers
 
+    def _export_models(self, models: dict) -> None:
+        """Write the model checkpoint (diffuser + text encoder [+ D_img]) via save_models."""
+        self.checkpoint_manager.save_models(
+            diffuser=models["diffuser"],
+            text_encoder=models["text_encoder"],
+            discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
+            model_config=models.get("model_config", {}),
+        )
+
+    @staticmethod
+    def _step_needs_vae_trainer(step: PipelineStepConfig) -> bool:
+        """True if ``step`` runs the VAE trainer (VAE, GAN or LPIPS)."""
+        return bool(step.train_vae or step.gan_training or step.use_lpips)
+
+    def _adopt_vae_ema_for_next_step(
+        self, ema: Any, next_step: Optional[PipelineStepConfig]
+    ) -> bool:
+        """Copy VAE EMA weights into the live compressor/expander before a VAE-frozen step.
+
+        The VAE step exports EMA weights; a following step that does not train the VAE
+        (e.g. flow) must train, calibrate and export on those same weights rather than
+        the raw ones. Parameters only: ``EMA.copy_to`` keeps the live buffers (latent
+        stats). No-op when there is no EMA, no next step, or the next step trains the VAE.
+
+        Returns:
+            True if the EMA weights were copied.
+        """
+        if ema is None or next_step is None or self._step_needs_vae_trainer(next_step):
+            return False
+        ema.copy_to(ema.model)
+        logger.info(
+            f"VAE EMA weights copied into live compressor/expander for step '{next_step.name}'"
+        )
+        return True
+
     def _maybe_calibrate_latents(
         self,
         step: PipelineStepConfig,
@@ -1404,12 +1440,7 @@ class TrainingPipelineOrchestrator:
             + format_latent_stats_table(mean, std, context_dims_of(compressor))
         )
         # Persist immediately so the stats survive a crash before the next checkpoint.
-        self.checkpoint_manager.save_models(
-            diffuser=models["diffuser"],
-            text_encoder=models["text_encoder"],
-            discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
-            model_config=models.get("model_config", {}),
-        )
+        self._export_models(models)
         logger.info(f"Calibrated checkpoint saved to {self.checkpoint_manager.model_path}")
         return True
 
@@ -1448,12 +1479,7 @@ class TrainingPipelineOrchestrator:
         # Exported weights are the EMA weights; the training state below is saved with
         # the raw weights (+ EMA state) so resume is exact.
         with ema.applied() if ema is not None else nullcontext():
-            self.checkpoint_manager.save_models(
-                diffuser=models["diffuser"],
-                text_encoder=models["text_encoder"],
-                discriminators={"D_img": models["D_img"]} if models.get("D_img") else None,
-                model_config=model_config,
-            )
+            self._export_models({**models, "model_config": model_config})
 
         # Save training state with pipeline metadata
         self.checkpoint_manager.save_training_state(
@@ -1751,7 +1777,7 @@ class TrainingPipelineOrchestrator:
             )
 
             # Create EMA if we need VAE trainer (for VAE, GAN, or LPIPS)
-            needs_vae_trainer = step.train_vae or step.gan_training or step.use_lpips
+            needs_vae_trainer = self._step_needs_vae_trainer(step)
             ema = None
             if needs_vae_trainer and step.use_ema:
                 ema = EMA(
@@ -1784,6 +1810,14 @@ class TrainingPipelineOrchestrator:
                     logger.warning(
                         "⚠ Could not load optimizer states, starting with fresh optimizers"
                     )
+                # ema_raw (raw VAE state incl. buffers) may predate calibration and revert
+                # the latent stats after FlowTrainer's guard passed: re-check here so the
+                # first flow train_step never sees uncalibrated latents.
+                if step.train_diff or step.train_diff_full:
+                    self._maybe_calibrate_latents(
+                        step, models, dataloader, current_batch_size, sampler=sampler
+                    )
+                    check_latents_calibrated(models.get("compressor"))
 
             # Training loop for this step
             step_start_time = time.time()
@@ -2285,6 +2319,12 @@ class TrainingPipelineOrchestrator:
 
             # Mark step as completed
             self.steps_completed.append(step.name)
+
+            # VAE -> VAE-frozen transition: the next step uses the (exported) EMA VAE.
+            next_step = (
+                self.config.steps[step_idx + 1] if step_idx + 1 < len(self.config.steps) else None
+            )
+            self._adopt_vae_ema_for_next_step(ema, next_step)
 
             # Cleanup
             del optimizers, schedulers, trainers, ema_flow
