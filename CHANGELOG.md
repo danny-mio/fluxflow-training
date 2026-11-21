@@ -138,6 +138,7 @@ Not yet released — work in progress toward v0.10.0.
   override); default 128 (see Changed).
 
 ### Changed
+- numpy 2.x supported: `<2.0` pin removed; floor raised to 1.26.4 (scipy 1.17 requires it).
 - **Flow/text-encoder weight-decay exemption**: `flow`, `text_encoder`,
   `text_encoder_projection`, `text_encoder_backbone` optimizers exempt biases,
   norm weights, ndim<=1 params, `cls`, `*_scale` and activation coefficients
